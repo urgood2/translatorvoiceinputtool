@@ -142,7 +142,9 @@ stop_sidecar() {
 # Returns: response JSON on stdout
 sidecar_rpc() {
     local method="$1"
-    local params="${2:-{}}"
+    # Note: Use separate assignment to avoid zsh brace expansion bug with ${2:-{}}
+    local params="$2"
+    [[ -z "$params" ]] && params='{}'
     local timeout="${3:-10}"
 
     local request_id
@@ -172,7 +174,7 @@ sidecar_rpc() {
 
     # If no valid JSON-RPC line found, check for timeout
     if [ -z "$response" ]; then
-        if echo "$raw_response" | grep -q '"error":"timeout"'; then
+        if [[ "$raw_response" == *'"error":"timeout"'* ]]; then
             log_error "ipc" "response" "RPC timeout" "{\"method\":\"$method\",\"timeout\":$timeout}"
             return 1
         fi
@@ -181,7 +183,9 @@ sidecar_rpc() {
     fi
 
     log_debug "ipc" "response" "RPC response received" "{\"method\":\"$method\"}"
-    echo "$response"
+
+    # Output the response - MUST be the last thing this function does
+    printf '%s\n' "$response"
 }
 
 # Send RPC and verify success (has "result" field)
