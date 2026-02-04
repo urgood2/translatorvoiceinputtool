@@ -26,6 +26,7 @@ use crate::injection::{inject_text, InjectionConfig, InjectionResult};
 use crate::ipc::{NotificationEvent, RpcClient, RpcError};
 use crate::recording::{RecordingController, RecordingEvent, TranscriptionResult};
 use crate::state::{AppState, AppStateManager};
+use crate::watchdog::{PingCallback, Watchdog, WatchdogConfig, WatchdogEvent};
 
 /// Tray icon event name.
 const EVENT_TRAY_UPDATE: &str = "tray:update";
@@ -136,12 +137,15 @@ pub struct IntegrationManager {
     model_progress: Arc<RwLock<Option<ModelProgress>>>,
     /// Whether model initialization has been attempted.
     model_init_attempted: Arc<AtomicBool>,
+    /// Watchdog for sidecar health monitoring.
+    watchdog: Arc<Watchdog>,
 }
 
 impl IntegrationManager {
     /// Create a new integration manager.
     pub fn new(state_manager: Arc<AppStateManager>) -> Self {
         let recording_controller = Arc::new(RecordingController::new(Arc::clone(&state_manager)));
+        let watchdog = Arc::new(Watchdog::with_config(WatchdogConfig::default()));
 
         Self {
             state_manager,
@@ -155,6 +159,7 @@ impl IntegrationManager {
             model_status: Arc::new(RwLock::new(ModelStatus::Unknown)),
             model_progress: Arc::new(RwLock::new(None)),
             model_init_attempted: Arc::new(AtomicBool::new(false)),
+            watchdog,
         }
     }
 
@@ -208,8 +213,111 @@ impl IntegrationManager {
         // Check and initialize model in background
         self.spawn_model_check();
 
+        // Start watchdog loop
+        self.start_watchdog_loop();
+
         log::info!("Integration manager initialized");
         Ok(())
+    }
+
+    /// Start the watchdog monitoring loop.
+    fn start_watchdog_loop(&self) {
+        let rpc_client = Arc::clone(&self.rpc_client);
+        let watchdog = Arc::clone(&self.watchdog);
+        let state_manager = Arc::clone(&self.state_manager);
+        let recording_controller = Arc::clone(&self.recording_controller);
+        let model_status = Arc::clone(&self.model_status);
+        let app_handle = self.app_handle.clone();
+
+        // Create ping adapter
+        let pinger = Arc::new(RpcPinger {
+            rpc_client: Arc::clone(&rpc_client),
+        });
+
+        // Start the watchdog loop
+        watchdog.start_loop(pinger);
+
+        // Start event handler loop
+        let mut event_rx = watchdog.subscribe();
+        tokio::spawn(async move {
+            log::info!("Watchdog event handler started");
+
+            while let Ok(event) = event_rx.recv().await {
+                match event {
+                    WatchdogEvent::HealthCheck { status } => {
+                        log::debug!("Watchdog health check: {:?}", status);
+                        // Could emit event to frontend for status display
+                    }
+                    WatchdogEvent::SidecarHung => {
+                        log::error!("Watchdog detected hung sidecar, requesting restart");
+                        // Transition to error state
+                        state_manager.transition_to_error("Sidecar hung, restarting...".to_string());
+
+                        // Kill and restart sidecar
+                        // Note: This would need to be more sophisticated in production
+                        // to actually kill and restart the sidecar process
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit("sidecar:restart", serde_json::json!({"reason": "hung"}));
+                        }
+                    }
+                    WatchdogEvent::SystemResumed => {
+                        log::info!("System resumed from suspend, triggering revalidation");
+                    }
+                    WatchdogEvent::RevalidationNeeded => {
+                        log::info!("Revalidation needed after resume");
+
+                        // Revalidate sidecar connection
+                        let client = rpc_client.read().await;
+                        if let Some(ref c) = *client {
+                            #[derive(serde::Deserialize)]
+                            struct PingResult {
+                                #[allow(dead_code)]
+                                version: String,
+                            }
+
+                            match c.call::<PingResult>("system.ping", None).await {
+                                Ok(_) => {
+                                    log::info!("Sidecar responsive after resume");
+                                }
+                                Err(e) => {
+                                    log::warn!("Sidecar unresponsive after resume: {}", e);
+                                    state_manager.transition_to_error(
+                                        "Sidecar unresponsive after resume".to_string(),
+                                    );
+                                }
+                            }
+                        }
+
+                        // Revalidate model status
+                        #[derive(serde::Deserialize)]
+                        struct StatusResult {
+                            status: String,
+                        }
+
+                        let client = rpc_client.read().await;
+                        if let Some(ref c) = *client {
+                            match c.call::<StatusResult>("model.get_status", None).await {
+                                Ok(result) => {
+                                    log::info!("Model status after resume: {}", result.status);
+                                    if result.status == "ready" {
+                                        recording_controller.set_model_ready(true).await;
+                                        *model_status.write().await = ModelStatus::Ready;
+                                    } else {
+                                        recording_controller.set_model_ready(false).await;
+                                        *model_status.write().await = ModelStatus::Missing;
+                                    }
+                                }
+                                Err(e) => {
+                                    log::warn!("Failed to get model status after resume: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            log::info!("Watchdog event handler ended");
+        });
     }
 
     /// Spawn model check and initialization in background.
@@ -834,11 +942,15 @@ impl IntegrationManager {
         let model_status = Arc::clone(&self.model_status);
         let model_progress = Arc::clone(&self.model_progress);
         let app_handle = self.app_handle.clone();
+        let watchdog = Arc::clone(&self.watchdog);
 
         tokio::spawn(async move {
             log::info!("Notification loop started");
 
             while let Ok(event) = receiver.recv().await {
+                // Any notification means the sidecar is alive
+                watchdog.mark_activity().await;
+
                 log::debug!("Sidecar notification: method={}", event.method);
 
                 match event.method.as_str() {
@@ -979,6 +1091,9 @@ impl IntegrationManager {
     pub async fn shutdown(&self) {
         log::info!("Shutting down integration manager");
 
+        // Shutdown watchdog first
+        self.watchdog.shutdown();
+
         // Shutdown sidecar
         if let Some(client) = self.rpc_client.write().await.take() {
             // Send shutdown command
@@ -998,6 +1113,37 @@ impl IntegrationManager {
         }
 
         log::info!("Integration manager shutdown complete");
+    }
+
+    /// Get the watchdog for external monitoring.
+    pub fn watchdog(&self) -> &Arc<Watchdog> {
+        &self.watchdog
+    }
+}
+
+/// RPC ping adapter for watchdog.
+struct RpcPinger {
+    rpc_client: Arc<RwLock<Option<RpcClient>>>,
+}
+
+impl PingCallback for RpcPinger {
+    async fn ping(&self) -> Result<(), String> {
+        let client = self.rpc_client.read().await;
+        let client = client
+            .as_ref()
+            .ok_or_else(|| "Sidecar not connected".to_string())?;
+
+        #[derive(serde::Deserialize)]
+        struct PingResult {
+            #[allow(dead_code)]
+            version: String,
+        }
+
+        client
+            .call::<PingResult>("system.ping", None)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("Ping failed: {}", e))
     }
 }
 
@@ -1019,5 +1165,15 @@ mod tests {
         let manager = IntegrationManager::new(state_manager);
 
         assert!(manager.app_handle.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_integration_manager_has_watchdog() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+
+        // Verify watchdog is initialized with default status
+        let status = manager.watchdog.get_status().await;
+        assert_eq!(status, crate::watchdog::HealthStatus::NotRunning);
     }
 }
