@@ -6,6 +6,7 @@
 
 # Ephemeral files
 *.log
+logs/
 *.tmp
 *.swp
 .DS_Store
