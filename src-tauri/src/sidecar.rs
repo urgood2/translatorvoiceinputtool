@@ -2,6 +2,9 @@
 //!
 //! This module handles spawning, monitoring, and restarting the Python
 //! sidecar process that performs ASR transcription.
+//!
+//! In release builds, the sidecar is a bundled PyInstaller binary.
+//! In debug builds, it runs via Python interpreter for faster iteration.
 
 #![allow(dead_code)] // Methods will be used in future RPC client implementation
 
@@ -12,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Maximum number of restart attempts before giving up.
 const MAX_RESTART_ATTEMPTS: u32 = 5;
@@ -50,6 +53,23 @@ pub struct SidecarStatus {
     pub message: Option<String>,
 }
 
+/// JSON-RPC response for ping
+#[derive(Debug, Deserialize)]
+struct PingResponse {
+    #[allow(dead_code)]
+    jsonrpc: String,
+    #[allow(dead_code)]
+    id: serde_json::Value,
+    result: Option<PingResult>,
+    error: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PingResult {
+    protocol: String,
+    version: String,
+}
+
 /// Internal sidecar state
 struct SidecarInner {
     state: SidecarState,
@@ -58,18 +78,39 @@ struct SidecarInner {
     last_error: Option<String>,
 }
 
+/// Sidecar spawn mode
+#[derive(Debug, Clone)]
+enum SpawnMode {
+    /// Use bundled binary (release mode)
+    Bundled,
+    /// Use Python interpreter (development mode)
+    Python { path: String, module: String },
+}
+
 /// Sidecar manager for process lifecycle management.
 pub struct SidecarManager {
     inner: Arc<Mutex<SidecarInner>>,
     shutdown_flag: Arc<AtomicBool>,
     app_handle: Option<AppHandle>,
-    python_path: String,
-    sidecar_module: String,
+    spawn_mode: SpawnMode,
 }
 
 impl SidecarManager {
     /// Create a new sidecar manager.
+    ///
+    /// In release builds, defaults to using the bundled binary.
+    /// In debug builds, defaults to Python interpreter mode.
     pub fn new() -> Self {
+        // Default spawn mode based on build type
+        #[cfg(debug_assertions)]
+        let spawn_mode = SpawnMode::Python {
+            path: "python3".to_string(),
+            module: "openvoicy_sidecar".to_string(),
+        };
+
+        #[cfg(not(debug_assertions))]
+        let spawn_mode = SpawnMode::Bundled;
+
         Self {
             inner: Arc::new(Mutex::new(SidecarInner {
                 state: SidecarState::NotStarted,
@@ -79,8 +120,7 @@ impl SidecarManager {
             })),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
             app_handle: None,
-            python_path: "python3".to_string(),
-            sidecar_module: "openvoicy_sidecar".to_string(),
+            spawn_mode,
         }
     }
 
@@ -89,14 +129,22 @@ impl SidecarManager {
         self.app_handle = Some(handle);
     }
 
-    /// Set the Python executable path.
-    pub fn set_python_path(&mut self, path: String) {
-        self.python_path = path;
+    /// Set Python mode for development.
+    #[allow(dead_code)]
+    pub fn set_python_mode(&mut self, path: String, module: String) {
+        self.spawn_mode = SpawnMode::Python { path, module };
     }
 
-    /// Set the sidecar module path.
-    pub fn set_sidecar_module(&mut self, module: String) {
-        self.sidecar_module = module;
+    /// Set bundled mode (uses Tauri sidecar).
+    #[allow(dead_code)]
+    pub fn set_bundled_mode(&mut self) {
+        self.spawn_mode = SpawnMode::Bundled;
+    }
+
+    /// Check if using bundled binary mode.
+    #[allow(dead_code)]
+    pub fn is_bundled_mode(&self) -> bool {
+        matches!(self.spawn_mode, SpawnMode::Bundled)
     }
 
     /// Get the current sidecar state.
@@ -143,16 +191,54 @@ impl SidecarManager {
 
     /// Spawn the sidecar process.
     fn spawn_process(&self) -> Result<(), String> {
-        log::info!("Spawning sidecar process");
+        log::info!("Spawning sidecar process (mode: {:?})", self.spawn_mode);
 
-        let child = Command::new(&self.python_path)
-            .arg("-m")
-            .arg(&self.sidecar_module)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
+        let child = match &self.spawn_mode {
+            SpawnMode::Python { path, module } => {
+                // Development mode: run via Python interpreter
+                log::info!("Using Python mode: {} -m {}", path, module);
+                Command::new(path)
+                    .arg("-m")
+                    .arg(module)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|e| format!("Failed to spawn Python sidecar: {}", e))?
+            }
+            SpawnMode::Bundled => {
+                // Release mode: use bundled binary
+                // Get the sidecar path from Tauri's resource directory
+                let sidecar_path = self.get_bundled_sidecar_path()?;
+                log::info!("Using bundled sidecar: {:?}", sidecar_path);
+
+                // Handle macOS quarantine attribute removal
+                #[cfg(target_os = "macos")]
+                {
+                    if let Err(e) = Self::remove_macos_quarantine(&sidecar_path) {
+                        log::warn!("Failed to remove quarantine attribute: {}", e);
+                    }
+                }
+
+                // Ensure executable permissions on Unix
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = std::fs::metadata(&sidecar_path) {
+                        let mut perms = metadata.permissions();
+                        perms.set_mode(perms.mode() | 0o111);
+                        let _ = std::fs::set_permissions(&sidecar_path, perms);
+                    }
+                }
+
+                Command::new(&sidecar_path)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|e| format!("Failed to spawn bundled sidecar: {}", e))?
+            }
+        };
 
         let pid = child.id();
         log::info!("Sidecar spawned with PID {}", pid);
@@ -172,6 +258,99 @@ impl SidecarManager {
 
         // Start monitoring thread
         self.start_monitor_thread();
+
+        Ok(())
+    }
+
+    /// Get the path to the bundled sidecar binary.
+    fn get_bundled_sidecar_path(&self) -> Result<std::path::PathBuf, String> {
+        // In release mode, the sidecar is in the app's resource directory
+        // Tauri places externalBin binaries alongside the main executable
+        let app_handle = self
+            .app_handle
+            .as_ref()
+            .ok_or_else(|| "App handle not set".to_string())?;
+
+        // Get the path to the sidecar binary
+        // Tauri 2.x: binaries are in the same directory as the main executable
+        let exe_path = std::env::current_exe()
+            .map_err(|e| format!("Failed to get executable path: {}", e))?;
+
+        let exe_dir = exe_path
+            .parent()
+            .ok_or_else(|| "Failed to get executable directory".to_string())?;
+
+        // Try resource path first (for bundled apps)
+        if let Ok(resource_dir) = app_handle.path().resource_dir() {
+            let sidecar_name = Self::get_sidecar_binary_name();
+            let resource_path = resource_dir.join(&sidecar_name);
+            if resource_path.exists() {
+                log::info!("Found sidecar in resource dir: {:?}", resource_path);
+                return Ok(resource_path);
+            }
+        }
+
+        // Fallback: same directory as executable
+        let sidecar_name = Self::get_sidecar_binary_name();
+        let sidecar_path = exe_dir.join(&sidecar_name);
+
+        if sidecar_path.exists() {
+            log::info!("Found sidecar in exe dir: {:?}", sidecar_path);
+            Ok(sidecar_path)
+        } else {
+            // Development fallback: check dist directory
+            let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("sidecar")
+                .join("dist")
+                .join(&sidecar_name);
+
+            if dev_path.exists() {
+                log::info!("Found sidecar in dev dist: {:?}", dev_path);
+                Ok(dev_path)
+            } else {
+                Err(format!(
+                    "Sidecar binary not found. Checked: {:?}, {:?}",
+                    sidecar_path, dev_path
+                ))
+            }
+        }
+    }
+
+    /// Get the sidecar binary name for the current platform.
+    fn get_sidecar_binary_name() -> String {
+        #[cfg(target_os = "windows")]
+        {
+            "openvoicy-sidecar.exe".to_string()
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            "openvoicy-sidecar".to_string()
+        }
+    }
+
+    /// Remove macOS quarantine attribute from the sidecar binary.
+    #[cfg(target_os = "macos")]
+    fn remove_macos_quarantine(path: &std::path::Path) -> Result<(), String> {
+        use std::process::Command as StdCommand;
+
+        log::info!("Removing quarantine attribute from {:?}", path);
+
+        let output = StdCommand::new("xattr")
+            .args(["-d", "com.apple.quarantine"])
+            .arg(path)
+            .output()
+            .map_err(|e| format!("Failed to run xattr: {}", e))?;
+
+        if !output.status.success() {
+            // Ignore errors - file might not have quarantine attribute
+            log::debug!(
+                "xattr returned non-zero (this is ok if no quarantine): {:?}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
 
         Ok(())
     }
@@ -402,8 +581,39 @@ impl SidecarManager {
             inner: Arc::clone(&self.inner),
             shutdown_flag: Arc::clone(&self.shutdown_flag),
             app_handle: self.app_handle.clone(),
-            python_path: self.python_path.clone(),
-            sidecar_module: self.sidecar_module.clone(),
+            spawn_mode: self.spawn_mode.clone(),
+        }
+    }
+
+    /// Perform a self-check by pinging the sidecar.
+    /// Returns the sidecar version if successful.
+    pub fn self_check(&self) -> Result<String, String> {
+        let ping_request = r#"{"jsonrpc":"2.0","id":1,"method":"system.ping","params":{}}"#;
+
+        // Write the ping request
+        self.write_line(ping_request)?;
+
+        // Read the response (with timeout handling done by caller)
+        let response = self.read_line()?;
+
+        // Parse the response
+        let parsed: PingResponse =
+            serde_json::from_str(&response).map_err(|e| format!("Failed to parse response: {}", e))?;
+
+        if let Some(error) = parsed.error {
+            return Err(format!("Sidecar returned error: {:?}", error));
+        }
+
+        if let Some(result) = parsed.result {
+            if result.protocol != "v1" {
+                return Err(format!(
+                    "Protocol mismatch: expected v1, got {}",
+                    result.protocol
+                ));
+            }
+            Ok(result.version)
+        } else {
+            Err("No result in ping response".to_string())
         }
     }
 }
