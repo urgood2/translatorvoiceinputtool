@@ -72,6 +72,19 @@ We need to select an automatic speech recognition (ASR) backend for the voice in
 
 5. **Commercial Viability:** CC-BY-4.0 explicitly allows commercial use, making this suitable for any deployment scenario.
 
+## Fallback Strategy
+
+If Parakeet becomes unavailable or licensing changes, the fallback is **OpenAI Whisper (small or base model)**:
+
+- **Whisper Small**: 460MB, good accuracy, fully MIT licensed
+- **Whisper Base**: 140MB, acceptable accuracy for basic dictation
+
+The sidecar architecture abstracts the ASR backend through a common interface (`asr.transcribe`), allowing model swapping without API changes. To switch:
+
+1. Update `MODEL_MANIFEST.json` with Whisper model details
+2. Implement Whisper adapter in sidecar's ASR module
+3. No changes needed to Rust core or IPC protocol
+
 ## Consequences
 
 ### Positive
@@ -92,6 +105,24 @@ We need to select an automatic speech recognition (ASR) backend for the voice in
 - Document NeMo integration clearly
 - Implement robust download with progress feedback
 - Monitor NVIDIA's model updates for improvements
+
+## Performance Characteristics
+
+| Metric | Parakeet TDT 0.6B | Whisper Small | Whisper Base |
+|--------|-------------------|---------------|--------------|
+| Model Size | ~2.5GB | ~460MB | ~140MB |
+| Parameters | 600M | 244M | 74M |
+| CPU Latency (10s audio) | ~2-4s | ~4-8s | ~2-4s |
+| GPU Latency (10s audio) | <1s | ~1-2s | <1s |
+| Memory (CPU) | ~4GB | ~2GB | ~1GB |
+| Memory (GPU) | ~2GB | ~1GB | ~512MB |
+| WER (English) | ~5% | ~7% | ~10% |
+
+**Notes:**
+- Latency measured on typical consumer hardware (8-core CPU, 8GB RAM)
+- GPU measurements on NVIDIA RTX 3060 or equivalent
+- WER (Word Error Rate) approximate; varies by accent/domain
+- CPU-first baseline is the MVP requirement; GPU is optional optimization
 
 ## Implementation Notes
 
