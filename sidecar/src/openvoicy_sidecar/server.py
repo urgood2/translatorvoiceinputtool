@@ -7,10 +7,22 @@ import sys
 from typing import Any
 
 from . import __version__
+from .audio import (
+    DeviceNotFoundError,
+    MicPermissionError,
+    handle_audio_list_devices,
+    handle_audio_set_device,
+)
 from .protocol import (
+    ERROR_DEVICE_NOT_FOUND,
     ERROR_INTERNAL,
+    ERROR_INVALID_REQUEST,
     ERROR_METHOD_NOT_FOUND,
+    ERROR_MIC_PERMISSION,
+    ERROR_PARSE_ERROR,
     MAX_LINE_LENGTH,
+    InvalidRequestError,
+    ParseError,
     Request,
     log,
     make_error,
@@ -71,6 +83,8 @@ HANDLERS: dict[str, Any] = {
     "system.ping": handle_system_ping,
     "system.info": handle_system_info,
     "system.shutdown": handle_system_shutdown,
+    "audio.list_devices": handle_audio_list_devices,
+    "audio.set_device": handle_audio_set_device,
 }
 
 
@@ -106,14 +120,25 @@ def run_server() -> None:
             # Parse the request
             try:
                 request = parse_line(line)
-            except ValueError as e:
+            except ParseError as e:
                 log(f"Parse error: {e}")
-                # Send error response with null id
                 response = make_error(
                     None,
-                    -32700,  # Parse error
+                    ERROR_PARSE_ERROR,
                     str(e),
                     "E_INTERNAL",
+                    {"reason": "JSON syntax error"},
+                )
+                write_response(response)
+                continue
+            except InvalidRequestError as e:
+                log(f"Invalid request: {e}")
+                response = make_error(
+                    None,
+                    ERROR_INVALID_REQUEST,
+                    str(e),
+                    "E_INVALID_PARAMS",
+                    {"reason": "Invalid JSON-RPC structure"},
                 )
                 write_response(response)
                 continue
@@ -140,6 +165,23 @@ def run_server() -> None:
                     f"Method not found: {request.method}",
                     "E_METHOD_NOT_FOUND",
                     {"method": request.method},
+                )
+            except MicPermissionError as e:
+                log(f"Microphone permission denied: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_MIC_PERMISSION,
+                    str(e),
+                    "E_MIC_PERMISSION",
+                )
+            except DeviceNotFoundError as e:
+                log(f"Device not found: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_DEVICE_NOT_FOUND,
+                    str(e),
+                    "E_DEVICE_NOT_FOUND",
+                    {"device_uid": e.device_uid} if e.device_uid else None,
                 )
             except Exception as e:
                 log(f"Internal error handling {request.method}: {e}")

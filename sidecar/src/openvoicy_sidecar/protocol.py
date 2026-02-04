@@ -112,11 +112,24 @@ def make_success(request_id: str | int | None, result: Any) -> Response:
     return Response(id=request_id, result=result)
 
 
+class ParseError(Exception):
+    """Raised for JSON parse errors (code -32700)."""
+
+    pass
+
+
+class InvalidRequestError(Exception):
+    """Raised for invalid JSON-RPC structure (code -32600)."""
+
+    pass
+
+
 def parse_line(line: str) -> Request | None:
     """Parse a line of NDJSON into a Request.
 
     Returns None if the line is empty or whitespace only.
-    Raises ValueError for parse errors.
+    Raises ParseError for JSON syntax errors.
+    Raises InvalidRequestError for JSON-RPC structure errors.
     """
     line = line.strip()
     if not line:
@@ -125,16 +138,24 @@ def parse_line(line: str) -> Request | None:
     try:
         data = json.loads(line)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON: {e}") from e
+        raise ParseError(f"Invalid JSON: {e}") from e
 
     if not isinstance(data, dict):
-        raise ValueError("Request must be a JSON object")
+        raise InvalidRequestError("Request must be a JSON object")
 
     if data.get("jsonrpc") != "2.0":
-        raise ValueError("Invalid or missing jsonrpc version")
+        raise InvalidRequestError("Invalid or missing jsonrpc version")
 
     if "method" not in data:
-        raise ValueError("Missing method field")
+        raise InvalidRequestError("Missing method field")
+
+    if not isinstance(data.get("method"), str):
+        raise InvalidRequestError("Method must be a string")
+
+    # params must be object or absent
+    params = data.get("params")
+    if params is not None and not isinstance(params, dict):
+        raise InvalidRequestError("Params must be an object if present")
 
     return Request.from_dict(data)
 

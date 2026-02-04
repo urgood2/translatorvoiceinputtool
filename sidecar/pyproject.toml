@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Voice Input Tool Authors" }]
-dependencies = []
+dependencies = [
+    "sounddevice>=0.4.6",
+]
 
 [project.scripts]
 openvoicy-sidecar = "openvoicy_sidecar.__main__:main"
