@@ -1,0 +1,66 @@
+{
+  "schema_version": "1",
+  "model_id": "parakeet-tdt-0.6b-v3",
+  "display_name": "NVIDIA Parakeet TDT 0.6B v3",
+  "source": "nvidia/parakeet-tdt-0.6b-v3",
+  "source_url": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+  "revision": "6d590f77001d318fb17a0b5bf7ee329a91b52598",
+  "license": {
+    "spdx_id": "CC-BY-4.0",
+    "name": "Creative Commons Attribution 4.0 International",
+    "url": "https://creativecommons.org/licenses/by/4.0/legalcode.en",
+    "redistribution_allowed": true,
+    "attribution_required": true,
+    "commercial_use_allowed": true
+  },
+  "description": "600M parameter multilingual ASR model supporting 25 European languages with automatic language detection, punctuation, and timestamps",
+  "supported_languages": [
+    "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de",
+    "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk",
+    "sl", "es", "sv", "ru", "uk"
+  ],
+  "architecture": {
+    "type": "FastConformer-TDT",
+    "encoder": "FastConformer with linearly scalable attention",
+    "decoder": "TDT (Token Duration Transducer)",
+    "parameters": "600M",
+    "framework": "NeMo 2.4"
+  },
+  "requirements": {
+    "min_ram_gb": 2,
+    "audio_format": "wav/flac",
+    "sample_rate_hz": 16000,
+    "channels": 1
+  },
+  "files": [
+    {
+      "path": "parakeet-tdt-0.6b-v3.nemo",
+      "size_bytes": 2695000000,
+      "sha256": "VERIFY_ON_FIRST_DOWNLOAD",
+      "description": "NeMo model archive containing weights, config, and tokenizer"
+    },
+    {
+      "path": "README.md",
+      "size_bytes": 39526,
+      "sha256": "VERIFY_ON_FIRST_DOWNLOAD",
+      "description": "Model documentation"
+    }
+  ],
+  "total_size_bytes": 2695039526,
+  "mirrors": [
+    {
+      "provider": "huggingface",
+      "url": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/6d590f77001d318fb17a0b5bf7ee329a91b52598/parakeet-tdt-0.6b-v3.nemo",
+      "auth_required": false
+    }
+  ],
+  "verification": {
+    "sha256_verified": false,
+    "license_verified": true,
+    "license_verified_date": "2026-02-04",
+    "redistribution_verified": true,
+    "notes": "CC-BY-4.0 permits redistribution with attribution. SHA256 hashes to be verified on first download and updated in manifest."
+  },
+  "attribution": "NVIDIA Corporation. Model available under CC-BY-4.0 license.",
+  "last_updated": "2026-02-04"
+}

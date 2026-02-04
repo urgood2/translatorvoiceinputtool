@@ -1,0 +1,34 @@
+[project]
+name = "openvoicy-sidecar"
+version = "0.1.0"
+description = "Voice-to-text ASR sidecar for the Voice Input Tool"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Voice Input Tool Authors" }]
+dependencies = []
+
+[project.scripts]
+openvoicy-sidecar = "openvoicy_sidecar.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openvoicy_sidecar"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]  # Line length handled by formatter
+
+[tool.ruff.lint.isort]
+known-first-party = ["openvoicy_sidecar"]
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
