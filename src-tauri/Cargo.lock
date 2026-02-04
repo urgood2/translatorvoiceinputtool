@@ -3972,6 +3972,7 @@ dependencies = [
  "log",
  "once_cell",
  "phf 0.11.3",
+ "png",
  "serde",
  "serde_json",
  "tauri",
