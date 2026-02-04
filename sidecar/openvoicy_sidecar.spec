@@ -12,9 +12,16 @@ Build command:
     pyinstaller openvoicy_sidecar.spec
 
 Output: dist/openvoicy-sidecar (or openvoicy-sidecar.exe on Windows)
+
+Platform support:
+- Linux x64: bundles system PortAudio
+- macOS x64/arm64: uses sounddevice's bundled PortAudio
+- Windows x64: uses sounddevice's bundled PortAudio
 """
 
 import sys
+import os
+import platform
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 block_cipher = None
@@ -23,13 +30,33 @@ block_cipher = None
 sounddevice_datas = collect_data_files('sounddevice')
 sounddevice_binaries = collect_dynamic_libs('sounddevice')
 
-# Add system PortAudio library (Linux)
-import platform
-if platform.system() == 'Linux':
-    portaudio_lib = '/lib/x86_64-linux-gnu/libportaudio.so.2'
-    import os
-    if os.path.exists(portaudio_lib):
-        sounddevice_binaries.append((portaudio_lib, '.'))
+# Platform-specific binary bundling
+current_os = platform.system()
+current_arch = platform.machine()
+
+if current_os == 'Linux':
+    # Linux: bundle system PortAudio if available
+    # Check common locations for different distros
+    portaudio_paths = [
+        '/lib/x86_64-linux-gnu/libportaudio.so.2',      # Debian/Ubuntu x64
+        '/usr/lib/x86_64-linux-gnu/libportaudio.so.2',  # Alternative location
+        '/lib/aarch64-linux-gnu/libportaudio.so.2',    # Debian/Ubuntu arm64
+        '/usr/lib/libportaudio.so.2',                   # Generic
+        '/usr/lib64/libportaudio.so.2',                 # RHEL/Fedora
+    ]
+    for lib_path in portaudio_paths:
+        if os.path.exists(lib_path):
+            sounddevice_binaries.append((lib_path, '.'))
+            break
+
+elif current_os == 'Darwin':
+    # macOS: sounddevice bundles PortAudio, but ensure it's collected
+    # Also need to handle universal binary considerations
+    pass  # collect_dynamic_libs should handle this
+
+elif current_os == 'Windows':
+    # Windows: sounddevice bundles PortAudio DLLs
+    pass  # collect_dynamic_libs should handle this
 
 # Add the openvoicy_sidecar package
 package_datas = [('src/openvoicy_sidecar', 'openvoicy_sidecar')]
