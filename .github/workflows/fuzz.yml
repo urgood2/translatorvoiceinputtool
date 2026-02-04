@@ -1,0 +1,84 @@
+name: Fuzz Tests
+
+on:
+  schedule:
+    # Run weekly on Sundays at 2am UTC
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Fuzz duration in seconds'
+        type: number
+        default: 300
+
+jobs:
+  fuzz-protocol-python:
+    name: Fuzz Python Protocol Parser
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        working-directory: sidecar
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+          pip install hypothesis
+
+      - name: Run hypothesis fuzz tests
+        working-directory: sidecar
+        run: |
+          python -m pytest tests/fuzz/ -v --hypothesis-seed=random \
+            --hypothesis-deadline=${{ inputs.duration || 300 }}000 \
+            || true  # Don't fail the workflow on fuzz failures
+
+      - name: Upload fuzz results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-results-python
+          path: |
+            sidecar/.hypothesis/
+            sidecar/fuzz-*.log
+
+  fuzz-protocol-rust:
+    name: Fuzz Rust Protocol Parser
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev
+
+      - name: Run cargo fuzz
+        working-directory: src-tauri
+        run: |
+          # Run fuzz target if it exists, otherwise skip
+          if [ -d "fuzz" ]; then
+            cargo +nightly fuzz run fuzz_ipc_parser -- -max_total_time=${{ inputs.duration || 300 }}
+          else
+            echo "No fuzz targets found, skipping"
+          fi
+        continue-on-error: true
+
+      - name: Upload fuzz corpus
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-corpus-rust
+          path: src-tauri/fuzz/corpus/

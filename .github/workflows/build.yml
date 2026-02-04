@@ -1,0 +1,187 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Create release build'
+        type: boolean
+        default: false
+
+jobs:
+  build-sidecar:
+    name: Build Sidecar (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            artifact-name: sidecar-linux-x64
+          - os: windows-latest
+            target: windows-x64
+            artifact-name: sidecar-windows-x64
+          - os: macos-latest
+            target: macos-x64
+            artifact-name: sidecar-macos-x64
+          - os: macos-14
+            target: macos-arm64
+            artifact-name: sidecar-macos-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyInstaller and dependencies
+        working-directory: sidecar
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -e .
+
+      - name: Build sidecar binary
+        working-directory: sidecar
+        run: |
+          pyinstaller --onefile --name openvoicy-sidecar src/openvoicy_sidecar/__main__.py
+
+      - name: Generate manifest
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cat > artifacts/manifest.json << EOF
+          {
+            "component": "sidecar",
+            "version": "${{ github.sha }}",
+            "git_sha": "${{ github.sha }}",
+            "git_branch": "${{ github.ref_name }}",
+            "build_timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "python_version": "$(python --version | cut -d' ' -f2)",
+            "platform": "${{ matrix.target }}",
+            "sidecar_hash": "$(sha256sum sidecar/dist/openvoicy-sidecar* 2>/dev/null | head -1 | cut -d' ' -f1 || sha256sum.exe sidecar/dist/openvoicy-sidecar* 2>/dev/null | head -1 | cut -d' ' -f1 || echo 'unknown')"
+          }
+          EOF
+          cp sidecar/dist/openvoicy-sidecar* artifacts/ 2>/dev/null || true
+
+      - name: Upload sidecar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: artifacts/
+
+  build-app:
+    name: Build App (${{ matrix.target }})
+    needs: build-sidecar
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux
+            sidecar-artifact: sidecar-linux-x64
+          - os: windows-latest
+            target: windows
+            sidecar-artifact: sidecar-windows-x64
+          - os: macos-latest
+            target: macos-x64
+            sidecar-artifact: sidecar-macos-x64
+          - os: macos-14
+            target: macos-arm64
+            sidecar-artifact: sidecar-macos-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download sidecar artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.sidecar-artifact }}
+          path: src-tauri/binaries/
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target ${{ matrix.target == 'macos-arm64' && 'aarch64-apple-darwin' || '' }}
+
+      - name: Generate app manifest
+        shell: bash
+        run: |
+          cat > src-tauri/target/release/bundle/manifest.json << EOF
+          {
+            "component": "app",
+            "app_version": "0.1.0",
+            "git_sha": "${{ github.sha }}",
+            "git_branch": "${{ github.ref_name }}",
+            "build_timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "rust_version": "$(rustc --version | cut -d' ' -f2)",
+            "node_version": "$(node --version)",
+            "platform": "${{ matrix.target }}",
+            "arch": "${{ matrix.target == 'macos-arm64' && 'arm64' || 'x64' }}"
+          }
+          EOF
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.target }}
+          path: |
+            src-tauri/target/release/bundle/**/*
+            !src-tauri/target/release/bundle/**/deps/**
+
+  # Release job only runs on workflow_dispatch with release=true
+  create-release:
+    name: Create Release
+    if: github.event.inputs.release == 'true'
+    needs: build-app
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts/
+
+      - name: Create release bundle
+        run: |
+          mkdir -p release
+          # Organize artifacts by platform
+          for dir in release-artifacts/app-*; do
+            platform=$(basename "$dir" | sed 's/app-//')
+            mkdir -p "release/$platform"
+            cp -r "$dir"/* "release/$platform/" 2>/dev/null || true
+          done
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: openvoicy-release-${{ github.sha }}
+          path: release/
