@@ -10,3 +10,21 @@ __pycache__/
 *.pyc
 node_modules/
 .env*
+
+# Build outputs
+dist/
+target/
+
+# Tauri
+src-tauri/target/
+
+# Bun
+bun.lockb
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# Local development
+.tauri/
