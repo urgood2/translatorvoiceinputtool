@@ -5,12 +5,14 @@
 
 use std::sync::Mutex;
 
-use tauri::{Manager, State};
+use tauri::Manager;
 
 mod capabilities;
+mod commands;
 mod config;
 mod focus;
 mod history;
+mod hotkey;
 mod injection;
 mod ipc;
 mod recording;
@@ -18,110 +20,11 @@ mod sidecar;
 mod state;
 
 use history::TranscriptHistory;
-use sidecar::{SidecarManager, SidecarStatus};
+use sidecar::SidecarManager;
 use state::AppStateManager;
 
-/// Global application state
-struct TauriAppState {
-    sidecar: Mutex<SidecarManager>,
-    state_manager: AppStateManager,
-    transcript_history: TranscriptHistory,
-}
-
-/// Simple echo command for testing Rust-JS communication
-#[tauri::command]
-fn echo(message: String) -> String {
-    format!("Echo from Rust: {}", message)
-}
-
-/// Get the current sidecar status
-#[tauri::command]
-fn get_sidecar_status(state: State<TauriAppState>) -> SidecarStatus {
-    state.sidecar.lock().unwrap().get_status()
-}
-
-/// Start the sidecar process
-#[tauri::command]
-fn start_sidecar(state: State<TauriAppState>) -> Result<SidecarStatus, String> {
-    let manager = state.sidecar.lock().unwrap();
-    manager.start()?;
-    Ok(manager.get_status())
-}
-
-/// Stop the sidecar process
-#[tauri::command]
-fn stop_sidecar(state: State<TauriAppState>) -> Result<SidecarStatus, String> {
-    let manager = state.sidecar.lock().unwrap();
-    manager.stop()?;
-    Ok(manager.get_status())
-}
-
-/// Retry starting the sidecar after failure
-#[tauri::command]
-fn retry_sidecar(state: State<TauriAppState>) -> Result<SidecarStatus, String> {
-    let manager = state.sidecar.lock().unwrap();
-    manager.retry()?;
-    Ok(manager.get_status())
-}
-
-/// Get platform capabilities for the current system
-#[tauri::command]
-fn get_capabilities() -> capabilities::Capabilities {
-    capabilities::Capabilities::detect()
-}
-
-/// Get capability issues that need user attention
-#[tauri::command]
-fn get_capability_issues() -> Vec<capabilities::CapabilityIssue> {
-    capabilities::Capabilities::detect().issues()
-}
-
-/// Get the current application state
-#[tauri::command]
-fn get_app_state(state: State<TauriAppState>) -> state::StateEvent {
-    state.state_manager.get_event()
-}
-
-/// Set whether hotkey listening is enabled (pause/resume)
-#[tauri::command]
-fn set_app_enabled(state: State<TauriAppState>, enabled: bool) {
-    state.state_manager.set_enabled(enabled);
-}
-
-/// Check if recording can start (for UI indication)
-#[tauri::command]
-fn can_start_recording(state: State<TauriAppState>) -> Result<(), state::CannotRecordReason> {
-    state.state_manager.can_start_recording()
-}
-
-/// Get transcript history (newest first)
-#[tauri::command]
-fn get_transcript_history(state: State<TauriAppState>) -> Vec<history::TranscriptEntry> {
-    state.transcript_history.all()
-}
-
-/// Copy a specific transcript to clipboard by ID
-#[tauri::command]
-fn copy_transcript(state: State<TauriAppState>, id: uuid::Uuid) -> Result<String, String> {
-    state
-        .transcript_history
-        .copy_by_id(id)
-        .ok_or_else(|| "Transcript not found or clipboard error".to_string())
-}
-
-/// Copy the most recent transcript to clipboard
-#[tauri::command]
-fn copy_last_transcript(state: State<TauriAppState>) -> Result<Option<String>, String> {
-    if state.transcript_history.is_empty() {
-        return Ok(None);
-    }
-
-    state
-        .transcript_history
-        .copy_last()
-        .map(Some)
-        .ok_or_else(|| "Clipboard error".to_string())
-}
+/// Sidecar manager wrapper for Tauri state.
+struct SidecarState(Mutex<SidecarManager>);
 
 /// Configure and run the Tauri application
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -131,31 +34,57 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(TauriAppState {
-            sidecar: Mutex::new(SidecarManager::new()),
-            state_manager: AppStateManager::new(),
-            transcript_history: TranscriptHistory::new(),
-        })
+        // Manage state components separately for cleaner command signatures
+        .manage(SidecarState(Mutex::new(SidecarManager::new())))
+        .manage(AppStateManager::new())
+        .manage(TranscriptHistory::new())
         .invoke_handler(tauri::generate_handler![
-            echo,
-            get_sidecar_status,
-            start_sidecar,
-            stop_sidecar,
-            retry_sidecar,
-            get_capabilities,
-            get_capability_issues,
-            get_app_state,
-            set_app_enabled,
-            can_start_recording,
-            get_transcript_history,
-            copy_transcript,
-            copy_last_transcript,
+            // State commands
+            commands::get_app_state,
+            commands::get_capabilities,
+            commands::get_capability_issues,
+            commands::can_start_recording,
+            commands::run_self_check,
+            // Config commands
+            commands::get_config,
+            commands::update_config,
+            commands::reset_config_to_defaults,
+            // Audio commands
+            commands::list_audio_devices,
+            commands::set_audio_device,
+            commands::start_mic_test,
+            commands::stop_mic_test,
+            // Model commands
+            commands::get_model_status,
+            commands::download_model,
+            commands::purge_model_cache,
+            // History commands
+            commands::get_transcript_history,
+            commands::copy_transcript,
+            commands::copy_last_transcript,
+            commands::clear_history,
+            // Hotkey commands
+            commands::get_hotkey_status,
+            commands::set_hotkey,
+            // Replacement commands
+            commands::get_replacement_rules,
+            commands::set_replacement_rules,
+            commands::preview_replacement,
+            commands::get_available_presets,
+            commands::load_preset,
+            // Control commands
+            commands::toggle_enabled,
+            commands::is_enabled,
+            commands::set_enabled,
+            // Diagnostics commands
+            commands::generate_diagnostics,
+            commands::get_recent_logs,
         ])
         .setup(|app| {
             // Set up sidecar manager with app handle
             {
-                let state = app.state::<TauriAppState>();
-                let mut manager = state.sidecar.lock().unwrap();
+                let sidecar_state = app.state::<SidecarState>();
+                let mut manager = sidecar_state.0.lock().unwrap();
                 manager.set_app_handle(app.handle().clone());
 
                 // Configure sidecar path based on app resources
