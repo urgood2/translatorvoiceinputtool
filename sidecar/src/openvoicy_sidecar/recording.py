@@ -42,6 +42,10 @@ DEFAULT_MAX_DURATION_SEC = 120  # 2 minutes max recording
 # At 16kHz mono, 1024 samples = 64ms per chunk
 CHUNK_SIZE = 1024
 
+# Audio level emission
+LEVEL_EMISSION_INTERVAL_MS = 80  # Emit levels every 80ms
+LEVEL_BUFFER_SIZE = 1600  # ~100ms of audio at 16kHz
+
 
 class RecordingState(Enum):
     """Recording session state."""
@@ -134,6 +138,11 @@ class AudioRecorder:
         self._stream: Any = None  # sounddevice.InputStream
         self._lock = threading.Lock()
 
+        # Audio level emission state
+        self._level_buffer: deque = deque(maxlen=LEVEL_BUFFER_SIZE)
+        self._level_thread: threading.Thread | None = None
+        self._emit_levels = False
+
     @property
     def state(self) -> RecordingState:
         """Get current recording state."""
@@ -200,6 +209,12 @@ class AudioRecorder:
                 self._stream.start()
                 self._state = RecordingState.RECORDING
 
+                # Start level emission thread
+                self._emit_levels = True
+                self._level_buffer.clear()
+                self._level_thread = threading.Thread(target=self._level_emit_loop, daemon=True)
+                self._level_thread.start()
+
                 log(f"Recording started: session={session_id}, device={device_uid or 'default'}")
                 return session_id
 
@@ -230,6 +245,12 @@ class AudioRecorder:
                 raise RuntimeError(f"Invalid session ID: {session_id}")
 
             self._state = RecordingState.STOPPING
+
+        # Stop level emission
+        self._emit_levels = False
+        if self._level_thread is not None:
+            self._level_thread.join(timeout=0.5)
+            self._level_thread = None
 
         # Stop stream outside lock to avoid deadlock with callback
         if self._stream is not None:
@@ -267,6 +288,12 @@ class AudioRecorder:
                 raise RuntimeError(f"Invalid session ID: {session_id}")
 
             self._state = RecordingState.STOPPING
+
+        # Stop level emission
+        self._emit_levels = False
+        if self._level_thread is not None:
+            self._level_thread.join(timeout=0.5)
+            self._level_thread = None
 
         # Stop stream outside lock
         if self._stream is not None:
@@ -312,8 +339,41 @@ class AudioRecorder:
                 return
             session = self._session
 
+        # Extract mono data
+        mono = indata[:, 0] if indata.ndim > 1 else indata.flatten()
+
         # Add data outside main lock (session has its own lock)
-        session.add_chunk(indata[:, 0] if indata.ndim > 1 else indata.flatten())
+        session.add_chunk(mono)
+
+        # Also add to level buffer for emission
+        self._level_buffer.extend(mono)
+
+    def _level_emit_loop(self) -> None:
+        """Background loop that emits audio level events during recording."""
+        from .notifications import calculate_audio_levels, emit_audio_level
+
+        while self._emit_levels:
+            time.sleep(LEVEL_EMISSION_INTERVAL_MS / 1000)
+
+            if not self._emit_levels:
+                break
+
+            # Get session ID and buffer snapshot
+            with self._lock:
+                if self._session is None:
+                    continue
+                session_id = self._session.session_id
+
+            # Calculate levels from buffer
+            if self._level_buffer:
+                audio = np.array(list(self._level_buffer), dtype=np.float32)
+                rms, peak = calculate_audio_levels(audio)
+                emit_audio_level(
+                    rms=rms,
+                    peak=peak,
+                    source="recording",
+                    session_id=session_id,
+                )
 
     def _get_device_index(self, device_uid: str) -> int | None:
         """Get sounddevice device index from our UID.
@@ -453,9 +513,15 @@ def handle_recording_stop(request: Request) -> dict[str, Any]:
     try:
         audio_data, duration_ms = recorder.stop(session_id)
 
-        # Store audio data for transcription (will be consumed by transcribe handler)
-        # For now, we just return metadata
-        _store_audio_for_transcription(session_id, audio_data, recorder.sample_rate)
+        # Emit status change
+        from .notifications import emit_status_changed
+
+        emit_status_changed("transcribing", "Processing audio...")
+
+        # Start async transcription (this returns immediately)
+        from .notifications import transcribe_session_async
+
+        transcribe_session_async(session_id, audio_data, recorder.sample_rate)
 
         return {
             "audio_duration_ms": duration_ms,
@@ -494,6 +560,13 @@ def handle_recording_cancel(request: Request) -> dict[str, Any]:
 
     try:
         recorder.cancel(session_id)
+
+        # Mark session as cancelled to prevent any notifications
+        from .notifications import get_session_tracker
+
+        tracker = get_session_tracker()
+        tracker.mark_cancelled(session_id)
+
         return {"cancelled": True, "session_id": session_id}
     except RuntimeError as e:
         error_msg = str(e).lower()

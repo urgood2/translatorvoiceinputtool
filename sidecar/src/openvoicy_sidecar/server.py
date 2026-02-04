@@ -13,6 +13,14 @@ from .audio import (
     handle_audio_list_devices,
     handle_audio_set_device,
 )
+from .audio_meter import (
+    MeterAlreadyRunningError,
+    MeterError,
+    MeterNotRunningError,
+    handle_audio_meter_start,
+    handle_audio_meter_status,
+    handle_audio_meter_stop,
+)
 from .recording import (
     AlreadyRecordingError,
     InvalidSessionError,
@@ -42,6 +50,17 @@ from .model_cache import (
     handle_model_get_status,
     handle_model_purge_cache,
 )
+from .asr import (
+    ASRError,
+    DeviceUnavailableError,
+    ModelLoadError,
+    ModelNotFoundError,
+    NotInitializedError,
+    TranscriptionError,
+    handle_asr_initialize,
+    handle_asr_status,
+    handle_asr_transcribe,
+)
 from .protocol import (
     ERROR_ALREADY_RECORDING,
     ERROR_AUDIO_IO,
@@ -49,6 +68,7 @@ from .protocol import (
     ERROR_DEVICE_NOT_FOUND,
     ERROR_DISK_FULL,
     ERROR_INTERNAL,
+    ERROR_INVALID_PARAMS,
     ERROR_INVALID_REQUEST,
     ERROR_INVALID_SESSION,
     ERROR_METHOD_NOT_FOUND,
@@ -58,6 +78,7 @@ from .protocol import (
     ERROR_NOT_READY,
     ERROR_NOT_RECORDING,
     ERROR_PARSE_ERROR,
+    ERROR_TRANSCRIBE,
     MAX_LINE_LENGTH,
     InvalidRequestError,
     ParseError,
@@ -123,6 +144,9 @@ HANDLERS: dict[str, Any] = {
     "system.shutdown": handle_system_shutdown,
     "audio.list_devices": handle_audio_list_devices,
     "audio.set_device": handle_audio_set_device,
+    "audio.meter_start": handle_audio_meter_start,
+    "audio.meter_stop": handle_audio_meter_stop,
+    "audio.meter_status": handle_audio_meter_status,
     "recording.start": handle_recording_start,
     "recording.stop": handle_recording_stop,
     "recording.cancel": handle_recording_cancel,
@@ -135,6 +159,9 @@ HANDLERS: dict[str, Any] = {
     "model.get_status": handle_model_get_status,
     "model.download": handle_model_download,
     "model.purge_cache": handle_model_purge_cache,
+    "asr.initialize": handle_asr_initialize,
+    "asr.status": handle_asr_status,
+    "asr.transcribe": handle_asr_transcribe,
 }
 
 
@@ -265,6 +292,22 @@ def run_server() -> None:
                     str(e),
                     e.code,
                 )
+            except MeterAlreadyRunningError as e:
+                log(f"Meter already running: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_AUDIO_IO,
+                    str(e),
+                    "E_METER_RUNNING",
+                )
+            except MeterError as e:
+                log(f"Meter error: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_AUDIO_IO,
+                    str(e),
+                    e.code,
+                )
             except ReplacementError as e:
                 log(f"Replacement error: {e}")
                 response = make_error(
@@ -315,6 +358,55 @@ def run_server() -> None:
                     ERROR_MODEL_LOAD,
                     str(e),
                     e.code if hasattr(e, "code") else "E_MODEL",
+                )
+            except ModelNotFoundError as e:
+                log(f"Model not found: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_MODEL_LOAD,
+                    str(e),
+                    "E_MODEL_NOT_FOUND",
+                )
+            except ModelLoadError as e:
+                log(f"Model load error: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_MODEL_LOAD,
+                    str(e),
+                    e.code,
+                )
+            except DeviceUnavailableError as e:
+                log(f"Device unavailable: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_NOT_READY,
+                    str(e),
+                    "E_DEVICE_UNAVAILABLE",
+                    {"requested_device": e.requested_device},
+                )
+            except NotInitializedError as e:
+                log(f"ASR not initialized: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_NOT_READY,
+                    str(e),
+                    "E_NOT_INITIALIZED",
+                )
+            except TranscriptionError as e:
+                log(f"Transcription error: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_TRANSCRIBE,
+                    str(e),
+                    "E_TRANSCRIPTION",
+                )
+            except ASRError as e:
+                log(f"ASR error: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_MODEL_LOAD,
+                    str(e),
+                    e.code,
                 )
             except Exception as e:
                 log(f"Internal error handling {request.method}: {e}")

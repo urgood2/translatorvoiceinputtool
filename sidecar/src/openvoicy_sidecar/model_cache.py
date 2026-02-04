@@ -605,6 +605,20 @@ class ModelCacheManager:
         self._status = ModelStatus.MISSING
         return False
 
+    def get_model_path(self, manifest: ModelManifest) -> Path:
+        """Get the path to a cached model.
+
+        Args:
+            manifest: Model manifest.
+
+        Returns:
+            Path to model directory.
+
+        Note:
+            Does not verify the cache is valid - use check_cache first.
+        """
+        return get_cache_directory() / manifest.model_id
+
     def download_model(
         self,
         manifest: ModelManifest,

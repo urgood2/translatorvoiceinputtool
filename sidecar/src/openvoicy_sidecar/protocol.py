@@ -177,6 +177,19 @@ def write_notification(notification: Notification) -> None:
     sys.stdout.flush()
 
 
+def write_event(event_type: str, data: dict[str, Any]) -> None:
+    """Write an event notification to stdout.
+
+    Events are JSON-RPC notifications with method "event.{type}".
+
+    Args:
+        event_type: Event type (e.g., "status_changed", "error").
+        data: Event data.
+    """
+    notification = Notification(method=f"event.{event_type}", params=data)
+    write_notification(notification)
+
+
 def log(message: str) -> None:
     """Log a message to stderr."""
     print(message, file=sys.stderr, flush=True)
