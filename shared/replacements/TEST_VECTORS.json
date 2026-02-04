@@ -1,0 +1,165 @@
+{
+  "version": "1.0.0",
+  "description": "Shared test vectors for replacement rules. Both Python (sidecar) and TypeScript (UI) should produce identical results.",
+  "test_cases": [
+    {
+      "name": "simple literal replacement",
+      "input": "I said BTW yesterday",
+      "rules": [
+        {"id": "1", "enabled": true, "kind": "literal", "pattern": "BTW", "replacement": "by the way", "word_boundary": true, "case_sensitive": false}
+      ],
+      "expected": "I said by the way yesterday"
+    },
+    {
+      "name": "case insensitive literal",
+      "input": "Please respond asap",
+      "rules": [
+        {"id": "1", "enabled": true, "kind": "literal", "pattern": "ASAP", "replacement": "as soon as possible", "word_boundary": true, "case_sensitive": false}
+      ],
+      "expected": "Please respond as soon as possible"
+    },
+    {
+      "name": "case sensitive literal (no match)",
+      "input": "Please respond asap",
+      "rules": [
+        {"id": "1", "enabled": true, "kind": "literal", "pattern": "ASAP", "replacement": "as soon as possible", "word_boundary": true, "case_sensitive": true}
+      ],
+      "expected": "Please respond asap"
+    },
+    {
+      "name": "word boundary prevents partial match",
+      "input": "The asaph temple was ancient",
+      "rules": [
+        {"id": "1", "enabled": true, "kind": "literal", "pattern": "asap", "replacement": "as soon as possible", "word_boundary": true, "case_sensitive": false}
+      ],
+      "expected": "The asaph temple was ancient"
+    },
+    {
+      "name": "no word boundary allows partial match",
+      "input": "The asaph temple was ancient",
+      "rules": [
+        {"id": "1", "enabled": true, "kind": "literal", "pattern": "asap", "replacement": "as soon as possible", "word_boundary": false, "case_sensitive": false}
+      ],
+      "expected": "The as soon as possibleh temple was ancient"
+    },
+    {
+      "name": "disabled rule is skipped",
+      "input": "BTW and FYI",
+      "rules": [
+        {"id": "1", "enabled": false, "kind": "literal", "pattern": "BTW", "replacement": "by the way", "word_boundary": true, "case_sensitive": false},
+        {"id": "2", "enabled": true, "kind": "literal", "pattern": "FYI", "replacement": "for your information", "word_boundary": true, "case_sensitive": false}
+      ],
+      "expected": "BTW and for your information"
+    },
+    {
+      "name": "multiple rules applied in order",
+      "input": "Hello world goodbye world",
+      "rules": [
+        {"id": "1", "enabled": true, "kind": "literal", "pattern": "Hello", "replacement": "Hi", "word_boundary": true, "case_sensitive": false},
+        {"id": "2", "enabled": true, "kind": "literal", "pattern": "world", "replacement": "universe", "word_boundary": true, "case_sensitive": false},
+        {"id": "3", "enabled": true, "kind": "literal", "pattern": "goodbye", "replacement": "farewell", "word_boundary": true, "case_sensitive": false}
+      ],
+      "expected": "Hi universe farewell universe"
+    },
+    {
+      "name": "single pass - no recursive replacement",
+      "input": "AAA",
+      "rules": [
+        {"id": "1", "enabled": true, "kind": "literal", "pattern": "AAA", "replacement": "BBB", "word_boundary": false, "case_sensitive": true},
+        {"id": "2", "enabled": true, "kind": "literal", "pattern": "BBB", "replacement": "CCC", "word_boundary": false, "case_sensitive": true}
+      ],
+      "expected": "CCC",
+      "note": "Rule 1 replaces AAA with BBB, then Rule 2 replaces BBB with CCC. This is ORDER-based, not recursion."
+    },
+    {
+      "name": "single pass - output from rule 1 not re-processed by rule 1",
+      "input": "A",
+      "rules": [
+        {"id": "1", "enabled": true, "kind": "literal", "pattern": "A", "replacement": "AA", "word_boundary": false, "case_sensitive": true}
+      ],
+      "expected": "AA",
+      "note": "The output 'AA' is not fed back into rule 1. Single pass prevents infinite loops."
+    },
+    {
+      "name": "regex simple replacement",
+      "input": "The price is $100 and $200",
+      "rules": [
+        {"id": "1", "enabled": true, "kind": "regex", "pattern": "\\$\\d+", "replacement": "[PRICE]", "word_boundary": false, "case_sensitive": false}
+      ],
+      "expected": "The price is [PRICE] and [PRICE]"
+    },
+    {
+      "name": "regex with capture groups",
+      "input": "Call me at 555-1234",
+      "rules": [
+        {"id": "1", "enabled": true, "kind": "regex", "pattern": "(\\d{3})-(\\d{4})", "replacement": "(\\1) \\2", "word_boundary": false, "case_sensitive": false}
+      ],
+      "expected": "Call me at (555) 1234"
+    },
+    {
+      "name": "punctuation replacement - period",
+      "input": "Hello period how are you",
+      "rules": [
+        {"id": "1", "enabled": true, "kind": "literal", "pattern": " period", "replacement": ".", "word_boundary": false, "case_sensitive": false}
+      ],
+      "expected": "Hello. how are you"
+    },
+    {
+      "name": "punctuation replacement - multiple",
+      "input": "Hello comma how are you question mark",
+      "rules": [
+        {"id": "1", "enabled": true, "kind": "literal", "pattern": " comma", "replacement": ",", "word_boundary": false, "case_sensitive": false},
+        {"id": "2", "enabled": true, "kind": "literal", "pattern": " question mark", "replacement": "?", "word_boundary": false, "case_sensitive": false}
+      ],
+      "expected": "Hello, how are you?"
+    },
+    {
+      "name": "macro expansion - date",
+      "input": "Meeting scheduled for {{date}}",
+      "rules": [],
+      "expected_pattern": "Meeting scheduled for \\d{4}-\\d{2}-\\d{2}",
+      "note": "Date is in YYYY-MM-DD format"
+    },
+    {
+      "name": "macro expansion - time",
+      "input": "Current time is {{time}}",
+      "rules": [],
+      "expected_pattern": "Current time is \\d{2}:\\d{2}",
+      "note": "Time is in HH:MM 24h format"
+    },
+    {
+      "name": "macro expansion - datetime",
+      "input": "Now is {{datetime}}",
+      "rules": [],
+      "expected_pattern": "Now is \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}",
+      "note": "DateTime is in YYYY-MM-DD HH:MM format"
+    },
+    {
+      "name": "macro expansion - case sensitive",
+      "input": "Wrong case: {{DATE}} vs {{date}}",
+      "rules": [],
+      "expected_pattern": "Wrong case: \\{\\{DATE\\}\\} vs \\d{4}-\\d{2}-\\d{2}",
+      "note": "Only lowercase macros are expanded"
+    },
+    {
+      "name": "unknown macro passes through",
+      "input": "Hello {{unknown_macro}} world",
+      "rules": [],
+      "expected": "Hello {{unknown_macro}} world"
+    },
+    {
+      "name": "empty rules returns normalized text",
+      "input": "  Hello   world  ",
+      "rules": [],
+      "expected": "Hello world",
+      "note": "Normalization collapses whitespace"
+    },
+    {
+      "name": "normalization fixes ASR artifacts",
+      "input": "Hello , world . How are you ?",
+      "rules": [],
+      "expected": "Hello, world. How are you?",
+      "note": "Removes space before punctuation"
+    }
+  ]
+}

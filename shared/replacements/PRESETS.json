@@ -1,0 +1,275 @@
+{
+  "presets": [
+    {
+      "id": "punctuation",
+      "name": "Punctuation",
+      "description": "Convert spoken punctuation to symbols",
+      "rules": [
+        {
+          "id": "period",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " period",
+          "replacement": ".",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'period' to '.'"
+        },
+        {
+          "id": "comma",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " comma",
+          "replacement": ",",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'comma' to ','"
+        },
+        {
+          "id": "question-mark",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " question mark",
+          "replacement": "?",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'question mark' to '?'"
+        },
+        {
+          "id": "exclamation-point",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " exclamation point",
+          "replacement": "!",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'exclamation point' to '!'"
+        },
+        {
+          "id": "exclamation-mark",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " exclamation mark",
+          "replacement": "!",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'exclamation mark' to '!'"
+        },
+        {
+          "id": "colon",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " colon",
+          "replacement": ":",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'colon' to ':'"
+        },
+        {
+          "id": "semicolon",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " semicolon",
+          "replacement": ";",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'semicolon' to ';'"
+        },
+        {
+          "id": "open-quote",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": "open quote ",
+          "replacement": "\"",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'open quote' to '\"'"
+        },
+        {
+          "id": "close-quote",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " close quote",
+          "replacement": "\"",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'close quote' to '\"'"
+        },
+        {
+          "id": "new-line",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " new line",
+          "replacement": "\n",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'new line' to actual newline"
+        }
+      ]
+    },
+    {
+      "id": "common-abbreviations",
+      "name": "Common Abbreviations",
+      "description": "Expand common spoken abbreviations",
+      "rules": [
+        {
+          "id": "btw",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": "BTW",
+          "replacement": "by the way",
+          "word_boundary": true,
+          "case_sensitive": false,
+          "description": "Expand 'BTW' to 'by the way'"
+        },
+        {
+          "id": "fyi",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": "FYI",
+          "replacement": "for your information",
+          "word_boundary": true,
+          "case_sensitive": false,
+          "description": "Expand 'FYI' to 'for your information'"
+        },
+        {
+          "id": "asap",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": "ASAP",
+          "replacement": "as soon as possible",
+          "word_boundary": true,
+          "case_sensitive": false,
+          "description": "Expand 'ASAP' to 'as soon as possible'"
+        },
+        {
+          "id": "eta",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": "ETA",
+          "replacement": "estimated time of arrival",
+          "word_boundary": true,
+          "case_sensitive": false,
+          "description": "Expand 'ETA' to 'estimated time of arrival'"
+        },
+        {
+          "id": "imho",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": "IMHO",
+          "replacement": "in my humble opinion",
+          "word_boundary": true,
+          "case_sensitive": false,
+          "description": "Expand 'IMHO' to 'in my humble opinion'"
+        }
+      ]
+    },
+    {
+      "id": "coding-terms",
+      "name": "Coding Terms",
+      "description": "Convert spoken programming terms to code",
+      "rules": [
+        {
+          "id": "equals-sign",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " equals sign ",
+          "replacement": " = ",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'equals sign' to '='"
+        },
+        {
+          "id": "double-equals",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " double equals ",
+          "replacement": " == ",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'double equals' to '=='"
+        },
+        {
+          "id": "triple-equals",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " triple equals ",
+          "replacement": " === ",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'triple equals' to '==='"
+        },
+        {
+          "id": "arrow-function",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " arrow function ",
+          "replacement": " => ",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'arrow function' to '=>'"
+        },
+        {
+          "id": "open-paren",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " open paren",
+          "replacement": "(",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'open paren' to '('"
+        },
+        {
+          "id": "close-paren",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " close paren",
+          "replacement": ")",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'close paren' to ')'"
+        },
+        {
+          "id": "open-bracket",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " open bracket",
+          "replacement": "[",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'open bracket' to '['"
+        },
+        {
+          "id": "close-bracket",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " close bracket",
+          "replacement": "]",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'close bracket' to ']'"
+        },
+        {
+          "id": "open-brace",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " open brace",
+          "replacement": "{",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'open brace' to '{'"
+        },
+        {
+          "id": "close-brace",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": " close brace",
+          "replacement": "}",
+          "word_boundary": false,
+          "case_sensitive": false,
+          "description": "Convert 'close brace' to '}'"
+        }
+      ]
+    }
+  ]
+}
