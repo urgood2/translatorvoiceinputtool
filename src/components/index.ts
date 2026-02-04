@@ -10,3 +10,6 @@ export { InjectionSettings } from './Settings/InjectionSettings';
 export { SettingsPanel } from './Settings/SettingsPanel';
 export { MicrophoneTest } from './Settings/MicrophoneTest';
 export { ModelSettings } from './Settings/ModelSettings';
+
+// Replacement rule components
+export { ReplacementList, ReplacementEditor, ReplacementPreview, PresetsPanel } from './Replacements';

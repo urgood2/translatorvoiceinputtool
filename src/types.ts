@@ -123,11 +123,23 @@ export interface UiConfig {
   window_height: number;
 }
 
-/** Text replacement rule. */
+/** Text replacement rule kind. */
+export type ReplacementKind = 'literal' | 'regex';
+
+/** Text replacement rule origin. */
+export type ReplacementOrigin = 'user' | 'preset';
+
+/** Text replacement rule (matches IPC protocol). */
 export interface ReplacementRule {
+  id: string;
+  enabled: boolean;
+  kind: ReplacementKind;
   pattern: string;
   replacement: string;
-  enabled: boolean;
+  word_boundary: boolean;
+  case_sensitive: boolean;
+  description?: string;
+  origin?: ReplacementOrigin;
 }
 
 /** Presets configuration. */
