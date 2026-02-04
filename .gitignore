@@ -1,6 +1,9 @@
 # bv (beads viewer) local config and caches
 .bv/
 
+# bd (beads) issue tracker state
+.beads/
+
 # Ephemeral files
 *.log
 *.tmp
