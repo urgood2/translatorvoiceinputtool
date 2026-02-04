@@ -31,3 +31,7 @@ bun.lockb
 
 # Local development
 .tauri/
+
+# PyInstaller build artifacts
+sidecar/build/
+sidecar/dist/
