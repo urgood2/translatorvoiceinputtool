@@ -9,3 +9,4 @@ export { HotkeyConfig } from './Settings/HotkeyConfig';
 export { InjectionSettings } from './Settings/InjectionSettings';
 export { SettingsPanel } from './Settings/SettingsPanel';
 export { MicrophoneTest } from './Settings/MicrophoneTest';
+export { ModelSettings } from './Settings/ModelSettings';
