@@ -17,6 +17,12 @@
 ### Out-of-scope (post-MVP)
 - Wake word / always-listening mode, cloud sync, plugins, multi-model selector beyond Parakeet, automatic updates, deep Wayland portal workarounds (best-effort only).
 
+### Principles (implementation rules)
+- **Stable contracts first:** IPC protocol is the integration boundary; no ad-hoc RPC methods beyond `IPC_PROTOCOL_V1.md`.
+- **“Core loop works without UI”:** UI must never be required to record/transcribe/inject; tray + hotkey are sufficient.
+- **Fail safe, not silent:** if injection fails, put text on clipboard and surface a visible error with next steps.
+- **Pinned reproducibility:** model artifact source and revision must be pinned; downloads must be resumable and checksummed.
+
 ### Definition of Done (MVP release)
 - Fresh install → user can configure mic/hotkey → hold hotkey → speak → release → transcription injected in any app.
 - No unhandled panics/crashes during 1-hour manual soak test.
@@ -51,6 +57,11 @@
 - **E2E flow runs in Rust**: hotkey triggers sidecar; Rust injects text; UI is optional for core loop.
 - **Injection default = clipboard paste** (most reliable for Unicode); “restore clipboard” is configurable.
 - **Config owned by Rust** (atomic writes); Rust pushes changes to sidecar via RPC (`audio.set_device`, `replacements.set_rules`, `asr.initialize`).
+
+### State machine contract (Rust-owned, source of truth)
+- States: `idle → loading (optional) → recording → transcribing → idle` or `error`.
+- A **session_id** is created by Rust at `recording.start` return and remains authoritative through completion/error.
+- Rust must ignore stale notifications (session mismatch) and must not inject twice for one session.
 
 ---
 
@@ -128,6 +139,7 @@
 - **NDJSON**: one JSON object per line.
 - Requests include `id`; responses match `id`.
 - Notifications omit `id`.
+- Implementation requirement: messages MUST be single-line JSON (no embedded newlines); writer must flush after each line; reader must tolerate partial reads and buffer until newline.
 
 ### Standard shapes
 - Request: `{ jsonrpc:"2.0", id:string|number, method:string, params?:object }`
@@ -137,6 +149,7 @@
 ### Methods (Rust → Python)
 - `system.ping` → `{ version: string, protocol: "v1" }`
 - `asr.initialize` `{ model: "parakeet-v3-0.6b", device_pref: "auto"|"cuda"|"cpu" }` → `{ status:"ready" }`
+  - Requirement: `asr.initialize` is idempotent; subsequent calls must be fast and must not reload weights unless model/device preference changed.
 - `audio.list_devices` → `{ devices: [{ id:number, name:string, is_default:boolean, sample_rate:number, channels:number }] }`
 - `audio.set_device` `{ device_id:number|null }` → `{ active_device_id:number|null }`
 - `recording.start` `{ device_id?:number|null }` → `{ session_id:string }`
@@ -153,6 +166,11 @@
 ### Error codes (stable strings)
 - `E_METHOD_NOT_FOUND`, `E_INVALID_PARAMS`, `E_NOT_READY`, `E_MIC_PERMISSION`, `E_DEVICE_NOT_FOUND`, `E_AUDIO_IO`, `E_MODEL_LOAD`, `E_TRANSCRIBE`, `E_INTERNAL`
 
+### Contract clarifications (to make implementation testable)
+- Sidecar must emit **exactly one** of `event.transcription_complete` or `event.transcription_error` per `session_id` that reaches `recording.stop`.
+- `recording.stop` must return quickly (bounded time, e.g., <250ms) and transcription must happen asynchronously afterward.
+- Rust RPC client timeouts must be explicit per method (e.g., `system.ping` short; `asr.initialize` long) and surfaced as actionable error UI.
+
 ---
 
 ## 4) Milestones, Tasks, and Acceptance Criteria (Optimized for 3–5 Agents)
@@ -162,8 +180,10 @@
 
 - M0.1 Create/confirm scaffolding for Tauri 2 + React/Vite/Tailwind; confirm dev run works.
   - AC: `tauri dev` launches window; UI hot reload works; Rust command callable from UI.
+  - AC: platform permissions stubs are present (at minimum, documented placeholders for macOS microphone/accessibility usage strings and Linux/Windows notes).
 - M0.2 Write `shared/ipc/IPC_PROTOCOL_V1.md` (final method names + payloads + examples).
   - AC: All teams implement against this contract; no ad-hoc methods.
+  - AC: Includes at least one example message for each method/notification and one example error response per common error type.
 - M0.3 Add sidecar skeleton + ping handler.
   - AC: Rust spawns sidecar and successfully calls `system.ping`.
 
@@ -176,16 +196,22 @@
 
 - M1.1 JSON-RPC server loop (`server.py`, `protocol.py`) with robust errors and clean EOF exit.
   - AC: unknown method returns `E_METHOD_NOT_FOUND`; invalid payload returns `E_INVALID_PARAMS`.
+  - AC: malformed JSON line returns `E_INVALID_PARAMS` (when possible) and does not crash the process; EOF triggers clean shutdown with exit code 0 (unless in an internal fatal state).
 - M1.2 Device enumeration + set device (`audio.list_devices`, `audio.set_device`).
   - AC: returns devices; handles “no devices” gracefully (empty list + `status=error` detail).
+  - AC: `audio.set_device` validates device existence and returns `E_DEVICE_NOT_FOUND` for invalid IDs.
 - M1.3 Recorder (push-to-talk) with bounded memory (max seconds; ring buffer/deque) at 16kHz mono float32.
   - AC: start/stop works repeatedly; no buffer growth beyond configured cap; device disconnect returns `E_AUDIO_IO`.
+  - AC: if the input device does not support 16kHz mono, recorder must still operate by capturing at a supported rate/channels and converting deterministically to 16kHz mono float32 (conversion strategy documented and unit-tested at the boundary level).
 - M1.4 Parakeet loader + inference (`asr.initialize`, internal transcribe) with CUDA/CPU fallback.
   - AC: model loads once per process; on failure emits `event.status_changed=error` with actionable detail; CPU fallback works.
+  - AC: model download/cache location is deterministic and documented; partial downloads are resumable (or safely retried) and failures are surfaced with next steps (disk space, network, permissions).
 - M1.5 Postprocess + replacements pipeline (macros `@@date`, `@@time`, `@@datetime`; snippet word-boundary replacements).
   - AC: unit tests for replacements + postprocess; prevents recursive replacement loops (max depth or single-pass guarantees).
+  - AC: replacement rules validation rejects invalid patterns/empty keys and reports `E_INVALID_PARAMS` with details.
 - M1.6 Notifications emitted for status transitions + transcription completion/errors.
   - AC: on stop, sidecar returns quickly and later emits exactly one completion/error for the session.
+  - AC: `event.status_changed` is emitted on entering/exiting `recording` and `transcribing`, and on `error` with `detail` suitable for UI display.
 
 ---
 
@@ -194,18 +220,24 @@
 
 - M2.1 Sidecar manager (`sidecar.rs`): spawn, capture stdout/stderr, restart with backoff and max retries.
   - AC: crash → auto-restart up to N times; then hard error state + tray shows error.
+  - AC: stdout is reserved for NDJSON only; stderr is captured for diagnostics without breaking protocol parsing.
 - M2.2 RPC client (`ipc/mod.rs` + `ipc/types.rs`): correlation by `id`, timeouts, notification fanout.
   - AC: can handle concurrent calls safely (or explicitly serialized); notifications forwarded to app state.
+  - AC: parser tolerates split/partial lines and rejects oversized lines with a controlled error (to avoid memory blowups).
 - M2.3 Recording controller (`recording.rs`) + state machine (`state.rs`).
   - AC: prevents double-start/double-stop; session_id tracked; stale notifications ignored.
+  - AC: rapid press/release produces a deterministic result (either a short transcription or a controlled “too short” user message) without deadlock.
 - M2.4 Text injection (`injection.rs`): clipboard paste default + optional restore; fallback to typing when configured.
   - AC: Unicode injection works in browsers/editors; injection failures copy to clipboard + notify.
+  - AC: injection is serialized (no interleaving) and configurable with a small “paste delay” to accommodate apps that need focus settle time.
 - M2.5 Global hotkey (`hotkey.rs`) using Tauri global shortcut plugin.
   - AC: press starts recording; release stops (or toggle fallback mode works); hotkey changes persist and apply without restart.
+  - AC: hotkey conflicts are detected where possible and surfaced as a user-actionable error (choose another hotkey).
 - M2.6 System tray (`tray.rs`): idle/recording/transcribing/error; menu: Show/Settings, Restart Sidecar, Quit.
   - AC: tray always reflects current state; Restart Sidecar recovers from error.
 - M2.7 Config persistence (`config.rs`) with atomic writes + versioned migrations.
   - AC: first run creates defaults; subsequent runs load; corruption fallback to last-known-good.
+  - AC: config schema includes (at minimum) mic device selection, hotkey + mode, injection mode + restore clipboard, replacements list, and logging/diagnostics settings; migration tests cover at least one prior version.
 
 **Coordination checkpoint:** “Record loop without ASR” (start/stop + status changes) merged before M3.
 
@@ -222,6 +254,7 @@
   - AC: saves rules to config; pushes rules to sidecar via `replacements.set_rules`; preview uses same engine path (sidecar call or local mirror).
 - M3.4 Diagnostics view: “Copy diagnostics” (versions, protocol, last error, sidecar status).
   - AC: produces a single text blob suitable for bug reports.
+  - AC: includes OS + app version + sidecar version + model status (downloaded/initializing/ready/error) and last N lines of logs (bounded).
 
 ---
 
@@ -239,6 +272,7 @@
   - Python unit tests: protocol parsing, postprocess, replacements.
   - Rust tests: config load/save/migrate; IPC parsing; injection mode selection (mocked).
   - Manual checklist: cross-app injection (VS Code, browser, terminal), long recording, replacements, restart recovery.
+  - AC: manual checklist is written as a runnable, step-by-step script with expected outcomes and at least one “known limitation” callout for Wayland/macOS permissions.
 
 ---
 
@@ -247,10 +281,13 @@
 
 - M5.1 Build sidecar binary (PyInstaller) per OS; ensure runtime deps included.
   - AC: app runs without system Python; sidecar starts on first launch.
+  - AC: packaged sidecar can download/cache model in an app-writable directory; errors are reported cleanly when blocked by permissions.
 - M5.2 Tauri bundling configuration (`tauri.conf.json`) to ship sidecar in resources/externalBin.
   - AC: `tauri build` produces installable artifacts.
+  - AC: per-OS resource paths are verified at runtime (clear error if missing/corrupt).
 - M5.3 CI workflow: build matrix for Windows/macOS/Linux; artifact upload.
   - AC: builds succeed on CI; version stamping consistent across Rust/UI/sidecar.
+  - AC: CI runs unit tests (`cargo test`, `pytest`) and fails fast on protocol/schema mismatches.
 
 ---
 
@@ -282,10 +319,14 @@ Add **Agent E (UI/QA)** split into UI vs CI/tests.
 ## 6) Risk Mitigation (Must-Haves)
 
 - **Wayland hotkeys/injection:** document best-effort; prioritize X11; implement toggle mode fallback.
+  - Requirement: detect Wayland at runtime and proactively warn users about limitations; provide “clipboard-only” safe fallback behavior when injection is blocked.
 - **macOS permissions:** detect and show step-by-step instructions for Microphone + Accessibility; tray shows blocked state.
+  - Requirement: include required permission strings/entitlements in packaging; verify blocked states are distinguishable (mic vs accessibility).
 - **Model size/download failures:** explicit “Downloading model…” state; retry; clear cache path messaging.
+  - Requirement: download progress/state is surfaced to tray/UI; failures include at least (disk space, network, permissions) hints.
 - **Sidecar crash loops:** exponential backoff + capped retries; visible “Restart sidecar” action.
 - **Injection edge cases:** default to clipboard paste; serialize injections to avoid interleaving; clipboard restore best-effort.
+  - Requirement: when restoring clipboard fails, do not block injection; log and surface only if user opted into strict restore.
 - **Replacement safety:** avoid recursive cascades; validate rules; reject invalid JSON with clear error.
 
 ---
