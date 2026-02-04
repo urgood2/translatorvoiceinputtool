@@ -7,14 +7,19 @@ use std::sync::Mutex;
 
 use tauri::{Manager, State};
 
+mod capabilities;
 mod ipc;
+mod recording;
 mod sidecar;
+mod state;
 
 use sidecar::{SidecarManager, SidecarStatus};
+use state::AppStateManager;
 
-/// Global sidecar manager state
-struct AppState {
+/// Global application state
+struct TauriAppState {
     sidecar: Mutex<SidecarManager>,
+    state_manager: AppStateManager,
 }
 
 /// Simple echo command for testing Rust-JS communication
@@ -25,13 +30,13 @@ fn echo(message: String) -> String {
 
 /// Get the current sidecar status
 #[tauri::command]
-fn get_sidecar_status(state: State<AppState>) -> SidecarStatus {
+fn get_sidecar_status(state: State<TauriAppState>) -> SidecarStatus {
     state.sidecar.lock().unwrap().get_status()
 }
 
 /// Start the sidecar process
 #[tauri::command]
-fn start_sidecar(state: State<AppState>) -> Result<SidecarStatus, String> {
+fn start_sidecar(state: State<TauriAppState>) -> Result<SidecarStatus, String> {
     let manager = state.sidecar.lock().unwrap();
     manager.start()?;
     Ok(manager.get_status())
@@ -39,7 +44,7 @@ fn start_sidecar(state: State<AppState>) -> Result<SidecarStatus, String> {
 
 /// Stop the sidecar process
 #[tauri::command]
-fn stop_sidecar(state: State<AppState>) -> Result<SidecarStatus, String> {
+fn stop_sidecar(state: State<TauriAppState>) -> Result<SidecarStatus, String> {
     let manager = state.sidecar.lock().unwrap();
     manager.stop()?;
     Ok(manager.get_status())
@@ -47,10 +52,40 @@ fn stop_sidecar(state: State<AppState>) -> Result<SidecarStatus, String> {
 
 /// Retry starting the sidecar after failure
 #[tauri::command]
-fn retry_sidecar(state: State<AppState>) -> Result<SidecarStatus, String> {
+fn retry_sidecar(state: State<TauriAppState>) -> Result<SidecarStatus, String> {
     let manager = state.sidecar.lock().unwrap();
     manager.retry()?;
     Ok(manager.get_status())
+}
+
+/// Get platform capabilities for the current system
+#[tauri::command]
+fn get_capabilities() -> capabilities::Capabilities {
+    capabilities::Capabilities::detect()
+}
+
+/// Get capability issues that need user attention
+#[tauri::command]
+fn get_capability_issues() -> Vec<capabilities::CapabilityIssue> {
+    capabilities::Capabilities::detect().issues()
+}
+
+/// Get the current application state
+#[tauri::command]
+fn get_app_state(state: State<TauriAppState>) -> state::StateEvent {
+    state.state_manager.get_event()
+}
+
+/// Set whether hotkey listening is enabled (pause/resume)
+#[tauri::command]
+fn set_app_enabled(state: State<TauriAppState>, enabled: bool) {
+    state.state_manager.set_enabled(enabled);
+}
+
+/// Check if recording can start (for UI indication)
+#[tauri::command]
+fn can_start_recording(state: State<TauriAppState>) -> Result<(), state::CannotRecordReason> {
+    state.state_manager.can_start_recording()
 }
 
 /// Configure and run the Tauri application
@@ -61,8 +96,9 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(AppState {
+        .manage(TauriAppState {
             sidecar: Mutex::new(SidecarManager::new()),
+            state_manager: AppStateManager::new(),
         })
         .invoke_handler(tauri::generate_handler![
             echo,
@@ -70,11 +106,16 @@ pub fn run() {
             start_sidecar,
             stop_sidecar,
             retry_sidecar,
+            get_capabilities,
+            get_capability_issues,
+            get_app_state,
+            set_app_enabled,
+            can_start_recording,
         ])
         .setup(|app| {
             // Set up sidecar manager with app handle
             {
-                let state = app.state::<AppState>();
+                let state = app.state::<TauriAppState>();
                 let mut manager = state.sidecar.lock().unwrap();
                 manager.set_app_handle(app.handle().clone());
 
