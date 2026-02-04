@@ -42,6 +42,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub injection: InjectionConfig,
 
+    /// Model settings.
+    #[serde(default)]
+    pub model: Option<ModelConfig>,
+
     /// Text replacement rules.
     #[serde(default)]
     pub replacements: Vec<ReplacementRule>,
@@ -62,11 +66,21 @@ impl Default for AppConfig {
             audio: AudioConfig::default(),
             hotkeys: HotkeyConfig::default(),
             injection: InjectionConfig::default(),
+            model: None, // Use defaults from sidecar
             replacements: Vec::new(),
             ui: UiConfig::default(),
             presets: PresetsConfig::default(),
         }
     }
+}
+
+/// Model configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelConfig {
+    /// Model ID (e.g., "nvidia/parakeet-tdt-0.6b-v2").
+    pub model_id: Option<String>,
+    /// Device preference ("auto", "cpu", "cuda", "mps").
+    pub device: Option<String>,
 }
 
 impl AppConfig {

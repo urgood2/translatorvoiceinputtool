@@ -10,9 +10,10 @@
 //! event-driven flow across all these components.
 
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
@@ -28,6 +29,50 @@ use crate::state::{AppState, AppStateManager};
 
 /// Tray icon event name.
 const EVENT_TRAY_UPDATE: &str = "tray:update";
+
+/// Model progress event name.
+const EVENT_MODEL_PROGRESS: &str = "model:progress";
+
+/// Model status event name.
+const EVENT_MODEL_STATUS: &str = "model:status";
+
+/// Default model to use if not configured.
+const DEFAULT_MODEL_ID: &str = "nvidia/parakeet-tdt-0.6b-v2";
+
+/// Model status tracking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelStatus {
+    /// Model status unknown (not yet queried).
+    Unknown,
+    /// Model not downloaded.
+    Missing,
+    /// Model download in progress.
+    Downloading,
+    /// Model download/verification complete, loading.
+    Loading,
+    /// Model ready for transcription.
+    Ready,
+    /// Model failed to load or download.
+    Error(String),
+}
+
+impl Default for ModelStatus {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+/// Download/initialization progress.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelProgress {
+    /// Current bytes downloaded or processed.
+    pub current: u64,
+    /// Total bytes (if known).
+    pub total: Option<u64>,
+    /// Progress stage description.
+    pub stage: String,
+}
 
 /// Status changed event name (mirrors sidecar event).
 const EVENT_STATUS_CHANGED: &str = "status:changed";
@@ -85,6 +130,12 @@ pub struct IntegrationManager {
     recording_context: Arc<RwLock<Option<RecordingContext>>>,
     /// Configuration.
     config: IntegrationConfig,
+    /// Current model status.
+    model_status: Arc<RwLock<ModelStatus>>,
+    /// Current model download progress.
+    model_progress: Arc<RwLock<Option<ModelProgress>>>,
+    /// Whether model initialization has been attempted.
+    model_init_attempted: Arc<AtomicBool>,
 }
 
 impl IntegrationManager {
@@ -101,6 +152,9 @@ impl IntegrationManager {
             app_handle: None,
             recording_context: Arc::new(RwLock::new(None)),
             config: IntegrationConfig::default(),
+            model_status: Arc::new(RwLock::new(ModelStatus::Unknown)),
+            model_progress: Arc::new(RwLock::new(None)),
+            model_init_attempted: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -151,7 +205,220 @@ impl IntegrationManager {
         self.start_state_loop();
         self.start_recording_event_loop();
 
+        // Check and initialize model in background
+        self.spawn_model_check();
+
         log::info!("Integration manager initialized");
+        Ok(())
+    }
+
+    /// Spawn model check and initialization in background.
+    fn spawn_model_check(&self) {
+        let rpc_client = Arc::clone(&self.rpc_client);
+        let state_manager = Arc::clone(&self.state_manager);
+        let recording_controller = Arc::clone(&self.recording_controller);
+        let model_status = Arc::clone(&self.model_status);
+        let model_init_attempted = Arc::clone(&self.model_init_attempted);
+        let app_handle = self.app_handle.clone();
+
+        tokio::spawn(async move {
+            // Check if already attempted
+            if model_init_attempted.swap(true, Ordering::SeqCst) {
+                log::debug!("Model initialization already attempted");
+                return;
+            }
+
+            // Query model status from sidecar
+            let client = rpc_client.read().await;
+            let client = match client.as_ref() {
+                Some(c) => c,
+                None => {
+                    log::warn!("Cannot check model status: sidecar not connected");
+                    return;
+                }
+            };
+
+            log::info!("Checking model status on startup");
+
+            #[derive(Deserialize, Debug)]
+            struct StatusResult {
+                status: String,
+                #[serde(default)]
+                model_id: Option<String>,
+            }
+
+            match client.call::<StatusResult>("model.get_status", None).await {
+                Ok(result) => {
+                    log::info!("Model status: {:?}", result);
+
+                    match result.status.as_str() {
+                        "ready" => {
+                            *model_status.write().await = ModelStatus::Ready;
+                            recording_controller.set_model_ready(true).await;
+                            Self::emit_model_status(&app_handle, ModelStatus::Ready);
+                            log::info!("Model ready for transcription");
+                        }
+                        "missing" | "not_found" | "error" => {
+                            log::info!("Model not ready ({}), triggering initialization", result.status);
+                            *model_status.write().await = ModelStatus::Missing;
+                            Self::emit_model_status(&app_handle, ModelStatus::Missing);
+
+                            // Trigger model initialization
+                            Self::trigger_model_init(
+                                &client,
+                                &state_manager,
+                                &recording_controller,
+                                &model_status,
+                                &app_handle,
+                            )
+                            .await;
+                        }
+                        "downloading" | "loading" => {
+                            // Already in progress (maybe from another session)
+                            let status = if result.status == "downloading" {
+                                ModelStatus::Downloading
+                            } else {
+                                ModelStatus::Loading
+                            };
+                            *model_status.write().await = status.clone();
+                            Self::emit_model_status(&app_handle, status);
+                            log::info!("Model {} in progress", result.status);
+                        }
+                        _ => {
+                            log::warn!("Unknown model status: {}", result.status);
+                            *model_status.write().await = ModelStatus::Unknown;
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Failed to get model status: {}", e);
+                    // Don't block on this - user can trigger manually
+                }
+            }
+        });
+    }
+
+    /// Trigger model initialization via sidecar.
+    async fn trigger_model_init(
+        client: &RpcClient,
+        state_manager: &Arc<AppStateManager>,
+        recording_controller: &Arc<RecordingController>,
+        model_status: &Arc<RwLock<ModelStatus>>,
+        app_handle: &Option<AppHandle>,
+    ) {
+        // Transition to loading state
+        let _ = state_manager.transition(AppState::LoadingModel);
+        *model_status.write().await = ModelStatus::Downloading;
+        Self::emit_model_status(app_handle, ModelStatus::Downloading);
+
+        // Get configured model or use default
+        let config = config::load_config();
+        let model_id = config
+            .model
+            .as_ref()
+            .and_then(|m| m.model_id.clone())
+            .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string());
+
+        let device_pref = config
+            .model
+            .as_ref()
+            .and_then(|m| m.device.clone())
+            .unwrap_or_else(|| "auto".to_string());
+
+        log::info!(
+            "Initializing ASR model: model={}, device={}",
+            model_id,
+            device_pref
+        );
+
+        let params = json!({
+            "model_id": model_id,
+            "device_pref": device_pref
+        });
+
+        #[derive(Deserialize)]
+        struct InitResult {
+            status: String,
+        }
+
+        match client.call::<InitResult>("asr.initialize", Some(params)).await {
+            Ok(result) => {
+                log::info!("ASR initialization complete: status={}", result.status);
+                *model_status.write().await = ModelStatus::Ready;
+                recording_controller.set_model_ready(true).await;
+                let _ = state_manager.transition(AppState::Idle);
+                Self::emit_model_status(app_handle, ModelStatus::Ready);
+            }
+            Err(e) => {
+                log::error!("ASR initialization failed: {}", e);
+                let error_msg = format!("Model initialization failed: {}", e);
+                *model_status.write().await = ModelStatus::Error(error_msg.clone());
+                state_manager.transition_to_error(error_msg.clone());
+                Self::emit_model_status(app_handle, ModelStatus::Error(error_msg));
+            }
+        }
+    }
+
+    /// Emit model status event to frontend.
+    fn emit_model_status(app_handle: &Option<AppHandle>, status: ModelStatus) {
+        if let Some(ref handle) = app_handle {
+            let _ = handle.emit(EVENT_MODEL_STATUS, json!({ "status": status }));
+        }
+    }
+
+    /// Get current model status.
+    pub async fn get_model_status(&self) -> ModelStatus {
+        self.model_status.read().await.clone()
+    }
+
+    /// Manually trigger model download.
+    pub async fn download_model(&self) -> Result<(), String> {
+        let client = self.rpc_client.read().await;
+        let client = client
+            .as_ref()
+            .ok_or_else(|| "Sidecar not connected".to_string())?;
+
+        Self::trigger_model_init(
+            client,
+            &self.state_manager,
+            &self.recording_controller,
+            &self.model_status,
+            &self.app_handle,
+        )
+        .await;
+
+        Ok(())
+    }
+
+    /// Purge model cache.
+    pub async fn purge_model_cache(&self) -> Result<(), String> {
+        let current_status = self.model_status.read().await.clone();
+        if current_status == ModelStatus::Downloading || current_status == ModelStatus::Loading {
+            return Err("Cannot purge model while download or initialization is in progress".to_string());
+        }
+
+        let client = self.rpc_client.read().await;
+        let client = client
+            .as_ref()
+            .ok_or_else(|| "Sidecar not connected".to_string())?;
+
+        #[derive(Deserialize)]
+        struct PurgeResult {
+            #[allow(dead_code)]
+            purged: bool,
+        }
+
+        client
+            .call::<PurgeResult>("model.purge_cache", None)
+            .await
+            .map_err(|e| format!("Failed to purge cache: {}", e))?;
+
+        // Update status
+        *self.model_status.write().await = ModelStatus::Missing;
+        self.recording_controller.set_model_ready(false).await;
+        Self::emit_model_status(&self.app_handle, ModelStatus::Missing);
+
+        log::info!("Model cache purged");
         Ok(())
     }
 
@@ -564,6 +831,8 @@ impl IntegrationManager {
         mut receiver: tokio::sync::broadcast::Receiver<NotificationEvent>,
     ) {
         let recording_controller = Arc::clone(&self.recording_controller);
+        let model_status = Arc::clone(&self.model_status);
+        let model_progress = Arc::clone(&self.model_progress);
         let app_handle = self.app_handle.clone();
 
         tokio::spawn(async move {
@@ -615,7 +884,56 @@ impl IntegrationManager {
                         }
                     }
                     "event.status_changed" => {
-                        // Forward to frontend
+                        // Handle model progress updates
+                        #[derive(Deserialize)]
+                        struct StatusParams {
+                            #[serde(default)]
+                            model: Option<String>,
+                            #[serde(default)]
+                            progress: Option<ProgressParams>,
+                        }
+
+                        #[derive(Deserialize)]
+                        struct ProgressParams {
+                            current: u64,
+                            total: Option<u64>,
+                            #[serde(default)]
+                            stage: Option<String>,
+                        }
+
+                        if let Ok(params) = serde_json::from_value::<StatusParams>(event.params.clone()) {
+                            // Update model status if provided
+                            if let Some(ref model_state) = params.model {
+                                let new_status = match model_state.as_str() {
+                                    "downloading" => ModelStatus::Downloading,
+                                    "loading" => ModelStatus::Loading,
+                                    "ready" => ModelStatus::Ready,
+                                    "missing" => ModelStatus::Missing,
+                                    _ => ModelStatus::Unknown,
+                                };
+                                *model_status.write().await = new_status.clone();
+
+                                if new_status == ModelStatus::Ready {
+                                    recording_controller.set_model_ready(true).await;
+                                }
+                            }
+
+                            // Update and emit progress if provided
+                            if let Some(ref progress) = params.progress {
+                                let model_progress_data = ModelProgress {
+                                    current: progress.current,
+                                    total: progress.total,
+                                    stage: progress.stage.clone().unwrap_or_else(|| "processing".to_string()),
+                                };
+                                *model_progress.write().await = Some(model_progress_data.clone());
+
+                                if let Some(ref handle) = app_handle {
+                                    let _ = handle.emit(EVENT_MODEL_PROGRESS, &model_progress_data);
+                                }
+                            }
+                        }
+
+                        // Also forward raw event to frontend
                         if let Some(ref handle) = app_handle {
                             let _ = handle.emit(EVENT_STATUS_CHANGED, event.params);
                         }
