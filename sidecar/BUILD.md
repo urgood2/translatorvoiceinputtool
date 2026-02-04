@@ -173,3 +173,69 @@ python -m openvoicy_sidecar
 1. Add to `pyproject.toml` dependencies
 2. Add any hidden imports to `openvoicy_sidecar.spec` if PyInstaller misses them
 3. Rebuild and verify
+
+## Tauri Bundling
+
+After building the sidecar, bundle it for Tauri:
+
+### Quick Start
+```bash
+# 1. Build the sidecar binary
+./scripts/build-sidecar.sh
+
+# 2. Bundle it for Tauri (copies with target-triple naming)
+./scripts/bundle-sidecar.sh
+
+# 3. Build the Tauri app
+cd src-tauri && cargo tauri build
+```
+
+### How It Works
+
+Tauri's `externalBin` feature bundles external executables with the app. The binary
+must be named with the target triple suffix:
+
+```
+src-tauri/binaries/
+├── openvoicy-sidecar-x86_64-unknown-linux-gnu      # Linux x64
+├── openvoicy-sidecar-aarch64-unknown-linux-gnu     # Linux ARM64
+├── openvoicy-sidecar-x86_64-apple-darwin           # macOS Intel
+├── openvoicy-sidecar-aarch64-apple-darwin          # macOS Apple Silicon
+└── openvoicy-sidecar-x86_64-pc-windows-msvc.exe    # Windows x64
+```
+
+The `bundle-sidecar.sh` script automates this naming.
+
+### Cross-Platform Builds
+
+Build on each target platform, then collect binaries:
+
+```bash
+# On Linux x64
+./scripts/build-sidecar.sh
+./scripts/bundle-sidecar.sh --target x86_64-unknown-linux-gnu
+
+# On macOS ARM64
+./scripts/build-sidecar.sh
+./scripts/bundle-sidecar.sh --target aarch64-apple-darwin
+
+# On Windows
+.\scripts\build-sidecar.ps1
+.\scripts\bundle-sidecar.ps1 -Target x86_64-pc-windows-msvc
+```
+
+### Platform-Specific Notes
+
+#### macOS
+The bundled binary may trigger Gatekeeper on first run. The Rust code in
+`src-tauri/src/sidecar.rs` automatically removes the quarantine attribute:
+```bash
+xattr -d com.apple.quarantine <binary>
+```
+
+#### Linux
+Ensure executable permissions are set. The bundle script handles this.
+
+#### Windows
+Windows Defender may scan the binary on first run, causing a slight delay.
+Consider code signing for production releases.
