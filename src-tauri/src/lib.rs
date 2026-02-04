@@ -21,6 +21,7 @@ mod ipc;
 mod recording;
 mod sidecar;
 mod state;
+mod tray;
 mod watchdog;
 
 use history::TranscriptHistory;
