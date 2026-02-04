@@ -7,6 +7,8 @@ use serde::Serialize;
 use thiserror::Error;
 use uuid::Uuid;
 
+use std::sync::Arc;
+
 use crate::capabilities::{Capabilities, CapabilityIssue};
 use crate::config::{self, AppConfig, ReplacementRule};
 use crate::history::{TranscriptEntry, TranscriptHistory};
@@ -52,7 +54,7 @@ impl From<config::ConfigError> for CommandError {
 
 /// Get current application state.
 #[tauri::command]
-pub fn get_app_state(state_manager: tauri::State<AppStateManager>) -> StateEvent {
+pub fn get_app_state(state_manager: tauri::State<Arc<AppStateManager>>) -> StateEvent {
     state_manager.get_event()
 }
 
@@ -71,7 +73,7 @@ pub fn get_capability_issues() -> Vec<CapabilityIssue> {
 /// Check if recording can start.
 #[tauri::command]
 pub fn can_start_recording(
-    state_manager: tauri::State<AppStateManager>,
+    state_manager: tauri::State<Arc<AppStateManager>>,
 ) -> Result<(), CannotRecordReason> {
     state_manager.can_start_recording()
 }
@@ -474,7 +476,7 @@ pub fn load_preset(preset_id: String) -> Vec<ReplacementRule> {
 
 /// Toggle enabled state.
 #[tauri::command]
-pub fn toggle_enabled(state_manager: tauri::State<AppStateManager>) -> bool {
+pub fn toggle_enabled(state_manager: tauri::State<Arc<AppStateManager>>) -> bool {
     let current = state_manager.is_enabled();
     state_manager.set_enabled(!current);
     !current
@@ -482,13 +484,13 @@ pub fn toggle_enabled(state_manager: tauri::State<AppStateManager>) -> bool {
 
 /// Check if enabled.
 #[tauri::command]
-pub fn is_enabled(state_manager: tauri::State<AppStateManager>) -> bool {
+pub fn is_enabled(state_manager: tauri::State<Arc<AppStateManager>>) -> bool {
     state_manager.is_enabled()
 }
 
 /// Set enabled state.
 #[tauri::command]
-pub fn set_enabled(state_manager: tauri::State<AppStateManager>, enabled: bool) {
+pub fn set_enabled(state_manager: tauri::State<Arc<AppStateManager>>, enabled: bool) {
     state_manager.set_enabled(enabled);
 }
 

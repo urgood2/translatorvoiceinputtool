@@ -3,9 +3,10 @@
 //! This library provides the core functionality for the Voice Input Tool,
 //! a desktop application that transcribes speech to text using local ASR.
 
-use std::sync::Mutex;
+use std::sync::Arc;
 
 use tauri::Manager;
+use tokio::sync::RwLock;
 
 mod capabilities;
 mod commands;
@@ -14,17 +15,18 @@ mod focus;
 mod history;
 mod hotkey;
 mod injection;
+mod integration;
 mod ipc;
 mod recording;
 mod sidecar;
 mod state;
 
 use history::TranscriptHistory;
-use sidecar::SidecarManager;
+use integration::IntegrationManager;
 use state::AppStateManager;
 
-/// Sidecar manager wrapper for Tauri state.
-struct SidecarState(Mutex<SidecarManager>);
+/// Integration manager wrapper for Tauri state.
+pub struct IntegrationState(pub Arc<RwLock<IntegrationManager>>);
 
 /// Configure and run the Tauri application
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -32,11 +34,19 @@ pub fn run() {
     // Initialize logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    // Create shared state manager
+    let state_manager = Arc::new(AppStateManager::new());
+
+    // Create integration manager
+    let integration_manager = Arc::new(RwLock::new(IntegrationManager::new(Arc::clone(
+        &state_manager,
+    ))));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        // Manage state components separately for cleaner command signatures
-        .manage(SidecarState(Mutex::new(SidecarManager::new())))
-        .manage(AppStateManager::new())
+        // Manage state components
+        .manage(IntegrationState(Arc::clone(&integration_manager)))
+        .manage(state_manager)
         .manage(TranscriptHistory::new())
         .invoke_handler(tauri::generate_handler![
             // State commands
@@ -81,32 +91,48 @@ pub fn run() {
             commands::get_recent_logs,
         ])
         .setup(|app| {
-            // Set up sidecar manager with app handle
+            // Configure sidecar path for development
+            #[cfg(debug_assertions)]
             {
-                let sidecar_state = app.state::<SidecarState>();
-                let mut manager = sidecar_state.0.lock().unwrap();
-                manager.set_app_handle(app.handle().clone());
-
-                // Configure sidecar path based on app resources
-                // For development, use the local sidecar directory
-                #[cfg(debug_assertions)]
-                {
-                    // In dev mode, use PYTHONPATH to find sidecar
-                    std::env::set_var(
-                        "PYTHONPATH",
-                        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                            .parent()
-                            .unwrap()
-                            .join("sidecar")
-                            .join("src"),
-                    );
-                }
+                // In dev mode, use PYTHONPATH to find sidecar
+                std::env::set_var(
+                    "PYTHONPATH",
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .parent()
+                        .unwrap()
+                        .join("sidecar")
+                        .join("src"),
+                );
             }
+
+            // Set up integration manager with app handle and initialize
+            let integration_state = app.state::<IntegrationState>();
+            let integration_manager = Arc::clone(&integration_state.0);
+            let app_handle = app.handle().clone();
+
+            // Initialize integration manager in async context
+            tauri::async_runtime::spawn(async move {
+                {
+                    let mut manager = integration_manager.write().await;
+                    manager.set_app_handle(app_handle);
+                }
+
+                // Initialize all components (hotkeys, sidecar, event loops)
+                let manager = integration_manager.read().await;
+                if let Err(e) = manager.initialize().await {
+                    log::error!("Failed to initialize integration manager: {}", e);
+                }
+
+                // Initialize ASR model
+                // This is optional at startup - user can trigger via UI
+                log::info!("Integration manager initialized, ASR will initialize on first use");
+            });
 
             #[cfg(debug_assertions)]
             {
-                let window = app.get_webview_window("main").unwrap();
-                window.open_devtools();
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
+                }
             }
 
             log::info!("Voice Input Tool starting");

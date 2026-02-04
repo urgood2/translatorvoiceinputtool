@@ -19,7 +19,7 @@ use tokio::sync::RwLock;
 
 use crate::config::{self, HotkeyMode};
 use crate::focus::{capture_focus, FocusSignature};
-use crate::history::TranscriptHistory;
+use crate::history::{HistoryInjectionResult, TranscriptEntry, TranscriptHistory};
 use crate::hotkey::{HotkeyAction, HotkeyManager, RecordingAction};
 use crate::injection::{inject_text, InjectionConfig, InjectionResult};
 use crate::ipc::{NotificationEvent, RpcClient, RpcError};
@@ -499,7 +499,15 @@ impl IntegrationManager {
                         // Add to history
                         if let Some(ref handle) = app_handle {
                             let history = handle.state::<TranscriptHistory>();
-                            history.add(text.clone());
+                            let injection_result_for_history =
+                                HistoryInjectionResult::from_injection_result(&result);
+                            let entry = TranscriptEntry::new(
+                                text.clone(),
+                                audio_duration_ms as u32,
+                                processing_duration_ms as u32,
+                                injection_result_for_history,
+                            );
+                            history.push(entry);
                         }
 
                         // Emit event to frontend
