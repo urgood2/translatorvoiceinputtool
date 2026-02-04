@@ -1,0 +1,48 @@
+name: Validate IPC Protocol and Model Manifest
+
+on:
+  push:
+    paths:
+      - 'shared/ipc/**'
+      - 'shared/model/**'
+      - 'scripts/validate_*.py'
+  pull_request:
+    paths:
+      - 'shared/ipc/**'
+      - 'shared/model/**'
+      - 'scripts/validate_*.py'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate JSONL parses correctly
+        run: |
+          python3 -c "
+          import json
+          import sys
+          with open('shared/ipc/examples/IPC_V1_EXAMPLES.jsonl', 'r') as f:
+              for i, line in enumerate(f, 1):
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      json.loads(line)
+                  except json.JSONDecodeError as e:
+                      print(f'Line {i}: {e}', file=sys.stderr)
+                      sys.exit(1)
+          print(f'✓ All {i} lines are valid JSON')
+          "
+
+      - name: Validate examples match protocol spec
+        run: python3 scripts/validate_ipc_examples.py
+
+      - name: Validate model manifest
+        run: python3 scripts/validate_model_manifest.py
