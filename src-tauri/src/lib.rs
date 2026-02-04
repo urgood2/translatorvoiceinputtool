@@ -108,6 +108,24 @@ pub fn run() {
                 );
             }
 
+            // Set up system tray
+            let state_manager_for_tray = app.state::<Arc<AppStateManager>>().inner().clone();
+            let app_handle_for_tray = app.handle().clone();
+
+            // Initialize tray
+            let mut tray_manager = tray::TrayManager::new(app_handle_for_tray.clone());
+            if let Err(e) = tray_manager.init() {
+                log::warn!("Failed to initialize tray: {}", e);
+            }
+            let tray_manager = Arc::new(RwLock::new(tray_manager));
+
+            // Start tray update loop
+            tray::start_tray_loop(
+                app_handle_for_tray,
+                state_manager_for_tray,
+                tray_manager,
+            );
+
             // Set up integration manager with app handle and initialize
             let integration_state = app.state::<IntegrationState>();
             let integration_manager = Arc::clone(&integration_state.0);
