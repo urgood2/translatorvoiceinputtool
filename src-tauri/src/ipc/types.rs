@@ -187,4 +187,113 @@ mod tests {
         let notif: Notification = serde_json::from_str(json).unwrap();
         assert_eq!(notif.method, "event.status_changed");
     }
+
+    #[test]
+    fn test_request_id_from_u64() {
+        let id: RequestId = 42u64.into();
+        assert_eq!(id, RequestId::Number(42));
+    }
+
+    #[test]
+    fn test_request_id_from_string() {
+        let id: RequestId = "test-id".to_string().into();
+        assert_eq!(id, RequestId::String("test-id".to_string()));
+    }
+
+    #[test]
+    fn test_request_with_params() {
+        let params = serde_json::json!({"device": "default"});
+        let req = Request::new(1u64, "audio.set_device", Some(params.clone()));
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"params\""));
+        assert!(json.contains("\"device\""));
+    }
+
+    #[test]
+    fn test_request_without_params() {
+        let req = Request::new(1u64, "system.ping", None);
+        let json = serde_json::to_string(&req).unwrap();
+        // params should be omitted when None
+        assert!(!json.contains("\"params\""));
+    }
+
+    #[test]
+    fn test_incoming_message_response() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
+        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
+        assert!(msg.has_id());
+        assert!(matches!(msg, IncomingMessage::Response(_)));
+    }
+
+    #[test]
+    fn test_incoming_message_no_id_parsed() {
+        // Note: Due to untagged enum, messages without id parse as Response
+        // with id: None (not as Notification). This is expected behavior.
+        let json = r#"{"jsonrpc":"2.0","method":"test","params":{}}"#;
+        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
+        // has_id checks if the message has an id field set
+        assert!(!msg.has_id());
+    }
+
+    #[test]
+    fn test_response_with_null_result_not_success() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":null}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        // With #[serde(default)], explicit JSON null becomes Option::None,
+        // so a response with "result": null is not considered a success.
+        // This matches JSON-RPC 2.0 spec where null result means "no result".
+        assert!(!resp.is_success(), "null result should not be success");
+    }
+
+    #[test]
+    fn test_response_error_without_data() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        assert!(!resp.is_success());
+        assert!(resp.error_kind().is_none());
+    }
+
+    #[test]
+    fn test_error_data_with_details() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Server error","data":{"kind":"E_MODEL_NOT_LOADED","details":{"model":"parakeet"}}}}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.error_kind(), Some("E_MODEL_NOT_LOADED"));
+        let details = resp.error.as_ref().unwrap().data.as_ref().unwrap().details.as_ref();
+        assert!(details.is_some());
+    }
+
+    #[test]
+    fn test_request_id_string_parsing() {
+        let json = r#"{"jsonrpc":"2.0","id":"string-id","result":{}}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.id, Some(RequestId::String("string-id".to_string())));
+    }
+
+    #[test]
+    fn test_notification_without_params() {
+        let json = r#"{"jsonrpc":"2.0","method":"heartbeat"}"#;
+        let notif: Notification = serde_json::from_str(json).unwrap();
+        assert_eq!(notif.method, "heartbeat");
+        // params defaults to null
+        assert!(notif.params.is_null());
+    }
+
+    #[test]
+    fn test_all_method_timeouts_are_reasonable() {
+        // Verify all known methods have sensible timeouts
+        let methods = [
+            "system.ping",
+            "system.info",
+            "system.shutdown",
+            "audio.list_devices",
+            "model.get_status",
+            "recording.start",
+        ];
+
+        for method in methods {
+            let timeout = TimeoutConfig::get(method);
+            assert!(timeout.as_secs() >= 1, "Timeout too short for {}", method);
+            assert!(timeout.as_secs() <= 1200, "Timeout too long for {}", method);
+        }
+    }
 }

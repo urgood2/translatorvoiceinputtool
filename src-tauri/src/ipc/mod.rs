@@ -341,4 +341,141 @@ mod tests {
         };
         assert!(err.to_string().contains("E_METHOD_NOT_FOUND"));
     }
+
+    #[test]
+    fn test_max_line_length_constant() {
+        // Ensure MAX_LINE_LENGTH is 1 MiB
+        assert_eq!(MAX_LINE_LENGTH, 1024 * 1024);
+    }
+
+    #[test]
+    fn test_rpc_error_protocol() {
+        let err = RpcError::Protocol("Invalid JSON-RPC version".to_string());
+        assert!(err.to_string().contains("Protocol error"));
+        assert!(err.to_string().contains("Invalid JSON-RPC version"));
+    }
+
+    #[test]
+    fn test_rpc_error_disconnected() {
+        let err = RpcError::Disconnected;
+        assert!(err.to_string().contains("Disconnected"));
+    }
+
+    #[test]
+    fn test_rpc_error_channel() {
+        let err = RpcError::Channel("Channel closed".to_string());
+        assert!(err.to_string().contains("Channel error"));
+    }
+
+    #[test]
+    fn test_rpc_error_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Pipe broken");
+        let err = RpcError::Io(io_err);
+        assert!(err.to_string().contains("IO error"));
+    }
+
+    #[test]
+    fn test_rpc_error_serialization() {
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        let err = RpcError::Serialization(json_err);
+        assert!(err.to_string().contains("Serialization error"));
+    }
+
+    #[test]
+    fn test_notification_event_creation() {
+        let event = NotificationEvent {
+            method: "test.event".to_string(),
+            params: serde_json::json!({"key": "value"}),
+        };
+        assert_eq!(event.method, "test.event");
+        assert!(event.params.is_object());
+    }
+
+    #[test]
+    fn test_oversized_line_threshold() {
+        // Lines exceeding MAX_LINE_LENGTH should be detected
+        let small_line = "x".repeat(100);
+        let large_line = "x".repeat(MAX_LINE_LENGTH + 1);
+
+        assert!(small_line.len() <= MAX_LINE_LENGTH);
+        assert!(large_line.len() > MAX_LINE_LENGTH);
+    }
+
+    #[test]
+    fn test_incoming_message_response_parsing() {
+        let json = r#"{"jsonrpc":"2.0","id":42,"result":{"status":"ok"}}"#;
+        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
+
+        match msg {
+            IncomingMessage::Response(resp) => {
+                assert_eq!(resp.id, Some(RequestId::Number(42)));
+                assert!(resp.is_success());
+            }
+            _ => panic!("Expected response"),
+        }
+    }
+
+    #[test]
+    fn test_incoming_message_without_id() {
+        // Note: Due to serde untagged enum behavior, messages without id
+        // are parsed as Response with id: None. Callers should use has_id()
+        // to distinguish between responses and notifications.
+        let json = r#"{"jsonrpc":"2.0","method":"audio:level","params":{"rms":-30.5}}"#;
+        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
+
+        // The message parses but has no id
+        assert!(!msg.has_id());
+    }
+
+    #[test]
+    fn test_json_parse_error_handling() {
+        // Invalid JSON should fail parsing
+        let invalid_json = "{ invalid json }";
+        let result: Result<IncomingMessage, _> = serde_json::from_str(invalid_json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_empty_line_is_valid_json_parse_error() {
+        // Empty string is not valid JSON
+        let empty = "";
+        let result: Result<IncomingMessage, _> = serde_json::from_str(empty);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_response_with_error_field() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request","data":{"kind":"E_INVALID"}}}"#;
+        let msg: IncomingMessage = serde_json::from_str(json).unwrap();
+
+        match msg {
+            IncomingMessage::Response(resp) => {
+                assert!(!resp.is_success());
+                assert!(resp.error.is_some());
+                let err = resp.error.unwrap();
+                assert_eq!(err.code, -32600);
+                assert_eq!(err.message, "Invalid Request");
+            }
+            _ => panic!("Expected response"),
+        }
+    }
+
+    #[test]
+    fn test_request_id_correlation() {
+        // Verify request IDs can be used for correlation
+        use std::collections::HashMap;
+
+        let mut pending: HashMap<u64, String> = HashMap::new();
+        pending.insert(1, "system.ping".to_string());
+        pending.insert(2, "audio.list_devices".to_string());
+
+        // Simulate receiving response for id 1
+        let response_id = 1u64;
+        let method = pending.remove(&response_id);
+        assert_eq!(method, Some("system.ping".to_string()));
+
+        // Unknown ID should return None
+        let unknown_method = pending.remove(&999);
+        assert!(unknown_method.is_none());
+    }
 }

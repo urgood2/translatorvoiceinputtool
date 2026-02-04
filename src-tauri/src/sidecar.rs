@@ -639,4 +639,181 @@ mod tests {
         assert_eq!(BACKOFF_DELAYS_MS[0], 250);
         assert_eq!(BACKOFF_DELAYS_MS[4], 10000);
     }
+
+    #[test]
+    fn test_max_restart_attempts_constant() {
+        assert_eq!(MAX_RESTART_ATTEMPTS, 5);
+    }
+
+    #[test]
+    fn test_backoff_delay_progression() {
+        // Verify delays increase exponentially-ish
+        assert!(BACKOFF_DELAYS_MS[0] < BACKOFF_DELAYS_MS[1]);
+        assert!(BACKOFF_DELAYS_MS[1] < BACKOFF_DELAYS_MS[2]);
+        assert!(BACKOFF_DELAYS_MS[2] < BACKOFF_DELAYS_MS[3]);
+        assert!(BACKOFF_DELAYS_MS[3] < BACKOFF_DELAYS_MS[4]);
+    }
+
+    #[test]
+    fn test_backoff_delay_bounds() {
+        // First delay should be fast
+        assert!(BACKOFF_DELAYS_MS[0] <= 500);
+        // Last delay should be substantial
+        assert!(BACKOFF_DELAYS_MS[4] >= 5000);
+    }
+
+    #[test]
+    fn test_initial_status() {
+        let manager = SidecarManager::new();
+        let status = manager.get_status();
+        assert_eq!(status.state, SidecarState::NotStarted);
+        assert_eq!(status.restart_count, 0);
+        assert!(status.message.is_none());
+    }
+
+    #[test]
+    fn test_sidecar_state_serialization() {
+        let states = [
+            SidecarState::NotStarted,
+            SidecarState::Starting,
+            SidecarState::Running,
+            SidecarState::Restarting,
+            SidecarState::Failed,
+            SidecarState::ShuttingDown,
+        ];
+
+        for state in states {
+            let json = serde_json::to_string(&state).unwrap();
+            assert!(!json.is_empty());
+            // Verify snake_case serialization
+            assert!(!json.contains("Starting") || json.contains("starting"));
+        }
+    }
+
+    #[test]
+    fn test_sidecar_status_serialization() {
+        let status = SidecarStatus {
+            state: SidecarState::Running,
+            restart_count: 2,
+            message: Some("All systems go".to_string()),
+        };
+
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains("\"state\":\"running\""));
+        assert!(json.contains("\"restart_count\":2"));
+        assert!(json.contains("All systems go"));
+    }
+
+    #[test]
+    fn test_default_implementation() {
+        let manager = SidecarManager::default();
+        assert_eq!(manager.get_state(), SidecarState::NotStarted);
+    }
+
+    #[test]
+    fn test_backoff_index_for_restart_count() {
+        // Test the backoff delay lookup logic
+        for i in 0..=5 {
+            let delay = BACKOFF_DELAYS_MS
+                .get(i as usize)
+                .copied()
+                .unwrap_or(10000);
+            assert!(delay >= 250);
+            assert!(delay <= 10000);
+        }
+    }
+
+    #[test]
+    fn test_sidecar_binary_name() {
+        let name = SidecarManager::get_sidecar_binary_name();
+        #[cfg(target_os = "windows")]
+        assert!(name.ends_with(".exe"));
+        #[cfg(not(target_os = "windows"))]
+        assert!(!name.ends_with(".exe"));
+        assert!(name.contains("openvoicy-sidecar"));
+    }
+
+    #[test]
+    fn test_spawn_mode_debug_assertions() {
+        // In test mode (debug), should use Python mode by default
+        let manager = SidecarManager::new();
+        #[cfg(debug_assertions)]
+        assert!(!manager.is_bundled_mode());
+    }
+
+    #[test]
+    fn test_set_python_mode() {
+        let mut manager = SidecarManager::new();
+        manager.set_python_mode(
+            "/usr/bin/python3".to_string(),
+            "custom_module".to_string(),
+        );
+        assert!(!manager.is_bundled_mode());
+    }
+
+    #[test]
+    fn test_set_bundled_mode() {
+        let mut manager = SidecarManager::new();
+        manager.set_bundled_mode();
+        assert!(manager.is_bundled_mode());
+    }
+
+    #[test]
+    fn test_retry_in_wrong_state() {
+        let manager = SidecarManager::new();
+        // Should fail when not in Failed state
+        let result = manager.retry();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Can only retry when in Failed state"));
+    }
+
+    #[test]
+    fn test_write_line_not_running() {
+        let manager = SidecarManager::new();
+        let result = manager.write_line("test");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not running"));
+    }
+
+    #[test]
+    fn test_all_states_serializable() {
+        // Ensure all states can be serialized for frontend communication
+        let states = [
+            (SidecarState::NotStarted, "not_started"),
+            (SidecarState::Starting, "starting"),
+            (SidecarState::Running, "running"),
+            (SidecarState::Restarting, "restarting"),
+            (SidecarState::Failed, "failed"),
+            (SidecarState::ShuttingDown, "shutting_down"),
+        ];
+
+        for (state, expected) in states {
+            let json = serde_json::to_string(&state).unwrap();
+            assert!(
+                json.contains(expected),
+                "State {:?} should serialize to contain '{}', got {}",
+                state,
+                expected,
+                json
+            );
+        }
+    }
+
+    #[test]
+    fn test_ping_result_parsing() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":{"protocol":"v1","version":"0.1.0"}}"#;
+        let resp: PingResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result.protocol, "v1");
+        assert_eq!(result.version, "0.1.0");
+    }
+
+    #[test]
+    fn test_ping_error_response_parsing() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let resp: PingResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.error.is_some());
+        assert!(resp.result.is_none());
+    }
 }
