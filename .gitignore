@@ -1,0 +1,12 @@
+# bv (beads viewer) local config and caches
+.bv/
+
+# Ephemeral files
+*.log
+*.tmp
+*.swp
+.DS_Store
+__pycache__/
+*.pyc
+node_modules/
+.env*
