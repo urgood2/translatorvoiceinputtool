@@ -508,13 +508,8 @@ pub struct DiagnosticsReport {
     pub self_check: SelfCheckResult,
 }
 
-/// Log entry.
-#[derive(Debug, Clone, Serialize)]
-pub struct LogEntry {
-    pub timestamp: String,
-    pub level: String,
-    pub message: String,
-}
+// Re-export LogEntry from log_buffer for IPC
+pub use crate::log_buffer::LogEntry;
 
 /// Generate diagnostics report.
 #[tauri::command]
@@ -528,11 +523,19 @@ pub fn generate_diagnostics() -> DiagnosticsReport {
     }
 }
 
-/// Get recent log entries.
+/// Get recent log entries from the ring buffer.
 #[tauri::command]
-pub fn get_recent_logs(_count: usize) -> Vec<LogEntry> {
-    // TODO: Implement log buffer
-    vec![]
+pub fn get_recent_logs(count: usize) -> Vec<LogEntry> {
+    let buffer = crate::log_buffer::global_buffer();
+    let entries = buffer.entries();
+    let len = entries.len();
+
+    // Return the last `count` entries (or all if count is larger)
+    if count >= len {
+        entries
+    } else {
+        entries.into_iter().skip(len - count).collect()
+    }
 }
 
 // ============================================================================

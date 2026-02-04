@@ -18,6 +18,7 @@ mod hotkey;
 mod injection;
 mod integration;
 mod ipc;
+mod log_buffer;
 mod recording;
 mod sidecar;
 mod state;
@@ -36,6 +37,9 @@ pub struct IntegrationState(pub Arc<RwLock<IntegrationManager>>);
 pub fn run() {
     // Initialize logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Initialize log buffer for diagnostics capture
+    log_buffer::init_buffer_logger(log::Level::Info);
 
     // Create shared state manager
     let state_manager = Arc::new(AppStateManager::new());
