@@ -59,8 +59,9 @@ def normalize(text: str) -> str:
     This is the main entry point for Stage 1 of the pipeline.
 
     Pipeline:
-    1. Fix ASR artifacts
-    2. Normalize whitespace
+    1. Normalize whitespace (collapse multiple spaces)
+    2. Fix ASR artifacts (space before punctuation, etc.)
+    3. Final whitespace cleanup
 
     Args:
         text: Raw text from ASR or user input.
@@ -68,6 +69,10 @@ def normalize(text: str) -> str:
     Returns:
         Normalized text.
     """
+    # First pass: collapse whitespace so artifact fixing works correctly
+    text = normalize_whitespace(text)
+    # Second pass: fix ASR artifacts
     text = fix_asr_artifacts(text)
+    # Final pass: clean up any remaining whitespace issues
     text = normalize_whitespace(text)
     return text

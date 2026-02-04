@@ -23,15 +23,39 @@ from .recording import (
     handle_recording_status,
     handle_recording_stop,
 )
+from .replacements import (
+    ReplacementError,
+    handle_replacements_get_presets,
+    handle_replacements_get_preset_rules,
+    handle_replacements_get_rules,
+    handle_replacements_preview,
+    handle_replacements_set_rules,
+)
+from .model_cache import (
+    CacheCorruptError,
+    DiskFullError,
+    LockError,
+    ModelCacheError,
+    ModelInUseError,
+    NetworkError,
+    handle_model_download,
+    handle_model_get_status,
+    handle_model_purge_cache,
+)
 from .protocol import (
     ERROR_ALREADY_RECORDING,
     ERROR_AUDIO_IO,
+    ERROR_CACHE_CORRUPT,
     ERROR_DEVICE_NOT_FOUND,
+    ERROR_DISK_FULL,
     ERROR_INTERNAL,
     ERROR_INVALID_REQUEST,
     ERROR_INVALID_SESSION,
     ERROR_METHOD_NOT_FOUND,
     ERROR_MIC_PERMISSION,
+    ERROR_MODEL_LOAD,
+    ERROR_NETWORK,
+    ERROR_NOT_READY,
     ERROR_NOT_RECORDING,
     ERROR_PARSE_ERROR,
     MAX_LINE_LENGTH,
@@ -103,6 +127,14 @@ HANDLERS: dict[str, Any] = {
     "recording.stop": handle_recording_stop,
     "recording.cancel": handle_recording_cancel,
     "recording.status": handle_recording_status,
+    "replacements.get_rules": handle_replacements_get_rules,
+    "replacements.set_rules": handle_replacements_set_rules,
+    "replacements.get_presets": handle_replacements_get_presets,
+    "replacements.get_preset_rules": handle_replacements_get_preset_rules,
+    "replacements.preview": handle_replacements_preview,
+    "model.get_status": handle_model_get_status,
+    "model.download": handle_model_download,
+    "model.purge_cache": handle_model_purge_cache,
 }
 
 
@@ -232,6 +264,57 @@ def run_server() -> None:
                     ERROR_AUDIO_IO,
                     str(e),
                     e.code,
+                )
+            except ReplacementError as e:
+                log(f"Replacement error: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_INVALID_PARAMS,
+                    str(e),
+                    e.code,
+                )
+            except DiskFullError as e:
+                log(f"Disk full error: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_DISK_FULL,
+                    str(e),
+                    "E_DISK_FULL",
+                    {"required_bytes": e.required, "available_bytes": e.available},
+                )
+            except NetworkError as e:
+                log(f"Network error: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_NETWORK,
+                    str(e),
+                    "E_NETWORK",
+                    {"url": e.url} if e.url else None,
+                )
+            except CacheCorruptError as e:
+                log(f"Cache corrupt error: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_CACHE_CORRUPT,
+                    str(e),
+                    "E_CACHE_CORRUPT",
+                    {"file_path": e.file_path} if e.file_path else None,
+                )
+            except ModelInUseError as e:
+                log(f"Model in use error: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_NOT_READY,
+                    str(e),
+                    "E_NOT_READY",
+                )
+            except (LockError, ModelCacheError) as e:
+                log(f"Model cache error: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_MODEL_LOAD,
+                    str(e),
+                    e.code if hasattr(e, "code") else "E_MODEL",
                 )
             except Exception as e:
                 log(f"Internal error handling {request.method}: {e}")

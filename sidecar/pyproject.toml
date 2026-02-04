@@ -9,6 +9,7 @@ authors = [{ name = "Voice Input Tool Authors" }]
 dependencies = [
     "sounddevice>=0.4.6",
     "numpy>=1.24.0",
+    "scipy>=1.10.0",
 ]
 
 [project.scripts]
