@@ -105,8 +105,10 @@ def list_audio_devices() -> list[AudioDevice]:
     """
     try:
         import sounddevice as sd
-    except ImportError:
-        log("sounddevice not available, returning empty device list")
+    except (ImportError, OSError) as e:
+        # ImportError: sounddevice not installed
+        # OSError: PortAudio library not found
+        log(f"sounddevice not available: {e}")
         return []
 
     try:
@@ -119,6 +121,10 @@ def list_audio_devices() -> list[AudioDevice]:
             raise PermissionError("Microphone permission denied") from e
         # Other errors - log and return empty list
         log(f"PortAudio error querying devices: {e}")
+        return []
+    except OSError as e:
+        # PortAudio library not found during query
+        log(f"PortAudio library error: {e}")
         return []
     except Exception as e:
         log(f"Unexpected error querying devices: {e}")
