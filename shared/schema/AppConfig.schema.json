@@ -1,0 +1,278 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://openvoicy.app/schema/AppConfig.schema.json",
+  "title": "AppConfig",
+  "description": "Root application configuration for OpenVoicy. Stored in platform-specific config directory.",
+  "type": "object",
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "description": "Configuration schema version for migrations. Current version: 1.",
+      "minimum": 1,
+      "default": 1
+    },
+    "audio": {
+      "$ref": "#/$defs/AudioConfig"
+    },
+    "hotkeys": {
+      "$ref": "#/$defs/HotkeyConfig"
+    },
+    "injection": {
+      "$ref": "#/$defs/InjectionConfig"
+    },
+    "model": {
+      "$ref": "#/$defs/ModelConfig"
+    },
+    "replacements": {
+      "type": "array",
+      "description": "User-defined text replacement rules.",
+      "items": {
+        "$ref": "ReplacementRule.schema.json"
+      },
+      "maxItems": 500,
+      "default": []
+    },
+    "ui": {
+      "$ref": "#/$defs/UiConfig"
+    },
+    "presets": {
+      "$ref": "#/$defs/PresetsConfig"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "AudioConfig": {
+      "type": "object",
+      "description": "Audio input configuration.",
+      "properties": {
+        "device_uid": {
+          "type": ["string", "null"],
+          "description": "Stable device UID for microphone selection. null = system default.",
+          "maxLength": 256,
+          "default": null
+        },
+        "audio_cues_enabled": {
+          "type": "boolean",
+          "description": "Play audio cues on recording start/stop.",
+          "default": true
+        }
+      },
+      "additionalProperties": false,
+      "default": {
+        "device_uid": null,
+        "audio_cues_enabled": true
+      }
+    },
+    "HotkeyConfig": {
+      "type": "object",
+      "description": "Global hotkey bindings configuration.",
+      "properties": {
+        "primary": {
+          "type": "string",
+          "description": "Primary hotkey for recording (e.g., 'Ctrl+Shift+Space').",
+          "minLength": 1,
+          "maxLength": 64,
+          "default": "Ctrl+Shift+Space",
+          "examples": ["Ctrl+Shift+Space", "Alt+R", "F9"]
+        },
+        "copy_last": {
+          "type": "string",
+          "description": "Hotkey to copy last transcript to clipboard.",
+          "minLength": 1,
+          "maxLength": 64,
+          "default": "Ctrl+Shift+V"
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["hold", "toggle"],
+          "description": "Hotkey activation mode: 'hold' = press and hold to record, 'toggle' = press to start/stop.",
+          "default": "hold"
+        }
+      },
+      "additionalProperties": false,
+      "default": {
+        "primary": "Ctrl+Shift+Space",
+        "copy_last": "Ctrl+Shift+V",
+        "mode": "hold"
+      }
+    },
+    "InjectionConfig": {
+      "type": "object",
+      "description": "Text injection (paste) configuration.",
+      "properties": {
+        "paste_delay_ms": {
+          "type": "integer",
+          "description": "Delay before simulating paste keystroke (milliseconds). Clamped to 10-500.",
+          "minimum": 10,
+          "maximum": 500,
+          "default": 40
+        },
+        "restore_clipboard": {
+          "type": "boolean",
+          "description": "Restore previous clipboard contents after injection.",
+          "default": true
+        },
+        "suffix": {
+          "type": "string",
+          "description": "Text appended after injection (e.g., space, newline).",
+          "maxLength": 16,
+          "default": " "
+        },
+        "focus_guard_enabled": {
+          "type": "boolean",
+          "description": "Enable Focus Guard to detect if target window changed during recording.",
+          "default": true
+        }
+      },
+      "additionalProperties": false,
+      "default": {
+        "paste_delay_ms": 40,
+        "restore_clipboard": true,
+        "suffix": " ",
+        "focus_guard_enabled": true
+      }
+    },
+    "ModelConfig": {
+      "type": ["object", "null"],
+      "description": "ASR model configuration. null = use sidecar defaults.",
+      "properties": {
+        "model_id": {
+          "type": ["string", "null"],
+          "description": "Model identifier (e.g., 'nvidia/parakeet-tdt-0.6b-v2').",
+          "maxLength": 256
+        },
+        "device": {
+          "type": ["string", "null"],
+          "description": "Compute device preference: 'auto', 'cpu', 'cuda', 'mps'.",
+          "enum": ["auto", "cpu", "cuda", "mps", null]
+        }
+      },
+      "additionalProperties": false,
+      "default": null
+    },
+    "UiConfig": {
+      "type": "object",
+      "description": "User interface configuration.",
+      "properties": {
+        "show_on_startup": {
+          "type": "boolean",
+          "description": "Show settings window on application startup.",
+          "default": true
+        },
+        "window_width": {
+          "type": "integer",
+          "description": "Settings window width in pixels. Minimum 200.",
+          "minimum": 200,
+          "maximum": 4096,
+          "default": 600
+        },
+        "window_height": {
+          "type": "integer",
+          "description": "Settings window height in pixels. Minimum 200.",
+          "minimum": 200,
+          "maximum": 4096,
+          "default": 500
+        }
+      },
+      "additionalProperties": false,
+      "default": {
+        "show_on_startup": true,
+        "window_width": 600,
+        "window_height": 500
+      }
+    },
+    "PresetsConfig": {
+      "type": "object",
+      "description": "Preset rule pack configuration.",
+      "properties": {
+        "enabled_presets": {
+          "type": "array",
+          "description": "IDs of enabled preset packs (e.g., ['punctuation', 'common-abbreviations']).",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "uniqueItems": true,
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "default": {
+        "enabled_presets": []
+      }
+    }
+  },
+  "examples": [
+    {
+      "schema_version": 1,
+      "audio": {
+        "device_uid": null,
+        "audio_cues_enabled": true
+      },
+      "hotkeys": {
+        "primary": "Ctrl+Shift+Space",
+        "copy_last": "Ctrl+Shift+V",
+        "mode": "hold"
+      },
+      "injection": {
+        "paste_delay_ms": 40,
+        "restore_clipboard": true,
+        "suffix": " ",
+        "focus_guard_enabled": true
+      },
+      "model": null,
+      "replacements": [],
+      "ui": {
+        "show_on_startup": true,
+        "window_width": 600,
+        "window_height": 500
+      },
+      "presets": {
+        "enabled_presets": []
+      }
+    },
+    {
+      "schema_version": 1,
+      "audio": {
+        "device_uid": "usb:abc123",
+        "audio_cues_enabled": false
+      },
+      "hotkeys": {
+        "primary": "F9",
+        "copy_last": "F10",
+        "mode": "toggle"
+      },
+      "injection": {
+        "paste_delay_ms": 100,
+        "restore_clipboard": true,
+        "suffix": "\n",
+        "focus_guard_enabled": true
+      },
+      "model": {
+        "model_id": "nvidia/parakeet-tdt-0.6b-v2",
+        "device": "cuda"
+      },
+      "replacements": [
+        {
+          "id": "user-1",
+          "enabled": true,
+          "kind": "literal",
+          "pattern": "BTW",
+          "replacement": "by the way",
+          "word_boundary": true,
+          "case_sensitive": false
+        }
+      ],
+      "ui": {
+        "show_on_startup": false,
+        "window_width": 800,
+        "window_height": 600
+      },
+      "presets": {
+        "enabled_presets": ["punctuation", "common-abbreviations"]
+      }
+    }
+  ]
+}

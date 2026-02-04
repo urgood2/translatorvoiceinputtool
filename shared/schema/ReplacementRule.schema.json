@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://openvoicy.app/schema/ReplacementRule.schema.json",
+  "title": "ReplacementRule",
+  "description": "A text replacement rule for post-processing transcriptions. Rules can be literal (exact match) or regex patterns.",
+  "type": "object",
+  "required": ["id", "enabled", "kind", "pattern", "replacement", "word_boundary", "case_sensitive"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique identifier for this rule. For preset rules, prefixed with preset ID (e.g., 'punctuation:period').",
+      "minLength": 1,
+      "maxLength": 128,
+      "examples": ["uuid-123", "punctuation:period", "user-rule-1"]
+    },
+    "enabled": {
+      "type": "boolean",
+      "description": "Whether this rule is active. Disabled rules are skipped during processing.",
+      "default": true
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["literal", "regex"],
+      "description": "Rule type: 'literal' for exact text matching, 'regex' for regular expression patterns."
+    },
+    "pattern": {
+      "type": "string",
+      "description": "The pattern to match. For 'literal' kind, this is exact text. For 'regex' kind, this is a regular expression.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "replacement": {
+      "type": "string",
+      "description": "The replacement text. For 'regex' kind, can include capture group references (e.g., '\\1', '\\2').",
+      "maxLength": 1024
+    },
+    "word_boundary": {
+      "type": "boolean",
+      "description": "If true (literal only), only match when pattern is surrounded by word boundaries. Prevents partial matches within words.",
+      "default": false
+    },
+    "case_sensitive": {
+      "type": "boolean",
+      "description": "If true, pattern matching is case-sensitive. If false, matches regardless of case.",
+      "default": true
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional human-readable description of what this rule does.",
+      "maxLength": 512
+    },
+    "origin": {
+      "type": "string",
+      "enum": ["user", "preset"],
+      "description": "Origin of this rule: 'user' for user-created rules, 'preset' for rules from preset packs."
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "id": "btw-expansion",
+      "enabled": true,
+      "kind": "literal",
+      "pattern": "BTW",
+      "replacement": "by the way",
+      "word_boundary": true,
+      "case_sensitive": false,
+      "description": "Expand BTW abbreviation",
+      "origin": "user"
+    },
+    {
+      "id": "punctuation:period",
+      "enabled": true,
+      "kind": "literal",
+      "pattern": " period",
+      "replacement": ".",
+      "word_boundary": false,
+      "case_sensitive": false,
+      "description": "Convert spoken 'period' to punctuation",
+      "origin": "preset"
+    },
+    {
+      "id": "price-redaction",
+      "enabled": true,
+      "kind": "regex",
+      "pattern": "\\$\\d+(\\.\\d{2})?",
+      "replacement": "[PRICE]",
+      "word_boundary": false,
+      "case_sensitive": false,
+      "description": "Redact dollar amounts"
+    }
+  ]
+}
