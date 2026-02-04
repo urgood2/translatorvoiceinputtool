@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Microphone access for voice recording -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Voice Input Tool needs microphone access to transcribe your speech to text.</string>
+
+    <!-- Accessibility access for typing into other apps -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Voice Input Tool needs accessibility access to type transcribed text into other applications.</string>
+</dict>
+</plist>
