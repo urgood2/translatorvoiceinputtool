@@ -347,9 +347,12 @@ describe('ReplacementPreview', () => {
     const input = screen.getByPlaceholderText(/Type or paste text/);
     fireEvent.change(input, { target: { value: 'Today is {{date}}' } });
 
-    // Output should contain expanded date (not the macro)
-    const output = screen.getByText(/Today is/);
-    expect(output.textContent).not.toContain('{{date}}');
+    // Output area should contain expanded date (not the macro)
+    // Find the output span (has the whitespace-pre-wrap class)
+    const outputSpans = screen.getAllByText(/Today is/);
+    const outputSpan = outputSpans.find(el => el.classList.contains('whitespace-pre-wrap'));
+    expect(outputSpan).toBeDefined();
+    expect(outputSpan?.textContent).not.toContain('{{date}}');
   });
 
   it('can disable macro expansion', () => {
@@ -361,8 +364,9 @@ describe('ReplacementPreview', () => {
     const input = screen.getByPlaceholderText(/Type or paste text/);
     fireEvent.change(input, { target: { value: '{{date}}' } });
 
-    // Output should still have macro
-    expect(screen.getByText('{{date}}')).toBeDefined();
+    // Both input and output should have macro (2 elements)
+    const macroElements = screen.getAllByText('{{date}}');
+    expect(macroElements.length).toBe(2);
   });
 });
 
