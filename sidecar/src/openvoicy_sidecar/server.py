@@ -13,12 +13,26 @@ from .audio import (
     handle_audio_list_devices,
     handle_audio_set_device,
 )
+from .recording import (
+    AlreadyRecordingError,
+    InvalidSessionError,
+    NotRecordingError,
+    RecordingError,
+    handle_recording_cancel,
+    handle_recording_start,
+    handle_recording_status,
+    handle_recording_stop,
+)
 from .protocol import (
+    ERROR_ALREADY_RECORDING,
+    ERROR_AUDIO_IO,
     ERROR_DEVICE_NOT_FOUND,
     ERROR_INTERNAL,
     ERROR_INVALID_REQUEST,
+    ERROR_INVALID_SESSION,
     ERROR_METHOD_NOT_FOUND,
     ERROR_MIC_PERMISSION,
+    ERROR_NOT_RECORDING,
     ERROR_PARSE_ERROR,
     MAX_LINE_LENGTH,
     InvalidRequestError,
@@ -85,6 +99,10 @@ HANDLERS: dict[str, Any] = {
     "system.shutdown": handle_system_shutdown,
     "audio.list_devices": handle_audio_list_devices,
     "audio.set_device": handle_audio_set_device,
+    "recording.start": handle_recording_start,
+    "recording.stop": handle_recording_stop,
+    "recording.cancel": handle_recording_cancel,
+    "recording.status": handle_recording_status,
 }
 
 
@@ -182,6 +200,38 @@ def run_server() -> None:
                     str(e),
                     "E_DEVICE_NOT_FOUND",
                     {"device_uid": e.device_uid} if e.device_uid else None,
+                )
+            except AlreadyRecordingError as e:
+                log(f"Already recording: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_ALREADY_RECORDING,
+                    str(e),
+                    "E_ALREADY_RECORDING",
+                )
+            except NotRecordingError as e:
+                log(f"Not recording: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_NOT_RECORDING,
+                    str(e),
+                    "E_NOT_RECORDING",
+                )
+            except InvalidSessionError as e:
+                log(f"Invalid session: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_INVALID_SESSION,
+                    str(e),
+                    "E_INVALID_SESSION",
+                )
+            except RecordingError as e:
+                log(f"Recording error: {e}")
+                response = make_error(
+                    request.id,
+                    ERROR_AUDIO_IO,
+                    str(e),
+                    e.code,
                 )
             except Exception as e:
                 log(f"Internal error handling {request.method}: {e}")
