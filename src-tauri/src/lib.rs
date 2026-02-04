@@ -8,11 +8,16 @@ use std::sync::Mutex;
 use tauri::{Manager, State};
 
 mod capabilities;
+mod config;
+mod focus;
+mod history;
+mod injection;
 mod ipc;
 mod recording;
 mod sidecar;
 mod state;
 
+use history::TranscriptHistory;
 use sidecar::{SidecarManager, SidecarStatus};
 use state::AppStateManager;
 
@@ -20,6 +25,7 @@ use state::AppStateManager;
 struct TauriAppState {
     sidecar: Mutex<SidecarManager>,
     state_manager: AppStateManager,
+    transcript_history: TranscriptHistory,
 }
 
 /// Simple echo command for testing Rust-JS communication
@@ -88,6 +94,35 @@ fn can_start_recording(state: State<TauriAppState>) -> Result<(), state::CannotR
     state.state_manager.can_start_recording()
 }
 
+/// Get transcript history (newest first)
+#[tauri::command]
+fn get_transcript_history(state: State<TauriAppState>) -> Vec<history::TranscriptEntry> {
+    state.transcript_history.all()
+}
+
+/// Copy a specific transcript to clipboard by ID
+#[tauri::command]
+fn copy_transcript(state: State<TauriAppState>, id: uuid::Uuid) -> Result<String, String> {
+    state
+        .transcript_history
+        .copy_by_id(id)
+        .ok_or_else(|| "Transcript not found or clipboard error".to_string())
+}
+
+/// Copy the most recent transcript to clipboard
+#[tauri::command]
+fn copy_last_transcript(state: State<TauriAppState>) -> Result<Option<String>, String> {
+    if state.transcript_history.is_empty() {
+        return Ok(None);
+    }
+
+    state
+        .transcript_history
+        .copy_last()
+        .map(Some)
+        .ok_or_else(|| "Clipboard error".to_string())
+}
+
 /// Configure and run the Tauri application
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -99,6 +134,7 @@ pub fn run() {
         .manage(TauriAppState {
             sidecar: Mutex::new(SidecarManager::new()),
             state_manager: AppStateManager::new(),
+            transcript_history: TranscriptHistory::new(),
         })
         .invoke_handler(tauri::generate_handler![
             echo,
@@ -111,6 +147,9 @@ pub fn run() {
             get_app_state,
             set_app_enabled,
             can_start_recording,
+            get_transcript_history,
+            copy_transcript,
+            copy_last_transcript,
         ])
         .setup(|app| {
             // Set up sidecar manager with app handle

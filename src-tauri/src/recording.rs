@@ -317,18 +317,17 @@ impl RecordingController {
     ///
     /// Returns the stop result (too short or transcribing).
     pub async fn stop(&self) -> Result<StopResult, RecordingError> {
-        let session = self.active_session.read().await;
-        let session = session.as_ref().ok_or(RecordingError::NotRecording)?;
+        // Read session info and release lock immediately
+        let (session_id, duration) = {
+            let session = self.active_session.read().await;
+            let session = session.as_ref().ok_or(RecordingError::NotRecording)?;
+            (session.id.clone(), session.start_time.elapsed())
+        };
 
-        let duration = session.start_time.elapsed();
-        let session_id = session.id.clone();
-        let config = self.config.read().await;
+        let too_short_threshold = self.config.read().await.too_short_threshold;
 
         // Check too-short threshold
-        if duration < config.too_short_threshold {
-            drop(session);
-            drop(config);
-
+        if duration < too_short_threshold {
             // Clear session
             *self.active_session.write().await = None;
 
@@ -341,15 +340,9 @@ impl RecordingController {
                 timestamp: Utc::now(),
             });
 
-            log::info!(
-                "Recording too short ({:?}), discarding",
-                duration
-            );
+            log::info!("Recording too short ({:?}), discarding", duration);
             return Ok(StopResult::TooShort);
         }
-
-        drop(session);
-        drop(config);
 
         // Transition to transcribing
         self.state_manager
@@ -373,13 +366,14 @@ impl RecordingController {
 
     /// Cancel the current recording (discard audio, no transcription).
     pub async fn cancel(&self, reason: CancelReason) -> Result<(), RecordingError> {
-        let session = self.active_session.write().await;
-        let session_data = session.as_ref().ok_or(RecordingError::NotRecording)?;
-        let session_id = session_data.id.clone();
-        drop(session);
-
-        // Clear session
-        *self.active_session.write().await = None;
+        // Get session ID and clear in one operation
+        let session_id = {
+            let mut session = self.active_session.write().await;
+            let session_data = session.as_ref().ok_or(RecordingError::NotRecording)?;
+            let id = session_data.id.clone();
+            *session = None;
+            id
+        };
 
         // Transition to idle
         let _ = self.state_manager.transition(AppState::Idle);
@@ -471,26 +465,39 @@ impl RecordingController {
 
     /// Handle max duration auto-stop.
     pub async fn check_max_duration(&self) -> bool {
-        let session = self.active_session.read().await;
-        if let Some(session) = session.as_ref() {
-            let config = self.config.read().await;
-            if session.start_time.elapsed() >= config.max_duration {
-                let session_id = session.id.clone();
-                let duration_ms = session.start_time.elapsed().as_millis() as u64;
-                drop(session);
-                drop(config);
+        // Check if max duration exceeded
+        let (session_id, duration_ms, exceeded) = {
+            let session = self.active_session.read().await;
+            if let Some(session) = session.as_ref() {
+                let config = self.config.read().await;
+                let elapsed = session.start_time.elapsed();
+                if elapsed >= config.max_duration {
+                    (
+                        Some(session.id.clone()),
+                        elapsed.as_millis() as u64,
+                        true,
+                    )
+                } else {
+                    (None, 0, false)
+                }
+            } else {
+                (None, 0, false)
+            }
+        };
 
+        if exceeded {
+            if let Some(session_id) = session_id {
                 // Emit max duration event
                 let _ = self.event_sender.send(RecordingEvent::MaxDurationReached {
                     session_id,
                     duration_ms,
                     timestamp: Utc::now(),
                 });
-
-                // Stop recording
-                let _ = self.stop().await;
-                return true;
             }
+
+            // Stop recording
+            let _ = self.stop().await;
+            return true;
         }
         false
     }
