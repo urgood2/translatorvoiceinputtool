@@ -7,7 +7,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use translator_voice_input_tool_lib::ipc::types::{
-    IncomingMessage, Notification, Request, RequestId, Response,
+    IncomingMessage, Notification, RequestId, Response,
 };
 
 fuzz_target!(|data: &[u8]| {

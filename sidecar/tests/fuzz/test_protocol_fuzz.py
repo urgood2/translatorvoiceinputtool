@@ -14,6 +14,8 @@ from openvoicy_sidecar.protocol import (
     Response,
     Notification,
     parse_line,
+    ParseError,
+    InvalidRequestError,
 )
 
 
@@ -55,11 +57,8 @@ def test_parse_arbitrary_text_doesnt_crash(text: str) -> None:
         result = parse_line(text)
         # If parsing succeeds, result should be a valid type
         assert result is None or isinstance(result, (Request, Response, Notification, dict))
-    except json.JSONDecodeError:
-        # Expected for invalid JSON
-        pass
-    except ValueError:
-        # Expected for invalid JSON-RPC structure
+    except (json.JSONDecodeError, ValueError, ParseError, InvalidRequestError):
+        # Expected for invalid JSON or JSON-RPC structure
         pass
     except Exception as e:
         # Unexpected exceptions should be reported
@@ -75,7 +74,7 @@ def test_parse_valid_request_structure(request_dict: dict) -> None:
         result = parse_line(json_str)
         # Should either parse successfully or reject gracefully
         assert result is None or isinstance(result, (Request, dict))
-    except (json.JSONDecodeError, ValueError, KeyError):
+    except (json.JSONDecodeError, ValueError, KeyError, ParseError, InvalidRequestError):
         # These are acceptable rejection modes
         pass
 
@@ -90,7 +89,7 @@ def test_parse_arbitrary_json_doesnt_crash(value) -> None:
         # Non-object JSON should be rejected gracefully
         if not isinstance(value, dict):
             assert result is None or isinstance(result, dict)
-    except (json.JSONDecodeError, ValueError, TypeError):
+    except (json.JSONDecodeError, ValueError, TypeError, ParseError, InvalidRequestError):
         # Acceptable rejection modes
         pass
     except Exception as e:
