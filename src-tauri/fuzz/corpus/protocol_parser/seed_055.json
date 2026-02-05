@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 105, "error": {"code": -32004, "message": "Audio I/O error", "data": {"kind": "E_AUDIO_IO", "details": {"reason": "Device disconnected during recording"}}}}

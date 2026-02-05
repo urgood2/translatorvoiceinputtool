@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "Invalid Request", "data": {"kind": "E_INVALID_PARAMS", "details": {"reason": "Missing required field: method"}}}}

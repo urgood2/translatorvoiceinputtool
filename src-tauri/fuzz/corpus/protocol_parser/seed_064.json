@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 112, "error": {"code": -32001, "message": "Model is currently in use", "data": {"kind": "E_NOT_READY", "details": {"model_id": "parakeet-tdt-0.6b-v3", "reason": "Cannot purge while transcription is in progress"}}}}

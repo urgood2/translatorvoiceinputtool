@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 4, "result": {"devices": [{"uid": "device-uuid-1", "name": "Built-in Microphone", "is_default": true, "sample_rate": 48000, "channels": 1}, {"uid": "device-uuid-2", "name": "USB Headset", "is_default": false, "sample_rate": 44100, "channels": 1}]}}

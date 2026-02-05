@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 107, "error": {"code": -32006, "message": "Disk full", "data": {"kind": "E_DISK_FULL", "details": {"required_bytes": 3221225472, "available_bytes": 1073741824}}}}

@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 108, "error": {"code": -32007, "message": "Model cache corrupted", "data": {"kind": "E_CACHE_CORRUPT", "details": {"model_id": "parakeet-tdt-0.6b-v3", "reason": "Checksum mismatch"}}}}

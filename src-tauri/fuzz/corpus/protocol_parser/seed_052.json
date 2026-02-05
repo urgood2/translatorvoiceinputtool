@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 102, "error": {"code": -32001, "message": "Service not ready", "data": {"kind": "E_NOT_READY", "details": {"reason": "ASR not initialized"}}}}

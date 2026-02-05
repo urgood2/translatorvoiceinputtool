@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 14, "result": {"status": "ready", "model_id": "parakeet-tdt-0.6b-v3", "device": "cuda"}}

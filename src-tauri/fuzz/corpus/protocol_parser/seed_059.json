@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 109, "error": {"code": -32008, "message": "Failed to load model", "data": {"kind": "E_MODEL_LOAD", "details": {"model_id": "parakeet-tdt-0.6b-v3", "reason": "Unsupported model format"}}}}

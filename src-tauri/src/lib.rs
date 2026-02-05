@@ -17,7 +17,7 @@ mod history;
 mod hotkey;
 mod injection;
 mod integration;
-mod ipc;
+pub mod ipc;
 mod log_buffer;
 mod recording;
 mod sidecar;

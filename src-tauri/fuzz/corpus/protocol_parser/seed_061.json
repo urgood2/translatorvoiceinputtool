@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 111, "error": {"code": -32603, "message": "Internal error", "data": {"kind": "E_INTERNAL", "details": {"trace_id": "abc123"}}}}

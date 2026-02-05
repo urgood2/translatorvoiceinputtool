@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 10, "result": {"model_id": "parakeet-tdt-0.6b-v3", "revision": "main", "status": "downloading", "progress": {"current": 1073741824, "total": 3221225472, "unit": "bytes"}}}

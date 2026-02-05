@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 9, "result": {"model_id": "parakeet-tdt-0.6b-v3", "revision": "main", "status": "ready", "cache_path": "/home/user/.cache/huggingface/hub/models--openai--parakeet-tdt-0.6b-v3"}}

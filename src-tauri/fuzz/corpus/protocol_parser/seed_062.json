@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error", "data": {"kind": "E_INTERNAL", "details": {"position": 42, "reason": "Unexpected token"}}}}

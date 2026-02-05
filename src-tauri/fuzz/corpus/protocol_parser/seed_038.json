@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 23, "result": {"state": "loading_model", "detail": "Downloading model...", "model": {"model_id": "parakeet-tdt-0.6b-v3", "status": "downloading"}}}

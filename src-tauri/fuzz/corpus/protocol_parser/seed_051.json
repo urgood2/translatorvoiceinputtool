@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 101, "error": {"code": -32602, "message": "Invalid params", "data": {"kind": "E_INVALID_PARAMS", "details": {"field": "device_pref", "expected": "one of: auto, cuda, cpu"}}}}

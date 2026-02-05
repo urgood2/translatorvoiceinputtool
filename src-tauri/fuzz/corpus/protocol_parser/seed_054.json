@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 104, "error": {"code": -32003, "message": "Audio device not found", "data": {"kind": "E_DEVICE_NOT_FOUND", "details": {"device_uid": "nonexistent-device"}}}}

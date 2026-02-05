@@ -8,6 +8,7 @@
 
 #![allow(dead_code)] // Client will be used when integrated with SidecarManager
 
+/// JSON-RPC 2.0 message types for IPC communication.
 pub mod types;
 
 use std::collections::HashMap;

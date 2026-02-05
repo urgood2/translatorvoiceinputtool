@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"result":{"text":"Hello \u0000 world \uFFFF"}}

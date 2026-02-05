@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 12, "method": "model.purge_cache", "params": {"model_id": "parakeet-tdt-0.6b-v3"}}

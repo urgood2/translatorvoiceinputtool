@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 24, "result": {"state": "error", "detail": "Model load failed: CUDA out of memory"}}

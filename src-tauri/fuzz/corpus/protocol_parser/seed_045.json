@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "method": "event.audio_level", "params": {"source": "meter", "rms": 0.15, "peak": 0.42}}
