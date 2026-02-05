@@ -311,7 +311,11 @@ Full license text: https://creativecommons.org/licenses/by/4.0/legalcode
 
 2. **Model Attribution**: The NVIDIA Parakeet model requires attribution. This is satisfied by this notice file and the model information displayed in the application settings.
 
-3. **Transitive Dependencies**: Transitive dependencies inherit compatible licenses (MIT, Apache-2.0, BSD). No incompatible licenses are introduced through transitive dependencies.
+3. **Transitive Dependencies**: Transitive dependencies inherit compatible licenses (MIT, Apache-2.0, BSD, MPL-2.0). No incompatible licenses are introduced through transitive dependencies.
+
+4. **MPL-2.0 Transitive Dependencies**: Some CSS-related Rust crates (`cssparser`, `selectors`, `dtoa-short`) use MPL-2.0 licensing. MPL-2.0 is file-based copyleft and compatible with MIT/Apache-2.0 when the MPL-licensed files are not modified.
+
+5. **Unicode License**: ICU-related crates use the Unicode-3.0 license, which is a permissive license allowing redistribution with or without modification.
 
 ---
 
