@@ -126,6 +126,20 @@ The following Python packages are used in the sidecar:
 - **Source**: https://github.com/scipy/scipy
 - **Copyright**: SciPy Developers
 
+### PyTorch (torch)
+- **Version**: >=2.0.0
+- **License**: BSD-3-Clause
+- **Source**: https://github.com/pytorch/pytorch
+- **Copyright**: Meta Platforms, Inc. and affiliates
+- **Notes**: Runtime dependency for ASR inference. Users install separately based on their hardware (CPU/CUDA). PyTorch includes modified components from various open source projects, see full NOTICE at https://github.com/pytorch/pytorch/blob/main/NOTICE
+
+### NVIDIA NeMo Toolkit (nemo_toolkit)
+- **Version**: >=2.0.0
+- **License**: Apache-2.0
+- **Source**: https://github.com/NVIDIA/NeMo
+- **Copyright**: NVIDIA Corporation
+- **Notes**: Runtime dependency for loading and running Parakeet ASR models. Install with `pip install nemo_toolkit[asr]` for ASR functionality.
+
 ---
 
 ## JavaScript Dependencies
@@ -169,6 +183,27 @@ The following JavaScript packages are used in the React frontend:
 - **Source**: http://www.portaudio.com/
 - **Copyright**: Ross Bencina, Phil Burk
 - **Notes**: Cross-platform audio I/O library, bundled in the sidecar binary
+
+---
+
+## Icons and Audio Assets
+
+The following assets are original works created for this project and are licensed under the same terms as the project itself:
+
+### Tray Icons
+- `tray-idle-*.png` - Idle state indicator (microphone icon)
+- `tray-recording-*.png` - Recording state indicator (red microphone)
+- `tray-transcribing-*.png` - Transcribing state indicator (processing)
+- `tray-loading-*.png` - Loading/initializing state
+- `tray-error-*.png` - Error state indicator
+- `tray-disabled-*.png` - Disabled state indicator
+
+### Audio Cues
+- `cue-start.wav` - Recording start notification sound
+- `cue-stop.wav` - Recording stop notification sound
+- `cue-error.wav` - Error notification sound
+
+These assets were programmatically generated or created specifically for OpenVoicy and do not require third-party attribution.
 
 ---
 
@@ -280,4 +315,4 @@ Full license text: https://creativecommons.org/licenses/by/4.0/legalcode
 
 ---
 
-*Last updated: 2026-02-04*
+*Last updated: 2026-02-05*
