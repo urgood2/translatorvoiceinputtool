@@ -113,9 +113,11 @@ jobs:
           MAX_EXAMPLES=${{ inputs.python_fuzz_examples || '1000' }}
           echo "Running hypothesis tests with max_examples=${MAX_EXAMPLES}..."
           # Note: hypothesis settings are configured in the test file
-          pytest tests/test_protocol_fuzz.py -v --hypothesis-seed=0 -x
+          # --hypothesis-seed is deprecated, using HYPOTHESIS_SEED env var instead
+          pytest tests/fuzz/test_protocol_fuzz.py -v -x
         env:
           HYPOTHESIS_MAX_EXAMPLES: ${{ inputs.python_fuzz_examples || '1000' }}
+          HYPOTHESIS_SEED: 0
 
       - name: Upload hypothesis database on failure
         if: failure()
