@@ -40,3 +40,4 @@ sidecar/dist/
 # Tauri bundled binaries (large, platform-specific)
 src-tauri/binaries/*
 !src-tauri/binaries/.gitkeep
+sidecar/.hypothesis/
