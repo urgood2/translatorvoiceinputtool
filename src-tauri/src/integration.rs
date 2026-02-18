@@ -10,7 +10,7 @@
 //! event-driven flow across all these components.
 
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -84,6 +84,35 @@ const EVENT_TRANSCRIPTION_COMPLETE: &str = "transcription:complete";
 /// Transcription error event name.
 const EVENT_TRANSCRIPTION_ERROR: &str = "transcription:error";
 
+fn add_seq_to_payload(payload: Value, seq: u64) -> Value {
+    match payload {
+        Value::Object(mut map) => {
+            map.insert("seq".to_string(), json!(seq));
+            Value::Object(map)
+        }
+        other => json!({
+            "seq": seq,
+            "data": other
+        }),
+    }
+}
+
+fn emit_with_shared_seq(
+    handle: &AppHandle,
+    events: &[&str],
+    payload: Value,
+    seq_counter: &Arc<AtomicU64>,
+) -> u64 {
+    let seq = seq_counter.fetch_add(1, Ordering::Relaxed);
+    let payload_with_seq = add_seq_to_payload(payload, seq);
+
+    for event in events {
+        let _ = handle.emit(*event, payload_with_seq.clone());
+    }
+
+    seq
+}
+
 /// Integration manager configuration.
 #[derive(Debug, Clone)]
 pub struct IntegrationConfig {
@@ -139,6 +168,8 @@ pub struct IntegrationManager {
     model_init_attempted: Arc<AtomicBool>,
     /// Watchdog for sidecar health monitoring.
     watchdog: Arc<Watchdog>,
+    /// Monotonic event sequence counter for frontend events.
+    event_seq: Arc<AtomicU64>,
 }
 
 impl IntegrationManager {
@@ -160,6 +191,7 @@ impl IntegrationManager {
             model_progress: Arc::new(RwLock::new(None)),
             model_init_attempted: Arc::new(AtomicBool::new(false)),
             watchdog,
+            event_seq: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -228,6 +260,7 @@ impl IntegrationManager {
         let recording_controller = Arc::clone(&self.recording_controller);
         let model_status = Arc::clone(&self.model_status);
         let app_handle = self.app_handle.clone();
+        let event_seq = Arc::clone(&self.event_seq);
 
         // Create ping adapter
         let pinger = Arc::new(RpcPinger {
@@ -251,13 +284,19 @@ impl IntegrationManager {
                     WatchdogEvent::SidecarHung => {
                         log::error!("Watchdog detected hung sidecar, requesting restart");
                         // Transition to error state
-                        state_manager.transition_to_error("Sidecar hung, restarting...".to_string());
+                        state_manager
+                            .transition_to_error("Sidecar hung, restarting...".to_string());
 
                         // Kill and restart sidecar
                         // Note: This would need to be more sophisticated in production
                         // to actually kill and restart the sidecar process
                         if let Some(ref handle) = app_handle {
-                            let _ = handle.emit("sidecar:restart", serde_json::json!({"reason": "hung"}));
+                            emit_with_shared_seq(
+                                handle,
+                                &["sidecar:restart"],
+                                serde_json::json!({ "reason": "hung" }),
+                                &event_seq,
+                            );
                         }
                     }
                     WatchdogEvent::SystemResumed => {
@@ -328,6 +367,7 @@ impl IntegrationManager {
         let model_status = Arc::clone(&self.model_status);
         let model_init_attempted = Arc::clone(&self.model_init_attempted);
         let app_handle = self.app_handle.clone();
+        let event_seq = Arc::clone(&self.event_seq);
 
         tokio::spawn(async move {
             // Check if already attempted
@@ -363,13 +403,16 @@ impl IntegrationManager {
                         "ready" => {
                             *model_status.write().await = ModelStatus::Ready;
                             recording_controller.set_model_ready(true).await;
-                            Self::emit_model_status(&app_handle, ModelStatus::Ready);
+                            Self::emit_model_status(&app_handle, ModelStatus::Ready, &event_seq);
                             log::info!("Model ready for transcription");
                         }
                         "missing" | "not_found" | "error" => {
-                            log::info!("Model not ready ({}), triggering initialization", result.status);
+                            log::info!(
+                                "Model not ready ({}), triggering initialization",
+                                result.status
+                            );
                             *model_status.write().await = ModelStatus::Missing;
-                            Self::emit_model_status(&app_handle, ModelStatus::Missing);
+                            Self::emit_model_status(&app_handle, ModelStatus::Missing, &event_seq);
 
                             // Trigger model initialization
                             Self::trigger_model_init(
@@ -378,6 +421,7 @@ impl IntegrationManager {
                                 &recording_controller,
                                 &model_status,
                                 &app_handle,
+                                &event_seq,
                             )
                             .await;
                         }
@@ -389,7 +433,7 @@ impl IntegrationManager {
                                 ModelStatus::Loading
                             };
                             *model_status.write().await = status.clone();
-                            Self::emit_model_status(&app_handle, status);
+                            Self::emit_model_status(&app_handle, status, &event_seq);
                             log::info!("Model {} in progress", result.status);
                         }
                         _ => {
@@ -413,11 +457,12 @@ impl IntegrationManager {
         recording_controller: &Arc<RecordingController>,
         model_status: &Arc<RwLock<ModelStatus>>,
         app_handle: &Option<AppHandle>,
+        event_seq: &Arc<AtomicU64>,
     ) {
         // Transition to loading state
         let _ = state_manager.transition(AppState::LoadingModel);
         *model_status.write().await = ModelStatus::Downloading;
-        Self::emit_model_status(app_handle, ModelStatus::Downloading);
+        Self::emit_model_status(app_handle, ModelStatus::Downloading, event_seq);
 
         // Get configured model or use default
         let config = config::load_config();
@@ -449,28 +494,40 @@ impl IntegrationManager {
             status: String,
         }
 
-        match client.call::<InitResult>("asr.initialize", Some(params)).await {
+        match client
+            .call::<InitResult>("asr.initialize", Some(params))
+            .await
+        {
             Ok(result) => {
                 log::info!("ASR initialization complete: status={}", result.status);
                 *model_status.write().await = ModelStatus::Ready;
                 recording_controller.set_model_ready(true).await;
                 let _ = state_manager.transition(AppState::Idle);
-                Self::emit_model_status(app_handle, ModelStatus::Ready);
+                Self::emit_model_status(app_handle, ModelStatus::Ready, event_seq);
             }
             Err(e) => {
                 log::error!("ASR initialization failed: {}", e);
                 let error_msg = format!("Model initialization failed: {}", e);
                 *model_status.write().await = ModelStatus::Error(error_msg.clone());
                 state_manager.transition_to_error(error_msg.clone());
-                Self::emit_model_status(app_handle, ModelStatus::Error(error_msg));
+                Self::emit_model_status(app_handle, ModelStatus::Error(error_msg), event_seq);
             }
         }
     }
 
     /// Emit model status event to frontend.
-    fn emit_model_status(app_handle: &Option<AppHandle>, status: ModelStatus) {
+    fn emit_model_status(
+        app_handle: &Option<AppHandle>,
+        status: ModelStatus,
+        seq_counter: &Arc<AtomicU64>,
+    ) {
         if let Some(ref handle) = app_handle {
-            let _ = handle.emit(EVENT_MODEL_STATUS, json!({ "status": status }));
+            emit_with_shared_seq(
+                handle,
+                &[EVENT_MODEL_STATUS],
+                json!({ "status": status }),
+                seq_counter,
+            );
         }
     }
 
@@ -492,6 +549,7 @@ impl IntegrationManager {
             &self.recording_controller,
             &self.model_status,
             &self.app_handle,
+            &self.event_seq,
         )
         .await;
 
@@ -502,7 +560,9 @@ impl IntegrationManager {
     pub async fn purge_model_cache(&self) -> Result<(), String> {
         let current_status = self.model_status.read().await.clone();
         if current_status == ModelStatus::Downloading || current_status == ModelStatus::Loading {
-            return Err("Cannot purge model while download or initialization is in progress".to_string());
+            return Err(
+                "Cannot purge model while download or initialization is in progress".to_string(),
+            );
         }
 
         let client = self.rpc_client.read().await;
@@ -524,7 +584,7 @@ impl IntegrationManager {
         // Update status
         *self.model_status.write().await = ModelStatus::Missing;
         self.recording_controller.set_model_ready(false).await;
-        Self::emit_model_status(&self.app_handle, ModelStatus::Missing);
+        Self::emit_model_status(&self.app_handle, ModelStatus::Missing, &self.event_seq);
 
         log::info!("Model cache purged");
         Ok(())
@@ -621,7 +681,10 @@ impl IntegrationManager {
             status: String,
         }
 
-        match client.call::<InitResult>("asr.initialize", Some(params)).await {
+        match client
+            .call::<InitResult>("asr.initialize", Some(params))
+            .await
+        {
             Ok(result) => {
                 log::info!("ASR initialized: status={}", result.status);
                 // Mark model ready
@@ -774,6 +837,7 @@ impl IntegrationManager {
     fn start_state_loop(&self) {
         let state_manager = Arc::clone(&self.state_manager);
         let app_handle = self.app_handle.clone();
+        let event_seq = Arc::clone(&self.event_seq);
 
         tokio::spawn(async move {
             let mut receiver = state_manager.subscribe();
@@ -793,14 +857,16 @@ impl IntegrationManager {
                         AppState::Error => "tray-error",
                     };
 
-                    let _ = handle.emit(
-                        EVENT_TRAY_UPDATE,
+                    emit_with_shared_seq(
+                        handle,
+                        &[EVENT_TRAY_UPDATE],
                         json!({
                             "icon": icon,
                             "state": event.state,
                             "enabled": event.enabled,
-                            "detail": event.detail
+                            "detail": event.detail,
                         }),
+                        &event_seq,
                     );
                 }
             }
@@ -814,6 +880,7 @@ impl IntegrationManager {
         let recording_controller = Arc::clone(&self.recording_controller);
         let recording_context = Arc::clone(&self.recording_context);
         let app_handle = self.app_handle.clone();
+        let event_seq = Arc::clone(&self.event_seq);
 
         tokio::spawn(async move {
             let mut receiver = recording_controller.subscribe();
@@ -887,15 +954,17 @@ impl IntegrationManager {
 
                         // Emit event to frontend
                         if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
-                                EVENT_TRANSCRIPTION_COMPLETE,
+                            emit_with_shared_seq(
+                                handle,
+                                &[EVENT_TRANSCRIPTION_COMPLETE],
                                 json!({
                                     "session_id": session_id,
                                     "text": text,
                                     "audio_duration_ms": audio_duration_ms,
                                     "processing_duration_ms": processing_duration_ms,
-                                    "injection_result": result
+                                    "injection_result": result,
                                 }),
+                                &event_seq,
                             );
                         }
 
@@ -913,12 +982,14 @@ impl IntegrationManager {
                         );
 
                         if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(
-                                EVENT_TRANSCRIPTION_ERROR,
+                            emit_with_shared_seq(
+                                handle,
+                                &[EVENT_TRANSCRIPTION_ERROR],
                                 json!({
                                     "session_id": session_id,
-                                    "error": error
+                                    "error": error,
                                 }),
+                                &event_seq,
                             );
                         }
 
@@ -943,6 +1014,7 @@ impl IntegrationManager {
         let model_progress = Arc::clone(&self.model_progress);
         let app_handle = self.app_handle.clone();
         let watchdog = Arc::clone(&self.watchdog);
+        let event_seq = Arc::clone(&self.event_seq);
 
         tokio::spawn(async move {
             log::info!("Notification loop started");
@@ -965,7 +1037,8 @@ impl IntegrationManager {
                             confidence: Option<f64>,
                         }
 
-                        if let Ok(params) = serde_json::from_value::<TranscriptionParams>(event.params)
+                        if let Ok(params) =
+                            serde_json::from_value::<TranscriptionParams>(event.params)
                         {
                             let result = TranscriptionResult {
                                 session_id: params.session_id,
@@ -1013,7 +1086,9 @@ impl IntegrationManager {
                             stage: Option<String>,
                         }
 
-                        if let Ok(params) = serde_json::from_value::<StatusParams>(event.params.clone()) {
+                        if let Ok(params) =
+                            serde_json::from_value::<StatusParams>(event.params.clone())
+                        {
                             // Update model status if provided
                             if let Some(ref model_state) = params.model {
                                 let new_status = match model_state.as_str() {
@@ -1035,25 +1110,43 @@ impl IntegrationManager {
                                 let model_progress_data = ModelProgress {
                                     current: progress.current,
                                     total: progress.total,
-                                    stage: progress.stage.clone().unwrap_or_else(|| "processing".to_string()),
+                                    stage: progress
+                                        .stage
+                                        .clone()
+                                        .unwrap_or_else(|| "processing".to_string()),
                                 };
                                 *model_progress.write().await = Some(model_progress_data.clone());
 
                                 if let Some(ref handle) = app_handle {
-                                    let _ = handle.emit(EVENT_MODEL_PROGRESS, &model_progress_data);
+                                    emit_with_shared_seq(
+                                        handle,
+                                        &[EVENT_MODEL_PROGRESS],
+                                        json!(model_progress_data),
+                                        &event_seq,
+                                    );
                                 }
                             }
                         }
 
                         // Also forward raw event to frontend
                         if let Some(ref handle) = app_handle {
-                            let _ = handle.emit(EVENT_STATUS_CHANGED, event.params);
+                            emit_with_shared_seq(
+                                handle,
+                                &[EVENT_STATUS_CHANGED],
+                                event.params,
+                                &event_seq,
+                            );
                         }
                     }
                     "event.audio_level" => {
                         // Forward audio levels to frontend
                         if let Some(ref handle) = app_handle {
-                            let _ = handle.emit("audio:level", event.params);
+                            emit_with_shared_seq(
+                                handle,
+                                &["audio:level"],
+                                event.params,
+                                &event_seq,
+                            );
                         }
                     }
                     _ => {
@@ -1077,12 +1170,14 @@ impl IntegrationManager {
                 AppState::Error => "tray-error",
             };
 
-            let _ = handle.emit(
-                EVENT_TRAY_UPDATE,
+            emit_with_shared_seq(
+                handle,
+                &[EVENT_TRAY_UPDATE],
                 json!({
                     "icon": icon,
-                    "state": state
+                    "state": state,
                 }),
+                &self.event_seq,
             );
         }
     }
@@ -1150,6 +1245,31 @@ impl PingCallback for RpcPinger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_add_seq_to_object_payload() {
+        let payload = json!({"state":"idle"});
+        let with_seq = add_seq_to_payload(payload, 42);
+        assert_eq!(with_seq["state"], "idle");
+        assert_eq!(with_seq["seq"], 42);
+    }
+
+    #[test]
+    fn test_add_seq_wraps_non_object_payload() {
+        let payload = json!("value");
+        let with_seq = add_seq_to_payload(payload, 7);
+        assert_eq!(with_seq["seq"], 7);
+        assert_eq!(with_seq["data"], "value");
+    }
+
+    #[test]
+    fn test_event_seq_is_monotonic() {
+        let counter = Arc::new(AtomicU64::new(1));
+        let first = counter.fetch_add(1, Ordering::Relaxed);
+        let second = counter.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+    }
 
     #[test]
     fn test_integration_config_default() {
