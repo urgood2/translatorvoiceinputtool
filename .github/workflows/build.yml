@@ -49,7 +49,7 @@ jobs:
       - name: Build sidecar binary
         working-directory: sidecar
         run: |
-          pyinstaller --onefile --name openvoicy-sidecar src/openvoicy_sidecar/__main__.py
+          pyinstaller --onefile --name openvoicy-sidecar entry_point.py
 
       - name: Collect sidecar evidence
         shell: bash

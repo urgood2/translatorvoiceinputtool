@@ -68,7 +68,7 @@ jobs:
 
       - name: Build sidecar
         working-directory: sidecar
-        run: pip install pyinstaller && pyinstaller --onefile --name openvoicy-sidecar src/openvoicy_sidecar/__main__.py
+        run: pip install pyinstaller && pyinstaller --onefile --name openvoicy-sidecar entry_point.py
 
       - name: Verify sidecar ping
         run: |

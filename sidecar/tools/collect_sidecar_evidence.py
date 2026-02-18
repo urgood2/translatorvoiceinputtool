@@ -115,6 +115,42 @@ def resolve_binary_path(binary_glob: str) -> str:
     return matches[0]
 
 
+def assert_smoke_ok(smoke: dict[str, dict[str, Any]]) -> None:
+    """Raise RuntimeError when smoke responses violate IPC expectations."""
+
+    failures: list[str] = []
+
+    ping = smoke.get("system.ping", {})
+    ping_payload = ping.get("parsed_response")
+    if ping.get("returncode") != 0:
+        failures.append("system.ping process returned non-zero exit code")
+    elif not isinstance(ping_payload, dict):
+        failures.append("system.ping did not return parseable JSON")
+    elif ping_payload.get("result", {}).get("protocol") != "v1":
+        failures.append("system.ping response missing result.protocol=v1")
+
+    list_devices = smoke.get("audio.list_devices", {})
+    list_payload = list_devices.get("parsed_response")
+    if list_devices.get("returncode") != 0:
+        failures.append("audio.list_devices process returned non-zero exit code")
+    elif not isinstance(list_payload, dict):
+        failures.append("audio.list_devices did not return parseable JSON")
+    elif not isinstance(list_payload.get("result", {}).get("devices"), list):
+        failures.append("audio.list_devices response missing result.devices list")
+
+    meter = smoke.get("audio.meter_start", {})
+    meter_payload = meter.get("parsed_response")
+    if meter.get("returncode") != 0:
+        failures.append("audio.meter_start process returned non-zero exit code")
+    elif not isinstance(meter_payload, dict):
+        failures.append("audio.meter_start did not return parseable JSON")
+    elif "result" not in meter_payload and "error" not in meter_payload:
+        failures.append("audio.meter_start response missing result/error payload")
+
+    if failures:
+        raise RuntimeError("; ".join(failures))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary-glob", required=True, help="Glob for sidecar binary path")
@@ -148,6 +184,8 @@ def main() -> int:
         "dependency_footprint": run_dependency_probe(binary_path),
         "smoke": smoke_requests,
     }
+
+    assert_smoke_ok(smoke_requests)
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
