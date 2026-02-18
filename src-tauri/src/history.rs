@@ -46,6 +46,26 @@ impl HistoryInjectionResult {
     }
 }
 
+/// Timing breakdown for the stop -> injection pipeline.
+#[derive(Debug, Clone, Serialize)]
+pub struct TranscriptTimings {
+    /// Time from stop request until recording.stop RPC returns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ipc_ms: Option<u64>,
+    /// Time from stop RPC return until transcription_complete is received.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcribe_ms: Option<u64>,
+    /// Time spent in host-side post-processing before injection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub postprocess_ms: Option<u64>,
+    /// Time spent injecting text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inject_ms: Option<u64>,
+    /// End-to-end stop -> injection total.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_ms: Option<u64>,
+}
+
 /// A single transcript entry in the history.
 #[derive(Debug, Clone, Serialize)]
 pub struct TranscriptEntry {
@@ -61,6 +81,9 @@ pub struct TranscriptEntry {
     pub transcription_duration_ms: u32,
     /// Result of injection attempt.
     pub injection_result: HistoryInjectionResult,
+    /// Optional stop -> injection timing breakdown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timings: Option<TranscriptTimings>,
 }
 
 impl TranscriptEntry {
@@ -78,7 +101,14 @@ impl TranscriptEntry {
             audio_duration_ms,
             transcription_duration_ms,
             injection_result,
+            timings: None,
         }
+    }
+
+    /// Attach pipeline timings.
+    pub fn with_timings(mut self, timings: TranscriptTimings) -> Self {
+        self.timings = Some(timings);
+        self
     }
 }
 
@@ -435,6 +465,28 @@ mod tests {
         assert!(json.contains("\"text\":\"Test text\""));
         assert!(json.contains("\"audio_duration_ms\":2000"));
         assert!(json.contains("\"transcription_duration_ms\":350"));
+    }
+
+    #[test]
+    fn test_entry_timings_serialization() {
+        let entry = TranscriptEntry::new(
+            "Test text".to_string(),
+            2000,
+            350,
+            HistoryInjectionResult::Injected,
+        )
+        .with_timings(TranscriptTimings {
+            ipc_ms: Some(15),
+            transcribe_ms: Some(780),
+            postprocess_ms: Some(5),
+            inject_ms: Some(50),
+            total_ms: Some(850),
+        });
+
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"timings\""));
+        assert!(json.contains("\"ipc_ms\":15"));
+        assert!(json.contains("\"total_ms\":850"));
     }
 
     #[test]

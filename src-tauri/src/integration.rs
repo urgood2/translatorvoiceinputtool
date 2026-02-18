@@ -12,6 +12,7 @@
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -22,7 +23,9 @@ use tokio::sync::RwLock;
 use crate::config::{self, HotkeyMode};
 use crate::errors::{AppError, ErrorKind};
 use crate::focus::{capture_focus, FocusSignature};
-use crate::history::{HistoryInjectionResult, TranscriptEntry, TranscriptHistory};
+use crate::history::{
+    HistoryInjectionResult, TranscriptEntry, TranscriptHistory, TranscriptTimings,
+};
 use crate::hotkey::{HotkeyAction, HotkeyManager, RecordingAction};
 use crate::injection::{inject_text, InjectionConfig, InjectionResult};
 use crate::ipc::{NotificationEvent, RpcClient, RpcError};
@@ -198,6 +201,64 @@ fn is_stale_session(
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct PipelineTimingMarks {
+    t0_stop_called: Option<Instant>,
+    t1_stop_rpc_returned: Option<Instant>,
+    t2_transcription_received: Option<Instant>,
+    t3_postprocess_completed: Option<Instant>,
+    t4_injection_completed: Option<Instant>,
+}
+
+fn delta_ms(start: Option<Instant>, end: Option<Instant>) -> Option<u64> {
+    match (start, end) {
+        (Some(start), Some(end)) if end >= start => {
+            Some(end.duration_since(start).as_millis() as u64)
+        }
+        _ => None,
+    }
+}
+
+fn pipeline_timings_from_marks(marks: &PipelineTimingMarks) -> Option<TranscriptTimings> {
+    let timings = TranscriptTimings {
+        ipc_ms: delta_ms(marks.t0_stop_called, marks.t1_stop_rpc_returned),
+        transcribe_ms: delta_ms(marks.t1_stop_rpc_returned, marks.t2_transcription_received),
+        postprocess_ms: delta_ms(
+            marks.t2_transcription_received,
+            marks.t3_postprocess_completed,
+        ),
+        inject_ms: delta_ms(marks.t3_postprocess_completed, marks.t4_injection_completed),
+        total_ms: delta_ms(marks.t0_stop_called, marks.t4_injection_completed),
+    };
+
+    if timings.ipc_ms.is_none()
+        && timings.transcribe_ms.is_none()
+        && timings.postprocess_ms.is_none()
+        && timings.inject_ms.is_none()
+        && timings.total_ms.is_none()
+    {
+        None
+    } else {
+        Some(timings)
+    }
+}
+
+fn log_pipeline_timings(timings: &TranscriptTimings) {
+    let fmt = |v: Option<u64>| match v {
+        Some(ms) => format!("{}ms", ms),
+        None => "n/a".to_string(),
+    };
+
+    log::info!(
+        "Pipeline: total={} (ipc={}, transcribe={}, postprocess={}, inject={})",
+        fmt(timings.total_ms),
+        fmt(timings.ipc_ms),
+        fmt(timings.transcribe_ms),
+        fmt(timings.postprocess_ms),
+        fmt(timings.inject_ms),
+    );
+}
+
 fn emit_with_shared_seq(
     handle: &AppHandle,
     events: &[&str],
@@ -241,6 +302,8 @@ struct RecordingContext {
     focus_before: FocusSignature,
     /// Session ID for correlation.
     session_id: String,
+    /// Pipeline timing marks for stop -> injection latency tracking.
+    timing_marks: PipelineTimingMarks,
 }
 
 /// Central integration manager that wires everything together.
@@ -949,6 +1012,7 @@ impl IntegrationManager {
                                     *recording_context.write().await = Some(RecordingContext {
                                         focus_before: focus,
                                         session_id: session_id.clone(),
+                                        timing_marks: PipelineTimingMarks::default(),
                                     });
                                     *current_session_id.write().await = Some(session_id.clone());
 
@@ -1029,11 +1093,35 @@ impl IntegrationManager {
 
                 // Tell sidecar to stop recording (triggers async transcription)
                 if let Some(client) = rpc_client.read().await.as_ref() {
-                    if let Some(ctx) = recording_context.read().await.as_ref() {
+                    let stop_called_at = Instant::now();
+                    let session_id = {
+                        let mut ctx = recording_context.write().await;
+                        if let Some(ctx) = ctx.as_mut() {
+                            ctx.timing_marks.t0_stop_called = Some(stop_called_at);
+                            Some(ctx.session_id.clone())
+                        } else {
+                            None
+                        }
+                    };
+
+                    if let Some(session_id) = session_id {
                         let params = json!({
-                            "session_id": ctx.session_id
+                            "session_id": session_id
                         });
-                        let _: Result<Value, _> = client.call("recording.stop", Some(params)).await;
+                        let stop_result: Result<Value, _> =
+                            client.call("recording.stop", Some(params)).await;
+
+                        let stop_rpc_returned_at = Instant::now();
+                        let mut ctx = recording_context.write().await;
+                        if let Some(ctx) = ctx.as_mut() {
+                            if ctx.session_id == session_id {
+                                ctx.timing_marks.t1_stop_rpc_returned = Some(stop_rpc_returned_at);
+                            }
+                        }
+
+                        if let Err(err) = stop_result {
+                            log::warn!("Failed to call recording.stop RPC: {}", err);
+                        }
                     }
                 }
             }
@@ -1121,9 +1209,19 @@ impl IntegrationManager {
                             log::debug!("Transcription text (debug): {}", text);
                         }
 
-                        // Get focus context
-                        let ctx = recording_context.read().await;
-                        let expected_focus = ctx.as_ref().map(|c| &c.focus_before);
+                        // Snapshot focus context and timing marks for this session.
+                        let (focus_before, mut timing_marks) = {
+                            let ctx = recording_context.read().await;
+                            if let Some(ctx) = ctx.as_ref() {
+                                (Some(ctx.focus_before.clone()), ctx.timing_marks.clone())
+                            } else {
+                                (None, PipelineTimingMarks::default())
+                            }
+                        };
+                        if timing_marks.t2_transcription_received.is_none() {
+                            timing_marks.t2_transcription_received = Some(Instant::now());
+                        }
+                        let expected_focus = focus_before.as_ref();
 
                         // Skip injection if text is empty
                         if text.trim().is_empty() {
@@ -1154,8 +1252,16 @@ impl IntegrationManager {
                                 .collect(),
                         };
 
+                        timing_marks.t3_postprocess_completed = Some(Instant::now());
+
                         // Inject text
                         let result = inject_text(&text, expected_focus, &injection_config).await;
+                        timing_marks.t4_injection_completed = Some(Instant::now());
+
+                        let pipeline_timings = pipeline_timings_from_marks(&timing_marks);
+                        if let Some(timings) = pipeline_timings.as_ref() {
+                            log_pipeline_timings(timings);
+                        }
 
                         match &result {
                             InjectionResult::Injected { text_length, .. } => {
@@ -1174,12 +1280,15 @@ impl IntegrationManager {
                             let history = handle.state::<TranscriptHistory>();
                             let injection_result_for_history =
                                 HistoryInjectionResult::from_injection_result(&result);
-                            let entry = TranscriptEntry::new(
+                            let mut entry = TranscriptEntry::new(
                                 text.clone(),
                                 audio_duration_ms as u32,
                                 processing_duration_ms as u32,
                                 injection_result_for_history,
                             );
+                            if let Some(timings) = pipeline_timings.clone() {
+                                entry = entry.with_timings(timings);
+                            }
                             history.push(entry);
                         }
 
@@ -1194,13 +1303,13 @@ impl IntegrationManager {
                                     "audio_duration_ms": audio_duration_ms,
                                     "processing_duration_ms": processing_duration_ms,
                                     "injection_result": result,
+                                    "timings": pipeline_timings,
                                 }),
                                 &event_seq,
                             );
                         }
 
                         // Clear context
-                        drop(ctx);
                         *recording_context.write().await = None;
                         *current_session_id.write().await = None;
                     }
@@ -1269,6 +1378,7 @@ impl IntegrationManager {
         let model_progress = Arc::clone(&self.model_progress);
         let app_handle = self.app_handle.clone();
         let watchdog = Arc::clone(&self.watchdog);
+        let recording_context = Arc::clone(&self.recording_context);
         let current_session_id = Arc::clone(&self.current_session_id);
         let event_seq = Arc::clone(&self.event_seq);
 
@@ -1309,6 +1419,17 @@ impl IntegrationManager {
                         if let Ok(params) =
                             serde_json::from_value::<TranscriptionParams>(event.params)
                         {
+                            {
+                                let transcription_received_at = Instant::now();
+                                let mut ctx = recording_context.write().await;
+                                if let Some(ctx) = ctx.as_mut() {
+                                    if ctx.session_id == params.session_id {
+                                        ctx.timing_marks.t2_transcription_received =
+                                            Some(transcription_received_at);
+                                    }
+                                }
+                            }
+
                             let result = TranscriptionResult {
                                 session_id: params.session_id,
                                 text: params.text,
@@ -1602,6 +1723,7 @@ impl PingCallback for RpcPinger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn test_add_seq_to_object_payload() {
@@ -1679,6 +1801,31 @@ mod tests {
         assert_eq!(progress.current, 20);
         assert_eq!(progress.total, Some(200));
         assert_eq!(progress.unit, "verifying");
+    }
+
+    #[test]
+    fn test_pipeline_timings_from_marks() {
+        let base = Instant::now();
+        let marks = PipelineTimingMarks {
+            t0_stop_called: Some(base),
+            t1_stop_rpc_returned: Some(base + Duration::from_millis(15)),
+            t2_transcription_received: Some(base + Duration::from_millis(795)),
+            t3_postprocess_completed: Some(base + Duration::from_millis(800)),
+            t4_injection_completed: Some(base + Duration::from_millis(850)),
+        };
+
+        let timings = pipeline_timings_from_marks(&marks).expect("timings should exist");
+        assert_eq!(timings.ipc_ms, Some(15));
+        assert_eq!(timings.transcribe_ms, Some(780));
+        assert_eq!(timings.postprocess_ms, Some(5));
+        assert_eq!(timings.inject_ms, Some(50));
+        assert_eq!(timings.total_ms, Some(850));
+    }
+
+    #[test]
+    fn test_pipeline_timings_from_marks_none_when_missing() {
+        let marks = PipelineTimingMarks::default();
+        assert!(pipeline_timings_from_marks(&marks).is_none());
     }
 
     #[test]
