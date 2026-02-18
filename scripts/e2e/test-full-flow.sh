@@ -37,7 +37,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 TEST_TIMEOUT=60  # seconds
 
 # Send JSON-RPC request to an already running sidecar process and read response
-# for matching request id from the shared stdout FIFO.
+# for matching request id from the persistent stdout reader FD.
 # Args: method, [params_json], [timeout_seconds]
 sidecar_rpc_session() {
     local method="$1"
@@ -58,26 +58,35 @@ sidecar_rpc_session() {
     log_debug "ipc" "request" "Sending stateful RPC request" "{\"method\":\"$method\",\"id\":$request_id}"
     printf '%s\n' "$request" >&3
 
-    local response
-    response=$(
-        E2E_RPC_FIFO="$E2E_SIDECAR_STDOUT" E2E_RPC_ID="$request_id" \
-            e2e_timeout_run "$timeout" bash -c '
-                while IFS= read -r line; do
-                    if [[ "$line" != *"\"jsonrpc\""* ]]; then
-                        continue
-                    fi
+    local deadline=$((SECONDS + timeout))
+    local line=""
 
-                    line_id=$(echo "$line" | jq -r ".id // empty" 2>/dev/null || true)
-                    if [[ "$line_id" == "$E2E_RPC_ID" ]]; then
-                        printf "%s\n" "$line"
-                        exit 0
-                    fi
-                done < "$E2E_RPC_FIFO"
-                exit 1
-            ' 2>/dev/null || echo '{"error":{"message":"timeout"}}'
-    )
+    while (( SECONDS < deadline )); do
+        local wait_s=$((deadline - SECONDS))
+        if (( wait_s <= 0 )); then
+            break
+        fi
 
-    printf '%s\n' "$response"
+        if IFS= read -r -u 4 -t "$wait_s" line; then
+            if [[ "$line" != *'"jsonrpc"'* ]]; then
+                continue
+            fi
+
+            local line_id
+            line_id=$(echo "$line" | jq -r '.id // empty' 2>/dev/null || true)
+            if [[ "$line_id" == "$request_id" ]]; then
+                printf '%s\n' "$line"
+                return 0
+            fi
+
+            continue
+        fi
+
+        break
+    done
+
+    printf '%s\n' '{"error":{"message":"timeout"}}'
+    return 1
 }
 
 main() {
@@ -97,6 +106,7 @@ main() {
 
     # Start sidecar once so stateful calls (recording.start -> recording.stop) work.
     start_sidecar || exit 2
+    exec 4<"$E2E_SIDECAR_STDOUT"
 
     # Phase 2: Sidecar ping test
     log_info "sidecar" "ping_test" "Testing sidecar ping"
