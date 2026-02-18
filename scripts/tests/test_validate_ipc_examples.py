@@ -44,7 +44,7 @@ class ValidateIPCExamplesTests(unittest.TestCase):
             )
         )
 
-    def test_contract_required_result_fields_detects_missing_fields(self) -> None:
+    def test_method_level_contract_shapes_detects_missing_result_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             examples_file = Path(tmpdir) / "examples.jsonl"
             contract_file = Path(tmpdir) / "sidecar.rpc.v1.json"
@@ -63,13 +63,14 @@ class ValidateIPCExamplesTests(unittest.TestCase):
                 ],
             )
 
-            errors = MODULE.validate_contract_required_result_fields(examples_file, contract_file)
-            self.assertEqual(len(errors), 1)
-            self.assertIn("audio.meter_start", errors[0])
-            self.assertIn("interval_ms", errors[0])
-            self.assertIn("running", errors[0])
+            errors = MODULE.validate_method_level_contract_shapes(examples_file, contract_file)
+            self.assertGreaterEqual(len(errors), 2)
+            self.assertTrue(any("audio.meter_start.result: missing required field 'running'" in err for err in errors))
+            self.assertTrue(
+                any("audio.meter_start.result: missing required field 'interval_ms'" in err for err in errors)
+            )
 
-    def test_contract_required_result_fields_passes_when_fields_present(self) -> None:
+    def test_method_level_contract_shapes_passes_when_fields_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             examples_file = Path(tmpdir) / "examples.jsonl"
             contract_file = Path(tmpdir) / "sidecar.rpc.v1.json"
@@ -97,8 +98,93 @@ class ValidateIPCExamplesTests(unittest.TestCase):
                 ],
             )
 
-            errors = MODULE.validate_contract_required_result_fields(examples_file, contract_file)
+            errors = MODULE.validate_method_level_contract_shapes(examples_file, contract_file)
             self.assertEqual(errors, [])
+
+    def test_method_level_contract_shapes_detects_request_param_schema_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            examples_file = Path(tmpdir) / "examples.jsonl"
+            contract_file = Path(tmpdir) / "sidecar.rpc.v1.json"
+            contract_file.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "type": "method",
+                                "name": "recording.stop",
+                                "params_schema": {
+                                    "type": "object",
+                                    "required": ["session_id"],
+                                    "properties": {"session_id": {"type": "string", "minLength": 1}},
+                                    "additionalProperties": False,
+                                },
+                                "result_schema": {"type": "object"},
+                            }
+                        ]
+                    }
+                )
+            )
+            self._write_jsonl(
+                examples_file,
+                [
+                    {
+                        "type": "request",
+                        "data": {
+                            "jsonrpc": "2.0",
+                            "id": 17,
+                            "method": "recording.stop",
+                            "params": {"session_id": "", "unexpected": True},
+                        },
+                    }
+                ],
+            )
+
+            errors = MODULE.validate_method_level_contract_shapes(examples_file, contract_file)
+            self.assertGreaterEqual(len(errors), 2)
+            self.assertTrue(any("minLength" in err for err in errors))
+            self.assertTrue(any("unexpected field 'unexpected'" in err for err in errors))
+
+    def test_method_level_contract_shapes_detects_result_enum_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            examples_file = Path(tmpdir) / "examples.jsonl"
+            contract_file = Path(tmpdir) / "sidecar.rpc.v1.json"
+            contract_file.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "type": "method",
+                                "name": "model.get_status",
+                                "params_schema": {"type": "object", "additionalProperties": False},
+                                "result_schema": {
+                                    "type": "object",
+                                    "required": ["status"],
+                                    "properties": {"status": {"type": "string", "enum": ["missing", "ready"]}},
+                                    "additionalProperties": True,
+                                },
+                            }
+                        ]
+                    }
+                )
+            )
+            self._write_jsonl(
+                examples_file,
+                [
+                    {
+                        "type": "request",
+                        "data": {"jsonrpc": "2.0", "id": 9, "method": "model.get_status"},
+                    },
+                    {
+                        "type": "response",
+                        "data": {"jsonrpc": "2.0", "id": 9, "result": {"status": "downloading"}},
+                    },
+                ],
+            )
+
+            errors = MODULE.validate_method_level_contract_shapes(examples_file, contract_file)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("expected one of", errors[0])
+            self.assertIn("downloading", errors[0])
 
     def test_status_get_idle_fixture_variants_requires_no_model_example(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
