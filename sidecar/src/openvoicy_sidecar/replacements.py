@@ -33,6 +33,7 @@ MAX_RULES = 500
 MAX_PATTERN_LENGTH = 256
 MAX_REPLACEMENT_LENGTH = 1024
 MAX_OUTPUT_LENGTH = 50_000
+ALLOWED_RULE_KINDS = {"literal", "regex"}
 
 
 # === Data Structures ===
@@ -191,6 +192,13 @@ def validate_rules(rules: list[ReplacementRule]) -> None:
         )
 
     for i, rule in enumerate(rules):
+        # Validate rule kind
+        if rule.kind not in ALLOWED_RULE_KINDS:
+            raise ValidationError(
+                f"Rule {i} has invalid kind: {rule.kind}",
+                {"rule_index": i, "rule_id": rule.id, "kind": rule.kind},
+            )
+
         # Check pattern length
         if len(rule.pattern) > MAX_PATTERN_LENGTH:
             raise ValidationError(
