@@ -418,6 +418,20 @@ mod tests {
     }
 
     #[test]
+    fn test_bundle_app_icons_present_and_non_empty() {
+        let ico = include_bytes!("../icons/icon.ico");
+        let icns = include_bytes!("../icons/icon.icns");
+
+        assert!(!ico.is_empty(), "icons/icon.ico must not be empty");
+        assert!(!icns.is_empty(), "icons/icon.icns must not be empty");
+
+        // ICO signature: reserved=0, type=1 (icon)
+        assert_eq!(&ico[0..4], &[0x00, 0x00, 0x01, 0x00]);
+        // ICNS signature: file magic
+        assert_eq!(&icns[0..4], b"icns");
+    }
+
+    #[test]
     fn test_load_png_icon() {
         // Test that we can load the embedded icons
         let result = load_png_icon(ICON_IDLE);
