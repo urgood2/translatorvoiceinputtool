@@ -327,6 +327,14 @@ export interface DiagnosticsReport {
 // ERROR TYPES
 // ============================================================================
 
+/** Standardized app error payload emitted by backend events. */
+export interface AppError {
+  code: string;
+  message: string;
+  details?: unknown;
+  recoverable: boolean;
+}
+
 /** Command error codes. */
 export type CommandErrorCode =
   | 'config'
@@ -369,4 +377,6 @@ export interface TranscriptEvent {
 export interface ErrorEvent {
   message: string;
   recoverable: boolean;
+  error?: AppError;
+  seq?: number;
 }

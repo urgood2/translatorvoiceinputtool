@@ -19,6 +19,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
 
 use crate::config::{self, HotkeyMode};
+use crate::errors::AppError;
 use crate::focus::{capture_focus, FocusSignature};
 use crate::history::{HistoryInjectionResult, TranscriptEntry, TranscriptHistory};
 use crate::hotkey::{HotkeyAction, HotkeyManager, RecordingAction};
@@ -106,6 +107,8 @@ const EVENT_TRANSCRIPTION_COMPLETE: &str = "transcription:complete";
 
 /// Transcription error event name.
 const EVENT_TRANSCRIPTION_ERROR: &str = "transcription:error";
+/// Application error event name (legacy + structured compatibility payload).
+const EVENT_APP_ERROR: &str = "app:error";
 
 fn status_progress_from_parts(
     current: u64,
@@ -1183,12 +1186,25 @@ impl IntegrationManager {
                         );
 
                         if let Some(ref handle) = app_handle {
+                            let app_error = AppError::new(
+                                "E_TRANSCRIPTION",
+                                "Transcription failed",
+                                Some(json!({
+                                    "session_id": session_id,
+                                    "details": error
+                                })),
+                                true,
+                            );
+                            let legacy_message = app_error.message.clone();
+                            let legacy_recoverable = app_error.recoverable;
                             emit_with_shared_seq(
                                 handle,
-                                &[EVENT_TRANSCRIPTION_ERROR],
+                                &[EVENT_TRANSCRIPTION_ERROR, EVENT_APP_ERROR],
                                 json!({
                                     "session_id": session_id,
-                                    "error": error,
+                                    "message": legacy_message,
+                                    "recoverable": legacy_recoverable,
+                                    "error": app_error,
                                 }),
                                 &event_seq,
                             );

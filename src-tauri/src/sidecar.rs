@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::errors::AppError;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Maximum number of restart attempts before giving up.
@@ -51,6 +53,8 @@ pub struct SidecarStatus {
     pub state: SidecarState,
     pub restart_count: u32,
     pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<AppError>,
 }
 
 /// JSON-RPC response for ping
@@ -155,10 +159,39 @@ impl SidecarManager {
     /// Get the current status.
     pub fn get_status(&self) -> SidecarStatus {
         let inner = self.inner.lock().unwrap();
+        let error = inner
+            .last_error
+            .as_deref()
+            .and_then(|msg| Self::status_error(inner.state, inner.restart_count, msg));
         SidecarStatus {
             state: inner.state,
             restart_count: inner.restart_count,
             message: inner.last_error.clone(),
+            error,
+        }
+    }
+
+    fn status_error(state: SidecarState, restart_count: u32, message: &str) -> Option<AppError> {
+        match state {
+            SidecarState::Restarting => Some(AppError::new(
+                "E_SIDECAR_RESTARTING",
+                "Background service restarted after an error",
+                Some(json!({
+                    "restart_count": restart_count,
+                    "message": message
+                })),
+                true,
+            )),
+            SidecarState::Failed => Some(AppError::new(
+                "E_SIDECAR_FAILED",
+                "Background service failed after multiple restart attempts",
+                Some(json!({
+                    "restart_count": restart_count,
+                    "message": message
+                })),
+                false,
+            )),
+            _ => None,
         }
     }
 
@@ -184,6 +217,7 @@ impl SidecarManager {
             state: SidecarState::Starting,
             restart_count: 0,
             message: Some("Starting sidecar...".to_string()),
+            error: None,
         });
 
         self.spawn_process()
@@ -254,6 +288,7 @@ impl SidecarManager {
             state: SidecarState::Running,
             restart_count: self.inner.lock().unwrap().restart_count,
             message: Some(format!("Sidecar running (PID {})", pid)),
+            error: None,
         });
 
         // Start monitoring thread
@@ -417,6 +452,14 @@ impl SidecarManager {
                     state: SidecarState::Failed,
                     restart_count: inner.restart_count,
                     message: Some("Sidecar failed after multiple restart attempts".to_string()),
+                    error: Some(AppError::new(
+                        "E_SIDECAR_FAILED",
+                        "Background service failed after multiple restart attempts",
+                        Some(json!({
+                            "restart_count": inner.restart_count
+                        })),
+                        false,
+                    )),
                 });
                 return;
             }
@@ -448,6 +491,15 @@ impl SidecarManager {
             message: Some(format!(
                 "Restarting in {}ms (attempt {}/{})",
                 delay_ms, restart_count, MAX_RESTART_ATTEMPTS
+            )),
+            error: Some(AppError::new(
+                "E_SIDECAR_RESTARTING",
+                "Background service restarted after an error",
+                Some(json!({
+                    "restart_count": restart_count,
+                    "backoff_ms": delay_ms
+                })),
+                true,
             )),
         });
 
@@ -504,6 +556,7 @@ impl SidecarManager {
             state: SidecarState::NotStarted,
             restart_count: 0,
             message: Some("Sidecar stopped".to_string()),
+            error: None,
         });
 
         Ok(())
@@ -696,6 +749,7 @@ mod tests {
             state: SidecarState::Running,
             restart_count: 2,
             message: Some("All systems go".to_string()),
+            error: None,
         };
 
         let json = serde_json::to_string(&status).unwrap();
