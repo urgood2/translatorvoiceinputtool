@@ -49,6 +49,8 @@ const mockConfig: AppConfig = {
   },
   history: {
     persistence_mode: 'memory',
+    max_entries: 100,
+    encrypt_at_rest: true,
   },
   presets: { enabled_presets: [] },
 };

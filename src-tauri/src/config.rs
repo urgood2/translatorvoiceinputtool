@@ -195,6 +195,16 @@ impl AppConfig {
             );
             self.history.persistence_mode = default_persistence_mode();
         }
+
+        let original_history_max_entries = self.history.max_entries;
+        self.history.max_entries = self.history.max_entries.clamp(10, 2000);
+        if self.history.max_entries != original_history_max_entries {
+            log::info!(
+                "history.max_entries clamped from {} to {}",
+                original_history_max_entries,
+                self.history.max_entries
+            );
+        }
     }
 }
 
@@ -356,12 +366,20 @@ pub struct HistoryConfig {
     /// Transcript history persistence mode: "memory" or "disk".
     #[serde(default = "default_persistence_mode")]
     pub persistence_mode: String,
+    /// Maximum number of history entries retained in memory.
+    #[serde(default = "default_history_max_entries")]
+    pub max_entries: u32,
+    /// Whether disk-persisted history is encrypted at rest.
+    #[serde(default = "default_true")]
+    pub encrypt_at_rest: bool,
 }
 
 impl Default for HistoryConfig {
     fn default() -> Self {
         Self {
             persistence_mode: default_persistence_mode(),
+            max_entries: default_history_max_entries(),
+            encrypt_at_rest: default_true(),
         }
     }
 }
@@ -380,6 +398,10 @@ fn default_overlay_enabled() -> bool {
 
 fn default_persistence_mode() -> String {
     "memory".to_string()
+}
+
+fn default_history_max_entries() -> u32 {
+    100
 }
 
 fn default_true() -> bool {
@@ -628,6 +650,8 @@ mod tests {
         assert_eq!(config.ui.locale, None);
         assert!(!config.ui.reduce_motion);
         assert_eq!(config.history.persistence_mode, "memory");
+        assert_eq!(config.history.max_entries, 100);
+        assert!(config.history.encrypt_at_rest);
     }
 
     #[test]
@@ -652,6 +676,8 @@ mod tests {
         config.ui.locale = Some("en-US".to_string());
         config.ui.reduce_motion = true;
         config.history.persistence_mode = "disk".to_string();
+        config.history.max_entries = 300;
+        config.history.encrypt_at_rest = false;
 
         // Save
         save_config_to_path(&config, &config_path).unwrap();
@@ -678,6 +704,8 @@ mod tests {
         assert_eq!(loaded.ui.locale, Some("en-US".to_string()));
         assert!(loaded.ui.reduce_motion);
         assert_eq!(loaded.history.persistence_mode, "disk");
+        assert_eq!(loaded.history.max_entries, 300);
+        assert!(!loaded.history.encrypt_at_rest);
     }
 
     #[test]
@@ -770,6 +798,8 @@ mod tests {
         assert!(config.injection.focus_guard_enabled); // Should be added by migration
         assert!(config.ui.onboarding_completed); // Existing users should skip onboarding
         assert_eq!(config.history.persistence_mode, "memory");
+        assert_eq!(config.history.max_entries, 100);
+        assert!(config.history.encrypt_at_rest);
     }
 
     #[test]
@@ -797,6 +827,8 @@ mod tests {
         assert_eq!(config.ui.locale, None);
         assert!(!config.ui.reduce_motion);
         assert_eq!(config.history.persistence_mode, "memory");
+        assert_eq!(config.history.max_entries, 100);
+        assert!(config.history.encrypt_at_rest);
     }
 
     #[test]
@@ -890,6 +922,8 @@ mod tests {
         assert!(json.contains("reduce_motion"));
         assert!(json.contains("history"));
         assert!(json.contains("persistence_mode"));
+        assert!(json.contains("max_entries"));
+        assert!(json.contains("encrypt_at_rest"));
     }
 
     #[test]
@@ -949,6 +983,18 @@ mod tests {
         config.validate_and_clamp();
 
         assert_eq!(config.history.persistence_mode, "memory");
+    }
+
+    #[test]
+    fn test_history_max_entries_clamping() {
+        let mut config = AppConfig::default();
+        config.history.max_entries = 5;
+        config.validate_and_clamp();
+        assert_eq!(config.history.max_entries, 10);
+
+        config.history.max_entries = 5000;
+        config.validate_and_clamp();
+        assert_eq!(config.history.max_entries, 2000);
     }
 
     #[test]
@@ -1102,6 +1148,8 @@ mod tests {
 
         let config = load_config_from_path(&config_path);
         assert_eq!(config.history.persistence_mode, "disk");
+        assert_eq!(config.history.max_entries, 100);
+        assert!(config.history.encrypt_at_rest);
     }
 
     #[test]

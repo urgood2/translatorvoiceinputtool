@@ -167,6 +167,8 @@ export interface PresetsConfig {
 /** Transcript history configuration. */
 export interface HistoryConfig {
   persistence_mode: 'memory' | 'disk';
+  max_entries: number;
+  encrypt_at_rest: boolean;
 }
 
 /** Complete application configuration. */

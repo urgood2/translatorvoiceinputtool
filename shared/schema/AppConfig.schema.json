@@ -285,11 +285,25 @@
           "description": "History persistence mode: memory (privacy-first) or disk.",
           "enum": ["memory", "disk"],
           "default": "memory"
+        },
+        "max_entries": {
+          "type": "integer",
+          "description": "Maximum transcript history entries retained in ring buffer.",
+          "minimum": 10,
+          "maximum": 2000,
+          "default": 100
+        },
+        "encrypt_at_rest": {
+          "type": "boolean",
+          "description": "Encrypt on-disk history when persistence_mode is 'disk'.",
+          "default": true
         }
       },
       "additionalProperties": false,
       "default": {
-        "persistence_mode": "memory"
+        "persistence_mode": "memory",
+        "max_entries": 100,
+        "encrypt_at_rest": true
       }
     }
   },
@@ -328,7 +342,9 @@
         "reduce_motion": false
       },
       "history": {
-        "persistence_mode": "memory"
+        "persistence_mode": "memory",
+        "max_entries": 100,
+        "encrypt_at_rest": true
       },
       "presets": {
         "enabled_presets": []
@@ -383,7 +399,9 @@
         "reduce_motion": true
       },
       "history": {
-        "persistence_mode": "disk"
+        "persistence_mode": "disk",
+        "max_entries": 300,
+        "encrypt_at_rest": true
       },
       "presets": {
         "enabled_presets": ["punctuation", "common-abbreviations"]
