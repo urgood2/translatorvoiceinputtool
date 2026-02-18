@@ -69,8 +69,10 @@ bun run tauri dev
 
 # The app should:
 # - Launch a window titled "Voice Input Tool"
-# - Show a text input and "Call Rust Echo Command" button
-# - Type a message and click the button - it should echo back from Rust
+# - Show a status badge and cards for "Model Status", "Audio Devices", and "Recent Transcripts"
+# - Click "Refresh" in "Audio Devices" to exercise the Rust command path (list_audio_devices)
+# - See either detected devices or "No devices found" without errors
+# - See "Model Status" populated from Rust (for example: missing, downloading, or ready)
 # - Edit src/App.tsx and save - the UI should hot reload immediately
 ```
 
