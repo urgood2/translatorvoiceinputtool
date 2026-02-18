@@ -560,12 +560,17 @@ def handle_recording_cancel(request: Request) -> dict[str, Any]:
 
     try:
         recorder.cancel(session_id)
+        cleared_pending_audio = clear_pending_audio(session_id)
 
         # Mark session as cancelled to prevent any notifications
         from .notifications import get_session_tracker
 
         tracker = get_session_tracker()
         tracker.mark_cancelled(session_id)
+        log(
+            f"Recording cancel cleanup: session={session_id}, "
+            f"pending_audio_cleared={cleared_pending_audio}"
+        )
 
         return {"cancelled": True, "session_id": session_id}
     except RuntimeError as e:
