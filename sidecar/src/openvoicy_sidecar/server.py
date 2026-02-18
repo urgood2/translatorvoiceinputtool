@@ -494,7 +494,7 @@ def run_server() -> None:
                     "E_NOT_INITIALIZED",
                 )
             except TranscriptionError as e:
-                log(f"Transcription error: {e}")
+                log(f"Transcription error: kind={getattr(e, 'code', 'E_TRANSCRIPTION')}")
                 response = make_error(
                     request.id,
                     ERROR_TRANSCRIBE,

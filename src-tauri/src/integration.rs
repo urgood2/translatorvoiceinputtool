@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
 
@@ -173,6 +174,14 @@ fn add_seq_to_payload(payload: Value, seq: u64) -> Value {
             "data": other
         }),
     }
+}
+
+fn sha256_prefix(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let digest = hasher.finalize();
+    let hex = format!("{:x}", digest);
+    hex[..8].to_string()
 }
 
 fn extract_session_id(params: &Value) -> Option<&str> {
@@ -1097,15 +1106,20 @@ impl IntegrationManager {
                         text,
                         audio_duration_ms,
                         processing_duration_ms,
-                        timestamp,
+                        timestamp: _,
                     } => {
                         log::info!(
-                            "Transcription complete: session={}, text_len={}, audio={}ms, processing={}ms",
+                            "Transcription complete: session={}, text_len={}, text_sha256_prefix={}, audio={}ms, processing={}ms",
                             session_id,
                             text.len(),
+                            sha256_prefix(&text),
                             audio_duration_ms,
                             processing_duration_ms
                         );
+
+                        if log::log_enabled!(log::Level::Debug) {
+                            log::debug!("Transcription text (debug): {}", text);
+                        }
 
                         // Get focus context
                         let ctx = recording_context.read().await;
@@ -1194,10 +1208,14 @@ impl IntegrationManager {
                         session_id, error, ..
                     } => {
                         log::error!(
-                            "Transcription failed: session={}, error={}",
+                            "Transcription failed: session={}, error_len={}, error_sha256_prefix={}",
                             session_id,
-                            error
+                            error.len(),
+                            sha256_prefix(&error),
                         );
+                        if log::log_enabled!(log::Level::Debug) {
+                            log::debug!("Transcription error message (debug): {}", error);
+                        }
 
                         if let Some(ref handle) = app_handle {
                             let app_error = AppError::new(

@@ -13,6 +13,7 @@ Key Invariants:
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 from dataclasses import dataclass, field
@@ -22,6 +23,10 @@ from typing import Any, Callable, Optional
 import numpy as np
 
 from .protocol import Notification, log, write_notification
+
+
+def _sha256_prefix(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
 
 
 class SessionState(Enum):
@@ -264,7 +269,10 @@ def emit_transcription_complete(
 
     notification = Notification(method="event.transcription_complete", params=params)
     write_notification(notification)
-    log(f"Event: transcription_complete session={session_id}, text_len={len(text)}")
+    log(
+        "Event: transcription_complete "
+        f"session={session_id}, text_len={len(text)}, text_sha256_prefix={_sha256_prefix(text)}"
+    )
     return True
 
 
@@ -406,8 +414,11 @@ def transcribe_session_async(
             emit_status_changed("idle")
 
         except Exception as e:
-            log(f"Transcription error for session {session_id}: {e}")
             error_kind = getattr(e, "code", "E_TRANSCRIBE")
+            log(
+                "Transcription error for session "
+                f"{session_id}: kind={error_kind}, error_len={len(str(e))}"
+            )
             emit_transcription_error(session_id, error_kind, str(e))
             emit_status_changed("error", str(e))
 
