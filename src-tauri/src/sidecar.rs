@@ -9,7 +9,7 @@
 #![allow(dead_code)] // Methods will be used in future RPC client implementation
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -79,6 +79,7 @@ struct SidecarInner {
     state: SidecarState,
     restart_count: u32,
     child: Option<Child>,
+    stdout_reader: Option<BufReader<ChildStdout>>,
     last_error: Option<String>,
 }
 
@@ -120,6 +121,7 @@ impl SidecarManager {
                 state: SidecarState::NotStarted,
                 restart_count: 0,
                 child: None,
+                stdout_reader: None,
                 last_error: None,
             })),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
@@ -233,7 +235,7 @@ impl SidecarManager {
     fn spawn_process(&self) -> Result<(), String> {
         log::info!("Spawning sidecar process (mode: {:?})", self.spawn_mode);
 
-        let child = match &self.spawn_mode {
+        let mut child = match &self.spawn_mode {
             SpawnMode::Python { path, module } => {
                 // Development mode: run via Python interpreter
                 log::info!("Using Python mode: {} -m {}", path, module);
@@ -281,11 +283,13 @@ impl SidecarManager {
         };
 
         let pid = child.id();
+        let stdout_reader = child.stdout.take().map(BufReader::new);
         log::info!("Sidecar spawned with PID {}", pid);
 
         {
             let mut inner = self.inner.lock().unwrap();
             inner.child = Some(child);
+            inner.stdout_reader = stdout_reader;
             inner.state = SidecarState::Running;
             inner.last_error = None;
         }
@@ -537,6 +541,7 @@ impl SidecarManager {
 
             inner.restart_count += 1;
             inner.state = SidecarState::Restarting;
+            inner.stdout_reader = None;
             (inner.restart_count, true)
         };
 
@@ -617,6 +622,7 @@ impl SidecarManager {
                 }
 
                 inner.child = None;
+                inner.stdout_reader = None;
             }
 
             inner.state = SidecarState::NotStarted;
@@ -671,32 +677,34 @@ impl SidecarManager {
     /// Read a line from the sidecar's stdout.
     /// Note: This blocks until a line is available.
     pub fn read_line(&self) -> Result<String, String> {
-        // We need to extract stdout in a non-blocking way
-        // For a real implementation, this would use async I/O
-        // For now, this is a simplified synchronous version
-
-        let child_stdout = {
+        let mut reader = {
             let mut inner = self.inner.lock().unwrap();
-            if let Some(ref mut child) = inner.child {
-                child.stdout.take()
-            } else {
-                None
+            if inner.state != SidecarState::Running {
+                return Err(format!("Sidecar not running (state: {:?})", inner.state));
             }
+
+            inner.stdout_reader.take()
+        }
+        .ok_or_else(|| "Stdout not available".to_string())?;
+
+        let mut line = String::new();
+        let read_result = reader
+            .read_line(&mut line)
+            .map_err(|e| format!("Read error: {}", e));
+
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.stdout_reader.is_none() {
+                inner.stdout_reader = Some(reader);
+            }
+        }
+
+        let bytes_read = read_result?;
+        if bytes_read == 0 {
+            return Err("Sidecar stdout closed".to_string());
         };
 
-        if let Some(stdout) = child_stdout {
-            let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
-            reader
-                .read_line(&mut line)
-                .map_err(|e| format!("Read error: {}", e))?;
-
-            // Put stdout back (this is a simplification - real impl would not do this)
-            // In practice, you'd use async channels
-            Ok(line.trim().to_string())
-        } else {
-            Err("Stdout not available".to_string())
-        }
+        Ok(line.trim().to_string())
     }
 
     /// Clone self for use in thread (without cloning app_handle).
@@ -994,5 +1002,40 @@ mod tests {
         manager.shutdown_flag.store(true, Ordering::SeqCst);
         manager.clear_shutdown_flag_for_start();
         assert!(!manager.shutdown_flag.load(Ordering::SeqCst));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_read_line_does_not_consume_stdout_after_first_read() {
+        let manager = SidecarManager::new();
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("printf 'first\\nsecond\\n'")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to spawn test child");
+
+        {
+            let mut inner = manager.inner.lock().unwrap();
+            inner.state = SidecarState::Running;
+            inner.stdout_reader = child.stdout.take().map(std::io::BufReader::new);
+            inner.child = Some(child);
+        }
+
+        let first = manager.read_line().expect("first line should be readable");
+        let second = manager.read_line().expect("second line should be readable");
+        assert_eq!(first, "first");
+        assert_eq!(second, "second");
+
+        {
+            let mut inner = manager.inner.lock().unwrap();
+            if let Some(mut child) = inner.child.take() {
+                let _ = child.wait();
+            }
+            inner.stdout_reader = None;
+            inner.state = SidecarState::NotStarted;
+        }
     }
 }
