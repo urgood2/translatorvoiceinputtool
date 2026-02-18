@@ -104,8 +104,12 @@ pub struct HotkeyManager {
     manager: Option<GlobalHotKeyManager>,
     /// Primary hotkey ID.
     primary_id: Option<u32>,
+    /// Exact primary hotkey value registered with the OS.
+    primary_hotkey: Option<HotKey>,
     /// Copy last hotkey ID.
     copy_last_id: Option<u32>,
+    /// Exact copy-last hotkey value registered with the OS.
+    copy_last_hotkey: Option<HotKey>,
     /// Internal state.
     state: Arc<HotkeyState>,
     /// Event sender for hotkey actions.
@@ -123,7 +127,9 @@ impl HotkeyManager {
         Self {
             manager: None,
             primary_id: None,
+            primary_hotkey: None,
             copy_last_id: None,
+            copy_last_hotkey: None,
             state: Arc::new(HotkeyState::new(
                 config.hotkeys.mode,
                 config.audio.audio_cues_enabled,
@@ -144,12 +150,17 @@ impl HotkeyManager {
             GlobalHotKeyManager::new().map_err(|e| HotkeyError::PlatformError(e.to_string()))?;
 
         let config = config::load_config();
+        self.primary_id = None;
+        self.primary_hotkey = None;
+        self.copy_last_id = None;
+        self.copy_last_hotkey = None;
 
         // Parse and register primary hotkey
         let (primary_registered, primary_error) = match parse_hotkey(&config.hotkeys.primary) {
             Ok(hk) => match manager.register(hk) {
                 Ok(()) => {
                     self.primary_id = Some(hk.id());
+                    self.primary_hotkey = Some(hk);
                     (true, None)
                 }
                 Err(e) => (false, Some(e.to_string())),
@@ -163,6 +174,7 @@ impl HotkeyManager {
             Ok(hk) => match manager.register(hk) {
                 Ok(()) => {
                     self.copy_last_id = Some(hk.id());
+                    self.copy_last_hotkey = Some(hk);
                     (true, None)
                 }
                 Err(e) => (false, Some(e.to_string())),
@@ -321,17 +333,22 @@ impl HotkeyManager {
 
     /// Unregister hotkeys.
     pub fn shutdown(&mut self) {
+        let (primary_hotkey, copy_last_hotkey) = self.take_registered_hotkeys();
         if let Some(manager) = &self.manager {
-            if self.primary_id.is_some() {
-                let _ = manager.unregister(HotKey::new(None, Code::Space));
+            if let Some(hk) = primary_hotkey {
+                let _ = manager.unregister(hk);
             }
-            if self.copy_last_id.is_some() {
-                let _ = manager.unregister(HotKey::new(None, Code::KeyV));
+            if let Some(hk) = copy_last_hotkey {
+                let _ = manager.unregister(hk);
             }
         }
         self.manager = None;
+    }
+
+    fn take_registered_hotkeys(&mut self) -> (Option<HotKey>, Option<HotKey>) {
         self.primary_id = None;
         self.copy_last_id = None;
+        (self.primary_hotkey.take(), self.copy_last_hotkey.take())
     }
 }
 
@@ -617,5 +634,28 @@ mod tests {
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("Ctrl+Shift+Space"));
         assert!(json.contains("hold"));
+    }
+
+    #[test]
+    fn test_shutdown_uses_actual_registered_hotkeys() {
+        let mut manager = HotkeyManager::new();
+        let custom_primary = parse_hotkey("Ctrl+Shift+X").unwrap();
+        let custom_copy_last = parse_hotkey("Alt+F2").unwrap();
+
+        manager.primary_id = Some(custom_primary.id());
+        manager.primary_hotkey = Some(custom_primary);
+        manager.copy_last_id = Some(custom_copy_last.id());
+        manager.copy_last_hotkey = Some(custom_copy_last);
+
+        let (shutdown_primary, shutdown_copy_last) = manager.take_registered_hotkeys();
+        let shutdown_primary = shutdown_primary.unwrap();
+        let shutdown_copy_last = shutdown_copy_last.unwrap();
+
+        assert_eq!(shutdown_primary.id(), custom_primary.id());
+        assert_eq!(shutdown_copy_last.id(), custom_copy_last.id());
+        assert!(manager.primary_id.is_none());
+        assert!(manager.primary_hotkey.is_none());
+        assert!(manager.copy_last_id.is_none());
+        assert!(manager.copy_last_hotkey.is_none());
     }
 }
