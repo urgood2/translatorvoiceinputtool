@@ -307,8 +307,7 @@ impl RpcClient {
                 IncomingMessage::Response(response) => {
                     if let Some(RequestId::Number(id)) = response.id {
                         // Correlate with pending request
-                        let mut pending_guard =
-                            tokio::runtime::Handle::current().block_on(pending.lock());
+                        let mut pending_guard = pending.blocking_lock();
                         if let Some(request) = pending_guard.remove(&id) {
                             let _ = request.sender.send(Ok(response));
                         } else {
@@ -335,7 +334,7 @@ impl RpcClient {
         connected.store(false, Ordering::SeqCst);
 
         // Notify all pending requests that we're disconnected
-        let mut pending_guard = tokio::runtime::Handle::current().block_on(pending.lock());
+        let mut pending_guard = pending.blocking_lock();
         for (_, request) in pending_guard.drain() {
             let _ = request.sender.send(Err(RpcError::Disconnected));
         }
@@ -538,5 +537,23 @@ mod tests {
         let result: Result<Value, RpcError> = client.call("system.ping", None).await;
         assert!(matches!(result, Err(RpcError::Disconnected)));
         assert!(pending.lock().await.is_empty());
+    }
+
+    #[test]
+    fn test_pending_mutex_blocking_lock_from_std_thread() {
+        use std::collections::HashMap;
+
+        let pending: Arc<Mutex<HashMap<u64, PendingRequest>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending_for_thread = Arc::clone(&pending);
+
+        std::thread::spawn(move || {
+            let (tx, _rx) = oneshot::channel();
+            let mut guard = pending_for_thread.blocking_lock();
+            guard.insert(7, PendingRequest { sender: tx });
+            assert!(guard.remove(&7).is_some());
+        })
+        .join()
+        .expect("std thread should not panic");
     }
 }
