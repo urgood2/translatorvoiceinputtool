@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use tauri::menu::{MenuBuilder, MenuEvent, MenuId, MenuItemBuilder, PredefinedMenuItem};
+use tauri::menu::{MenuBuilder, MenuEvent, MenuId, MenuItem, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{image::Image, AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
@@ -81,6 +81,22 @@ fn get_tooltip_text(state: AppState, enabled: bool) -> &'static str {
     }
 }
 
+/// Get the Enable/Disable toggle menu text.
+fn get_toggle_enabled_text(enabled: bool) -> &'static str {
+    if enabled {
+        "Disable"
+    } else {
+        "Enable"
+    }
+}
+
+type TrayMenuItem = MenuItem<tauri::Wry>;
+
+struct TrayMenuItems {
+    status: TrayMenuItem,
+    toggle_enabled: TrayMenuItem,
+}
+
 /// Load a PNG icon from bytes into a Tauri Image.
 fn load_png_icon(bytes: &[u8]) -> Result<Image<'static>, String> {
     // Decode PNG to RGBA bytes
@@ -137,31 +153,39 @@ fn load_png_icon(bytes: &[u8]) -> Result<Image<'static>, String> {
 }
 
 /// Create and set up the system tray.
-pub fn setup_tray(app: &AppHandle) -> Result<TrayIcon, tauri::Error> {
+fn setup_tray(app: &AppHandle) -> Result<(TrayIcon, TrayMenuItems), tauri::Error> {
+    let header_item = MenuItemBuilder::with_id(MenuId::new("header"), "OpenVoicy")
+        .enabled(false)
+        .build(app)?;
+    let show_settings_item =
+        MenuItemBuilder::with_id(menu_ids::SHOW_SETTINGS, "Show Settings").build(app)?;
+    let status_item = MenuItemBuilder::with_id(menu_ids::STATUS, get_status_text(AppState::Idle, true))
+        .enabled(false)
+        .build(app)?;
+    let toggle_enabled_item =
+        MenuItemBuilder::with_id(menu_ids::TOGGLE_ENABLED, get_toggle_enabled_text(true))
+            .build(app)?;
+    let copy_last_item =
+        MenuItemBuilder::with_id(menu_ids::COPY_LAST, "Copy Last Transcript").build(app)?;
+    let restart_sidecar_item =
+        MenuItemBuilder::with_id(menu_ids::RESTART_SIDECAR, "Restart Sidecar").build(app)?;
+
     // Build the menu
     let menu = MenuBuilder::new(app)
         // Header (app name)
-        .item(
-            &MenuItemBuilder::with_id(MenuId::new("header"), "OpenVoicy")
-                .enabled(false)
-                .build(app)?,
-        )
+        .item(&header_item)
         // Show Settings
-        .item(&MenuItemBuilder::with_id(menu_ids::SHOW_SETTINGS, "Show Settings").build(app)?)
+        .item(&show_settings_item)
         .separator()
         // Status (dynamic, non-clickable)
-        .item(
-            &MenuItemBuilder::with_id(menu_ids::STATUS, "Status: Ready")
-                .enabled(false)
-                .build(app)?,
-        )
+        .item(&status_item)
         // Enable/Disable toggle
-        .item(&MenuItemBuilder::with_id(menu_ids::TOGGLE_ENABLED, "Disable").build(app)?)
+        .item(&toggle_enabled_item)
         .separator()
         // Copy Last Transcript
-        .item(&MenuItemBuilder::with_id(menu_ids::COPY_LAST, "Copy Last Transcript").build(app)?)
+        .item(&copy_last_item)
         // Restart Sidecar
-        .item(&MenuItemBuilder::with_id(menu_ids::RESTART_SIDECAR, "Restart Sidecar").build(app)?)
+        .item(&restart_sidecar_item)
         .separator()
         // Quit
         .item(&PredefinedMenuItem::quit(app, Some("Quit"))?)
@@ -181,7 +205,13 @@ pub fn setup_tray(app: &AppHandle) -> Result<TrayIcon, tauri::Error> {
         .on_tray_icon_event(handle_tray_event)
         .build(app)?;
 
-    Ok(tray)
+    Ok((
+        tray,
+        TrayMenuItems {
+            status: status_item,
+            toggle_enabled: toggle_enabled_item,
+        },
+    ))
 }
 
 /// Handle menu item clicks.
@@ -252,6 +282,8 @@ fn handle_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
 pub struct TrayManager {
     tray: Option<TrayIcon>,
     app_handle: AppHandle,
+    status_menu_item: Option<TrayMenuItem>,
+    toggle_enabled_menu_item: Option<TrayMenuItem>,
 }
 
 impl TrayManager {
@@ -260,13 +292,17 @@ impl TrayManager {
         Self {
             tray: None,
             app_handle,
+            status_menu_item: None,
+            toggle_enabled_menu_item: None,
         }
     }
 
     /// Initialize the tray icon.
     pub fn init(&mut self) -> Result<(), String> {
-        let tray = setup_tray(&self.app_handle).map_err(|e| e.to_string())?;
+        let (tray, menu_items) = setup_tray(&self.app_handle).map_err(|e| e.to_string())?;
         self.tray = Some(tray);
+        self.status_menu_item = Some(menu_items.status);
+        self.toggle_enabled_menu_item = Some(menu_items.toggle_enabled);
         log::info!("Tray icon initialized");
         Ok(())
     }
@@ -287,9 +323,22 @@ impl TrayManager {
         let tooltip = get_tooltip_text(state, enabled);
         tray.set_tooltip(Some(tooltip)).map_err(|e| e.to_string())?;
 
-        // Note: Updating menu item text dynamically requires rebuilding the menu
-        // or using tauri's menu item APIs. For simplicity, the menu items
-        // will show static text, but the icon and tooltip reflect the state.
+        // Update status and toggle labels to match current state.
+        let status_item = self
+            .status_menu_item
+            .as_ref()
+            .ok_or_else(|| "Tray status menu item not initialized".to_string())?;
+        status_item
+            .set_text(get_status_text(state, enabled))
+            .map_err(|e| e.to_string())?;
+
+        let toggle_item = self
+            .toggle_enabled_menu_item
+            .as_ref()
+            .ok_or_else(|| "Tray toggle menu item not initialized".to_string())?;
+        toggle_item
+            .set_text(get_toggle_enabled_text(enabled))
+            .map_err(|e| e.to_string())?;
 
         Ok(())
     }
@@ -297,7 +346,7 @@ impl TrayManager {
 
 /// Start the tray state update loop.
 pub fn start_tray_loop(
-    app_handle: AppHandle,
+    _app_handle: AppHandle,
     state_manager: Arc<AppStateManager>,
     tray_manager: Arc<RwLock<TrayManager>>,
 ) {
@@ -401,6 +450,12 @@ mod tests {
             "OpenVoicy - Loading model..."
         );
         assert_eq!(get_tooltip_text(AppState::Error, true), "OpenVoicy - Error");
+    }
+
+    #[test]
+    fn test_get_toggle_enabled_text() {
+        assert_eq!(get_toggle_enabled_text(true), "Disable");
+        assert_eq!(get_toggle_enabled_text(false), "Enable");
     }
 
     #[test]
