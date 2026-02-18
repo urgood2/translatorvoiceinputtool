@@ -470,7 +470,9 @@ impl RecordingController {
     }
 
     /// Handle max duration auto-stop.
-    pub async fn check_max_duration(&self) -> bool {
+    ///
+    /// Returns the same stop result emitted by `stop()` when auto-stop fires.
+    pub async fn check_max_duration(&self) -> Option<StopResult> {
         // Check if max duration exceeded
         let (session_id, duration_ms, exceeded) = {
             let session = self.active_session.read().await;
@@ -498,10 +500,14 @@ impl RecordingController {
             }
 
             // Stop recording
-            let _ = self.stop().await;
-            return true;
+            match self.stop().await {
+                Ok(result) => return Some(result),
+                Err(err) => {
+                    log::warn!("Max duration auto-stop failed: {}", err);
+                }
+            }
         }
-        false
+        None
     }
 
     /// Handle transcription result from sidecar.
@@ -927,7 +933,10 @@ mod tests {
         // Wait for duration to exceed
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        let auto_stopped = controller.check_max_duration().await;
-        assert!(auto_stopped);
+        let auto_stopped_result = controller.check_max_duration().await;
+        assert!(matches!(
+            auto_stopped_result,
+            Some(StopResult::Transcribing { .. })
+        ));
     }
 }
