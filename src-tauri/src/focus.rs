@@ -200,6 +200,54 @@ pub fn app_override_candidates(sig: &FocusSignature) -> Vec<String> {
     out
 }
 
+fn normalize_focus_component(raw: &str) -> Option<String> {
+    let normalized: String = raw
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect();
+
+    let mut compact = String::with_capacity(normalized.len());
+    let mut last_dash = false;
+    for ch in normalized.trim_matches('-').chars() {
+        if ch == '-' {
+            if !last_dash {
+                compact.push(ch);
+                last_dash = true;
+            }
+        } else {
+            compact.push(ch);
+            last_dash = false;
+        }
+    }
+
+    if compact.is_empty() {
+        None
+    } else {
+        Some(compact.chars().take(64).collect())
+    }
+}
+
+fn compose_window_id(
+    platform: &str,
+    pid: Option<&str>,
+    title: Option<&str>,
+    app_name: &str,
+) -> String {
+    let pid = pid.map(str::trim).filter(|value| !value.is_empty());
+    let title_key = title.and_then(normalize_focus_component);
+    let app_key = normalize_focus_component(app_name);
+
+    match (pid, title_key, app_key) {
+        (Some(pid), Some(title_key), _) => format!("{platform}-{pid}-{title_key}"),
+        (Some(pid), None, _) => format!("{platform}-{pid}"),
+        (None, Some(title_key), _) => format!("{platform}-{title_key}"),
+        (None, None, Some(app_key)) => format!("{platform}-{app_key}"),
+        _ => "unknown".to_string(),
+    }
+}
+
 // === Linux Implementation ===
 
 #[cfg(target_os = "linux")]
@@ -287,30 +335,174 @@ fn get_window_info_linux(window_id: &str) -> (String, String) {
 
 #[cfg(target_os = "macos")]
 fn capture_focus_macos() -> FocusSignature {
-    // TODO: Implement using NSWorkspace and CGWindowListCopyWindowInfo
-    // For now, return a placeholder
+    let (pid, app_name_raw) = get_frontmost_app_macos();
+    let window_title = get_front_window_title_macos();
+
+    let app_name = if app_name_raw.trim().is_empty() {
+        "Unknown (macOS)".to_string()
+    } else {
+        app_name_raw
+    };
+    let process_name = pid
+        .as_deref()
+        .and_then(get_process_name_macos)
+        .unwrap_or_else(|| app_name.clone());
+    let display_name = window_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| app_name.clone());
+
     FocusSignature {
-        window_id: "macos-todo".to_string(),
-        process_name: "unknown".to_string(),
-        app_name: "Unknown (macOS)".to_string(),
+        window_id: compose_window_id("macos", pid.as_deref(), window_title.as_deref(), &app_name),
+        process_name,
+        app_name: display_name,
         captured_at: Instant::now(),
         timestamp: Utc::now(),
     }
 }
 
-// === Windows Implementation (placeholder) ===
+#[cfg(target_os = "macos")]
+fn run_osascript(script: &str) -> Option<String> {
+    use std::process::Command;
+
+    let output = Command::new("osascript")
+        .args(["-e", script])
+        .output()
+        .ok()
+        .filter(|result| result.status.success())?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn get_frontmost_app_macos() -> (Option<String>, String) {
+    let script = r#"tell application "System Events" to tell first application process whose frontmost is true to return (unix id as string) & tab & name"#;
+    if let Some(output) = run_osascript(script) {
+        let mut parts = output.splitn(2, '\t');
+        let pid = parts
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let app_name = parts
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Unknown (macOS)");
+        return (pid.map(ToString::to_string), app_name.to_string());
+    }
+    (None, "Unknown (macOS)".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn get_front_window_title_macos() -> Option<String> {
+    let script = r#"tell application "System Events" to tell first application process whose frontmost is true to if (count of windows) > 0 then return name of front window else return """#;
+    run_osascript(script)
+}
+
+#[cfg(target_os = "macos")]
+fn get_process_name_macos(pid: &str) -> Option<String> {
+    use std::{path::Path, process::Command};
+
+    let output = Command::new("ps")
+        .args(["-p", pid, "-o", "comm="])
+        .output()
+        .ok()
+        .filter(|result| result.status.success())?;
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
+        None
+    } else {
+        Some(
+            Path::new(&raw)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(&raw)
+                .to_string(),
+        )
+    }
+}
+
+// === Windows Implementation ===
 
 #[cfg(target_os = "windows")]
 fn capture_focus_windows() -> FocusSignature {
-    // TODO: Implement using GetForegroundWindow and GetWindowThreadProcessId
-    // For now, return a placeholder
+    let (pid, process_name_raw, window_title) = get_foreground_window_info_windows();
+    let process_name = if process_name_raw.trim().is_empty() {
+        "unknown".to_string()
+    } else {
+        process_name_raw
+    };
+    let display_name = window_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| process_name.clone());
+
     FocusSignature {
-        window_id: "windows-todo".to_string(),
-        process_name: "unknown".to_string(),
-        app_name: "Unknown (Windows)".to_string(),
+        window_id: compose_window_id(
+            "windows",
+            pid.as_deref(),
+            window_title.as_deref(),
+            &display_name,
+        ),
+        process_name,
+        app_name: display_name,
         captured_at: Instant::now(),
         timestamp: Utc::now(),
     }
+}
+
+#[cfg(target_os = "windows")]
+fn run_powershell(script: &str) -> Option<String> {
+    use std::process::Command;
+
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .ok()
+        .filter(|result| result.status.success())?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn get_foreground_window_info_windows() -> (Option<String>, String, Option<String>) {
+    let script = r#"$ErrorActionPreference='SilentlyContinue'; Add-Type -Namespace Win32 -Name User32 -MemberDefinition '[DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint lpdwProcessId); [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBuilder text, int count);'; $h=[Win32.User32]::GetForegroundWindow(); if ($h -eq [System.IntPtr]::Zero) { return }; $pid=0; [Win32.User32]::GetWindowThreadProcessId($h, [ref]$pid) | Out-Null; $p=Get-Process -Id $pid -ErrorAction SilentlyContinue; $name=if ($p) { $p.ProcessName } else { 'unknown' }; $sb=New-Object System.Text.StringBuilder 1024; [Win32.User32]::GetWindowText($h, $sb, $sb.Capacity) | Out-Null; $title=$sb.ToString(); Write-Output ($pid.ToString() + \"`t\" + $name + \"`t\" + $title)"#;
+
+    let output = match run_powershell(script) {
+        Some(output) => output,
+        None => return (None, "unknown".to_string(), None),
+    };
+
+    let mut parts = output.splitn(3, '\t');
+    let pid = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let process_name = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown")
+        .to_string();
+    let title = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    (pid.map(ToString::to_string), process_name, title)
 }
 
 #[cfg(test)]
@@ -445,5 +637,21 @@ mod tests {
         // Should not panic even if xdotool isn't available
         let sig = capture_focus();
         assert!(!sig.window_id.is_empty());
+    }
+
+    #[test]
+    fn test_compose_window_id_prefers_pid_and_title() {
+        assert_eq!(
+            compose_window_id("windows", Some("1234"), Some("Visual Studio Code"), "Code"),
+            "windows-1234-visual-studio-code"
+        );
+    }
+
+    #[test]
+    fn test_compose_window_id_falls_back_to_app_name() {
+        assert_eq!(
+            compose_window_id("macos", None, None, "Finder"),
+            "macos-finder"
+        );
     }
 }
