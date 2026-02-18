@@ -116,6 +116,12 @@ class TestValidRequests:
         assert req is not None
         assert req.params == {"foo": "bar"}
 
+    def test_request_with_null_params(self):
+        """Null params should normalize to an empty object."""
+        req = parse_line('{"jsonrpc": "2.0", "id": 1, "method": "test", "params": null}')
+        assert req is not None
+        assert req.params == {}
+
     def test_empty_line(self):
         """Empty line should return None."""
         assert parse_line("") is None
@@ -277,6 +283,15 @@ class TestServerIntegration:
             '{"jsonrpc":"2.0","id":2,"method":"system.ping"}',  # Should not be processed
         ])
         # Should only get shutdown response
+        assert len(responses) == 1
+        assert responses[0]["result"]["status"] == "shutting_down"
+
+    def test_shutdown_with_null_params(self, run_sidecar):
+        """system.shutdown with params:null should not crash and should shut down."""
+        responses, _ = run_sidecar([
+            '{"jsonrpc":"2.0","id":1,"method":"system.shutdown","params":null}',
+            '{"jsonrpc":"2.0","id":2,"method":"system.ping"}',  # Should not be processed
+        ])
         assert len(responses) == 1
         assert responses[0]["result"]["status"] == "shutting_down"
 

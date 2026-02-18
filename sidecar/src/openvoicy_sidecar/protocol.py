@@ -43,10 +43,14 @@ class Request:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Request:
         """Parse a request from a dictionary."""
+        params = data.get("params", {})
+        if params is None:
+            params = {}
+
         return cls(
             method=data.get("method", ""),
             id=data.get("id"),
-            params=data.get("params", {}),
+            params=params,
         )
 
 
