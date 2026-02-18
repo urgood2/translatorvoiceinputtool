@@ -95,6 +95,11 @@ type TrayMenuItem = MenuItem<tauri::Wry>;
 struct TrayMenuItems {
     status: TrayMenuItem,
     toggle_enabled: TrayMenuItem,
+    copy_last: TrayMenuItem,
+}
+
+fn should_enable_copy_last(history: &TranscriptHistory) -> bool {
+    !history.is_empty()
 }
 
 /// Load a PNG icon from bytes into a Tauri Image.
@@ -154,6 +159,9 @@ fn load_png_icon(bytes: &[u8]) -> Result<Image<'static>, String> {
 
 /// Create and set up the system tray.
 fn setup_tray(app: &AppHandle) -> Result<(TrayIcon, TrayMenuItems), tauri::Error> {
+    let history = app.state::<TranscriptHistory>();
+    let copy_last_enabled = should_enable_copy_last(&history);
+
     let header_item = MenuItemBuilder::with_id(MenuId::new("header"), "OpenVoicy")
         .enabled(false)
         .build(app)?;
@@ -165,8 +173,9 @@ fn setup_tray(app: &AppHandle) -> Result<(TrayIcon, TrayMenuItems), tauri::Error
     let toggle_enabled_item =
         MenuItemBuilder::with_id(menu_ids::TOGGLE_ENABLED, get_toggle_enabled_text(true))
             .build(app)?;
-    let copy_last_item =
-        MenuItemBuilder::with_id(menu_ids::COPY_LAST, "Copy Last Transcript").build(app)?;
+    let copy_last_item = MenuItemBuilder::with_id(menu_ids::COPY_LAST, "Copy Last Transcript")
+        .enabled(copy_last_enabled)
+        .build(app)?;
     let restart_sidecar_item =
         MenuItemBuilder::with_id(menu_ids::RESTART_SIDECAR, "Restart Sidecar").build(app)?;
 
@@ -210,6 +219,7 @@ fn setup_tray(app: &AppHandle) -> Result<(TrayIcon, TrayMenuItems), tauri::Error
         TrayMenuItems {
             status: status_item,
             toggle_enabled: toggle_enabled_item,
+            copy_last: copy_last_item,
         },
     ))
 }
@@ -284,6 +294,7 @@ pub struct TrayManager {
     app_handle: AppHandle,
     status_menu_item: Option<TrayMenuItem>,
     toggle_enabled_menu_item: Option<TrayMenuItem>,
+    copy_last_menu_item: Option<TrayMenuItem>,
 }
 
 impl TrayManager {
@@ -294,6 +305,7 @@ impl TrayManager {
             app_handle,
             status_menu_item: None,
             toggle_enabled_menu_item: None,
+            copy_last_menu_item: None,
         }
     }
 
@@ -303,6 +315,7 @@ impl TrayManager {
         self.tray = Some(tray);
         self.status_menu_item = Some(menu_items.status);
         self.toggle_enabled_menu_item = Some(menu_items.toggle_enabled);
+        self.copy_last_menu_item = Some(menu_items.copy_last);
         log::info!("Tray icon initialized");
         Ok(())
     }
@@ -338,6 +351,15 @@ impl TrayManager {
             .ok_or_else(|| "Tray toggle menu item not initialized".to_string())?;
         toggle_item
             .set_text(get_toggle_enabled_text(enabled))
+            .map_err(|e| e.to_string())?;
+
+        let history = self.app_handle.state::<TranscriptHistory>();
+        let copy_last_item = self
+            .copy_last_menu_item
+            .as_ref()
+            .ok_or_else(|| "Tray copy-last menu item not initialized".to_string())?;
+        copy_last_item
+            .set_enabled(should_enable_copy_last(&history))
             .map_err(|e| e.to_string())?;
 
         Ok(())
@@ -456,6 +478,23 @@ mod tests {
     fn test_get_toggle_enabled_text() {
         assert_eq!(get_toggle_enabled_text(true), "Disable");
         assert_eq!(get_toggle_enabled_text(false), "Enable");
+    }
+
+    #[test]
+    fn test_should_enable_copy_last_tracks_history_emptiness() {
+        let history = TranscriptHistory::new();
+        assert!(!should_enable_copy_last(&history));
+
+        history.push(crate::history::TranscriptEntry::new(
+            "hello".to_string(),
+            100,
+            50,
+            crate::history::HistoryInjectionResult::Injected,
+        ));
+        assert!(should_enable_copy_last(&history));
+
+        history.clear();
+        assert!(!should_enable_copy_last(&history));
     }
 
     #[test]
