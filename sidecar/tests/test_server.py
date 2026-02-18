@@ -27,6 +27,7 @@ from openvoicy_sidecar.protocol import (
     make_success,
     parse_line,
 )
+from openvoicy_sidecar.server import get_startup_preset_candidates
 
 
 class TestParseError:
@@ -202,6 +203,14 @@ class TestServerIntegration:
         assert "runtime" in result
         assert result["protocol"] == "v1"
 
+    def test_replacements_get_presets_loaded_on_startup(self, run_sidecar):
+        """replacements.get_presets should include startup-loaded presets."""
+        responses, _ = run_sidecar(['{"jsonrpc":"2.0","id":21,"method":"replacements.get_presets"}'])
+        assert len(responses) == 1
+        result = responses[0]["result"]
+        assert "presets" in result
+        assert len(result["presets"]) > 0
+
     def test_status_get(self, run_sidecar):
         """status.get should be implemented and return a valid status shape."""
         responses, _ = run_sidecar(['{"jsonrpc":"2.0","id":20,"method":"status.get"}'])
@@ -305,6 +314,21 @@ class TestPartialReads:
         req = parse_line('{"jsonrpc": "2.0", "method": "test", "params": {"text": "héllo wörld 你好"}}')
         assert req is not None
         assert req.params["text"] == "héllo wörld 你好"
+
+
+class TestPresetPathResolution:
+    """Tests for startup preset path candidates."""
+
+    def test_includes_dev_layout_path(self):
+        """Candidates should include repository shared/replacements path."""
+        candidates = get_startup_preset_candidates()
+        assert any(str(path).endswith("shared/replacements/PRESETS.json") for path in candidates)
+
+    def test_includes_meipass_path_when_present(self, monkeypatch, tmp_path):
+        """Candidates should include bundled PyInstaller extraction path."""
+        monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+        candidates = get_startup_preset_candidates()
+        assert (tmp_path / "shared" / "replacements" / "PRESETS.json") in candidates
 
 
 if __name__ == "__main__":
