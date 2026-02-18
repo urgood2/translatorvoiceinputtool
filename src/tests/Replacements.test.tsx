@@ -140,6 +140,36 @@ describe('ReplacementList', () => {
       expect.not.arrayContaining([expect.objectContaining({ id: '1' })])
     );
   });
+
+  it('reorders only user rules when presets are present', () => {
+    const onChange = vi.fn();
+    const rulesWithPreset: ReplacementRule[] = [
+      {
+        id: 'preset-1',
+        enabled: true,
+        kind: 'literal',
+        pattern: 'btw',
+        replacement: 'by the way',
+        word_boundary: true,
+        case_sensitive: false,
+        origin: 'preset',
+      },
+      mockRules[0],
+      mockRules[1],
+    ];
+
+    render(<ReplacementList rules={rulesWithPreset} onChange={onChange} />);
+
+    const moveDownButtons = document.querySelectorAll('button[title="Move down"]');
+    expect(moveDownButtons.length).toBe(2);
+    fireEvent.click(moveDownButtons[0]);
+
+    expect(onChange).toHaveBeenCalledWith([
+      rulesWithPreset[0],
+      rulesWithPreset[2],
+      rulesWithPreset[1],
+    ]);
+  });
 });
 
 describe('ReplacementEditor', () => {

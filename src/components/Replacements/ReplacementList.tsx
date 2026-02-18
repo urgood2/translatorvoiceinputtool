@@ -180,17 +180,40 @@ export function ReplacementList({
     onChange(rules.filter((r) => r.id !== id));
   }, [rules, onChange]);
 
-  const handleMoveUp = useCallback((index: number) => {
-    if (index === 0) return;
+  const handleMoveUp = useCallback((userIndex: number) => {
+    if (userIndex === 0) return;
+
+    const userRuleIndexes = rules
+      .map((rule, index) => ({ rule, index }))
+      .filter(({ rule }) => rule.origin !== 'preset')
+      .map(({ index }) => index);
+
+    const currentIndex = userRuleIndexes[userIndex];
+    const previousIndex = userRuleIndexes[userIndex - 1];
+    if (currentIndex === undefined || previousIndex === undefined) return;
+
     const newRules = [...rules];
-    [newRules[index - 1], newRules[index]] = [newRules[index], newRules[index - 1]];
+    [newRules[previousIndex], newRules[currentIndex]] = [
+      newRules[currentIndex],
+      newRules[previousIndex],
+    ];
     onChange(newRules);
   }, [rules, onChange]);
 
-  const handleMoveDown = useCallback((index: number) => {
-    if (index === rules.length - 1) return;
+  const handleMoveDown = useCallback((userIndex: number) => {
+    const userRuleIndexes = rules
+      .map((rule, index) => ({ rule, index }))
+      .filter(({ rule }) => rule.origin !== 'preset')
+      .map(({ index }) => index);
+
+    if (userIndex >= userRuleIndexes.length - 1) return;
+
+    const currentIndex = userRuleIndexes[userIndex];
+    const nextIndex = userRuleIndexes[userIndex + 1];
+    if (currentIndex === undefined || nextIndex === undefined) return;
+
     const newRules = [...rules];
-    [newRules[index], newRules[index + 1]] = [newRules[index + 1], newRules[index]];
+    [newRules[currentIndex], newRules[nextIndex]] = [newRules[nextIndex], newRules[currentIndex]];
     onChange(newRules);
   }, [rules, onChange]);
 
