@@ -31,6 +31,7 @@ from openvoicy_sidecar.replacements import (
     expand_macros,
     get_active_rules,
     get_all_presets,
+    get_current_rules,
     get_preset,
     get_preset_rules,
     handle_replacements_get_presets,
@@ -563,6 +564,24 @@ class TestReplacementHandlers:
         result = handle_replacements_preview(request)
         assert result["result"] == "Hello by the way world"
         assert result["truncated"] is False
+
+    def test_get_current_rules_alias(self, reset_active_rules):
+        """get_current_rules should remain available as alias to active rules."""
+        set_request = Request(
+            method="replacements.set_rules",
+            id=1,
+            params={
+                "rules": [
+                    {"id": "1", "enabled": True, "kind": "literal", "pattern": "foo", "replacement": "bar"}
+                ]
+            },
+        )
+        handle_replacements_set_rules(set_request)
+
+        current = get_current_rules()
+        assert len(current) == 1
+        assert current[0].pattern == "foo"
+        assert current[0].replacement == "bar"
 
 
 # === Shared Test Vectors ===

@@ -407,6 +407,11 @@ def get_active_rules() -> list[ReplacementRule]:
     return _active_rules.copy()
 
 
+def get_current_rules() -> list[ReplacementRule]:
+    """Backward-compatible alias for active replacement rules."""
+    return get_active_rules()
+
+
 def set_active_rules(rules: list[ReplacementRule]) -> None:
     """Set the active replacement rules.
 
