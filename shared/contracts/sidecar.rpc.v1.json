@@ -129,6 +129,7 @@
             "type": "string",
             "enum": [
               "idle",
+              "loading_model",
               "recording",
               "transcribing",
               "error"
@@ -150,8 +151,10 @@
               "status": {
                 "type": "string",
                 "enum": [
+                  "missing",
+                  "downloading",
+                  "verifying",
                   "ready",
-                  "loading",
                   "error"
                 ]
               }
