@@ -86,7 +86,7 @@ jobs:
       - name: Run integration tests
         run: |
           # Run integration test suite
-          cd sidecar && python -m pytest tests/integration/ -v --tb=short || true
+          cd sidecar && python -m pytest tests/integration/ -v --tb=short
 
       - name: Verify E2E flow (offline mode)
         if: inputs.offline_mode || github.event_name == 'release'

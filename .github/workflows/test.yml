@@ -122,6 +122,9 @@ jobs:
       - name: Run E2E shell portability regression tests
         run: python -m unittest scripts/tests/test_e2e_common_timeout.py scripts/tests/test_e2e_run_all_parallel.py
 
+      - name: Run CI workflow regression tests
+        run: python -m unittest scripts/tests/test_ci_integration_workflow.py
+
   typescript-tests:
     name: TypeScript Tests
     runs-on: ubuntu-latest
