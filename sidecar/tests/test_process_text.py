@@ -210,13 +210,13 @@ def test_process_text_macro_idempotent(fixed_macros: None) -> None:
     assert twice == once
 
 
-def test_process_text_applies_once_without_rule_chaining() -> None:
+def test_process_text_applies_rules_in_order() -> None:
     rules = [
         ReplacementRule(id="r1", enabled=True, kind="literal", pattern="hello", replacement="world"),
         ReplacementRule(id="r2", enabled=True, kind="literal", pattern="world", replacement="planet"),
     ]
     result, _ = process_text("hello", rules=rules, skip_normalize=True, skip_macros=True)
-    assert result == "world"
+    assert result == "planet"
 
 
 def test_process_text_with_presets_is_idempotent() -> None:

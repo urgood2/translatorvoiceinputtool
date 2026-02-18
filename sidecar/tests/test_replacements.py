@@ -366,7 +366,7 @@ class TestApplyReplacements:
     """Tests for apply_replacements function."""
 
     def test_multiple_rules_in_order(self):
-        """Rules should not chain into each other in a single pass."""
+        """Rules should apply in array order over evolving text."""
         rules = [
             ReplacementRule(id="1", enabled=True, kind="literal", pattern="foo", replacement="bar"),
             ReplacementRule(id="2", enabled=True, kind="literal", pattern="bar", replacement="baz"),
@@ -379,7 +379,7 @@ class TestApplyReplacements:
             json.dumps([rule.to_dict() for rule in rules]),
             result,
         )
-        assert result == "bar", f"rules chained unexpectedly: rules={rules!r}, result={result!r}"
+        assert result == "baz", f"rules should apply in order: rules={rules!r}, result={result!r}"
 
     def test_disabled_rules_skipped(self):
         """Should skip disabled rules."""
@@ -460,7 +460,7 @@ class TestProcessText:
         assert result == "Date: {{date}}"
 
     def test_replacements_applied_exactly_once(self):
-        """Replacement should apply once and not duplicate through chaining."""
+        """A single rule should apply once per pass."""
         rules = [
             ReplacementRule(
                 id="btw",
@@ -567,7 +567,7 @@ class TestPresetLoading:
             assert "punctuation" in presets
 
     def test_preset_rules_apply_once_without_chaining(self, reset_presets):
-        """Preset-based rules should produce stable single-pass output."""
+        """Preset-based rules should produce stable output."""
         presets_path = Path(__file__).parent.parent.parent / "shared" / "replacements" / "PRESETS.json"
         presets = load_presets_from_file(presets_path)
         assert "common-abbreviations" in presets

@@ -5,10 +5,10 @@ transforming transcribed text.
 
 Pipeline Position:
 - Stage 2: Macro expansion ({{date}}, {{time}}, {{datetime}})
-- Stage 3: Replacement rules (single pass, no recursion)
+- Stage 3: Replacement rules (single pass, in-order)
 
 Key Features:
-- Single-pass replacement (no chaining/recursion)
+- Single-pass replacement (rules run once, in array order)
 - Literal and regex rule types
 - Word boundary support for literals
 - Case sensitivity options
@@ -261,9 +261,9 @@ def apply_replacements(
 ) -> tuple[str, bool]:
     """Apply all replacement rules to text.
 
-    Single-pass: if a replacement produces text containing another pattern,
-    that pattern is NOT processed by subsequent rules. This prevents
-    recursive/chained transformations.
+    Single-pass, in-order: each enabled rule runs once over the current text.
+    Later rules can operate on output created by earlier rules, but there is
+    no recursive re-entry into previously-applied rules.
 
     Args:
         text: Input text.
@@ -272,60 +272,12 @@ def apply_replacements(
     Returns:
         Tuple of (result_text, was_truncated).
     """
-    # Each segment tracks whether it was already replaced by a prior rule.
-    # Later rules only run on untouched segments to avoid cross-rule chaining.
-    segments: list[tuple[str, bool]] = [(text, False)]
-
+    result = text
     for rule in rules:
         if not rule.enabled:
             continue
 
-        if rule.kind == "literal":
-            pattern = r"\b" + re.escape(rule.pattern) + r"\b" if rule.word_boundary else re.escape(rule.pattern)
-            flags = 0 if rule.case_sensitive else re.IGNORECASE
-        elif rule.kind == "regex":
-            pattern = rule.pattern
-            flags = 0 if rule.case_sensitive else re.IGNORECASE
-        else:
-            log(f"Unknown rule kind: {rule.kind}")
-            continue
-
-        try:
-            regex = re.compile(pattern, flags)
-        except re.error as e:
-            log(f"Regex error in rule {rule.id}: {e}")
-            continue
-
-        next_segments: list[tuple[str, bool]] = []
-        for segment_text, already_replaced in segments:
-            if already_replaced:
-                next_segments.append((segment_text, True))
-                continue
-
-            last = 0
-            matched = False
-            for match in regex.finditer(segment_text):
-                matched = True
-                start, end = match.span()
-                if start > last:
-                    next_segments.append((segment_text[last:start], False))
-
-                replacement = (
-                    rule.replacement if rule.kind == "literal" else match.expand(rule.replacement)
-                )
-                next_segments.append((replacement, True))
-                last = end
-
-            if not matched:
-                next_segments.append((segment_text, False))
-                continue
-
-            if last < len(segment_text):
-                next_segments.append((segment_text[last:], False))
-
-        segments = next_segments
-
-    result = "".join(segment for segment, _ in segments)
+        result = apply_single_rule(result, rule)
 
     # Check output length
     truncated = False
@@ -351,7 +303,7 @@ def process_text(
     Pipeline order (locked for MVP):
     1. Normalize (whitespace, ASR artifacts)
     2. Expand macros ({{date}}, {{time}}, {{datetime}})
-    3. Apply replacements (single pass)
+    3. Apply replacements (single pass, in-order)
 
     Args:
         text: Input text.

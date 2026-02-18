@@ -68,8 +68,8 @@
         {"id": "1", "enabled": true, "kind": "literal", "pattern": "AAA", "replacement": "BBB", "word_boundary": false, "case_sensitive": true},
         {"id": "2", "enabled": true, "kind": "literal", "pattern": "BBB", "replacement": "CCC", "word_boundary": false, "case_sensitive": true}
       ],
-      "expected": "BBB",
-      "note": "Rule outputs are not re-processed by later rules in the same pass, so AAA becomes BBB (not CCC)."
+      "expected": "CCC",
+      "note": "Rules are applied once in array order, so output from earlier rules can be transformed by later rules."
     },
     {
       "name": "single pass - output from rule 1 not re-processed by rule 1",
