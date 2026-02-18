@@ -1,337 +1,731 @@
-# OpenVoicy (MVP v0.1.0) — Master Implementation Plan  
-**Date:** 2026-02-04  
-**Goal:** Cross-platform (Windows/macOS/Linux) push-to-talk voice transcription (offline after first model download) that injects text into the currently focused input, with tray + settings + replacements.
+# Master Plan — Voice Input Tool (OpenVoicy): Contracts-First Dictation App + Multilingual ASR
+
+**Plan version:** 1.0 (integrated from v0 + GPT Pro revisions; tightened for brownfield correctness)
+**Last updated:** 2026-02-14  
+**Scope:** Desktop (Windows/macOS/Linux) cross-platform dictation with polished UX, resilient orchestration, and multilingual local ASR.  
+**Lineage:** v0 (Opus baseline) → GPT Pro rev 2.0 → this integrated v1.
+
+## Guardrails (non-negotiable)
+- **IPC Protocol V1 is additive-only** (`shared/ipc/IPC_PROTOCOL_V1.md`). New methods/fields are optional; older sidecars remain usable.  
+  - **Clarification:** “LOCKED” means **no breaking changes**; additive, opt-in extensions are allowed **only** if they are explicitly documented as optional and the host is tolerant when missing.
+- **Config schema stays v1 and additive-only** with safe defaults (`shared/schema/AppConfig.schema.json`, `src-tauri/src/config.rs`).
+- **`AppState` semantics stay intact** (`src-tauri/src/state.rs`). We can add details/metadata but do not change meaning of existing states (`Idle`, `LoadingModel`, `Recording`, `Transcribing`, `Error`).
+- **Existing Rust module boundaries preserved**: `integration.rs` stays as the orchestrator; `state.rs`, `config.rs`, `history.rs`, `commands.rs`, `recording.rs`, `injection.rs`, `hotkey.rs`, `watchdog.rs`, `sidecar.rs`, `tray.rs`, `focus.rs` all keep their roles.
+- **Brownfield guardrails (per `planning/BROWNFIELD_PREFLIGHT.md`)**
+  - Do not propose greenfield rewrites when extension/refactor is feasible.
+  - Map every planned task to existing files/modules before implementation.
+  - Include migration/risk/testing steps for changed runtime behavior.
 
 ---
 
-## 0) Scope, Principles, Definition of Done
+## 1. Executive Summary
 
-### In-scope (MVP)
-- Global **push-to-talk** hotkey: press/hold to record, release to stop & transcribe (with fallback **toggle** mode if an OS can’t provide release events reliably).
-- Offline transcription using **NVIDIA Parakeet V3 0.6B** (model cached locally after first download).
-- **Text injection** into focused field (Unicode-safe, clipboard-paste default, optional restore clipboard).
-- **System tray** with status + basic menu.
-- **Settings UI**: microphone selection, hotkey config, injection options, replacement rules CRUD.
-- **Robustness**: sidecar supervision, restart/backoff, clear user errors, diagnostics.
+### Problem statement
+The repo has solid primitives (Tauri host, Rust state machine + integration orchestrator, Python sidecar with JSON-RPC, shared schemas), but the product has "death-by-a-thousand-cuts" risk:
+- **Contract drift** between docs, Rust, UI, and sidecar creates invisible breakage (event names/payloads, command stubs, missing `status.get`).  
+  - **Brownfield reality check (examples to fix in Phase 0):**
+    - Rust emits `transcription:complete` but frontend listens to `transcript:complete`.
+    - Rust `StateEvent` uses `detail`, while TS types currently use `error_detail`.
+    - Rust emits `model:status` as `{ status: <enum> }`, while TS expects `{ model_id, status, ... }`.
+- **Reliability gaps** (sidecar restarts, stale transcription events, device changes) can lead to wrong injections or confusing UI state.
+- **User experience** is missing "app-grade" polish: strong status UX, recording controls everywhere (UI/tray/overlay), onboarding, accessibility.
+- **Multilingual ASR** is planned, but model management and language UX need more rigor (integrity, install states, per-session language).
 
-### Out-of-scope (post-MVP)
-- Wake word / always-listening mode, cloud sync, plugins, multi-model selector beyond Parakeet, automatic updates, deep Wayland portal workarounds (best-effort only).
+### Solution overview
+Ship a polished, cross-platform dictation app by sequencing work into:
+1) **Contracts & baseline stabilization** (contract alignment, sidecar spec compliance, supervisor, session gating),
+2) **Recording controls + UI/UX coherence** (tabs, dashboard, history + replacements parity),
+3) **System feedback** (overlay, tray, audio cues) built on the same event stream,
+4) **Multilingual expansion** (model catalog, language selection, optional Whisper support),
+5) **Optional power features** (VAD auto-stop, encrypted persistent history, macros), and
+6) **CI/packaging hardening** for Windows/macOS/Linux.
 
-### Principles (implementation rules)
-- **Stable contracts first:** IPC protocol is the integration boundary; no ad-hoc RPC methods beyond `IPC_PROTOCOL_V1.md`.
-- **“Core loop works without UI”:** UI must never be required to record/transcribe/inject; tray + hotkey are sufficient.
-- **Fail safe, not silent:** if injection fails, put text on clipboard and surface a visible error with next steps.
-- **Pinned reproducibility:** model artifact source and revision must be pinned; downloads must be resumable and checksummed.
+### Key innovations
+- **Contracts-as-code**: one validated contract spec generates Rust + TS types and test vectors (stops drift permanently).
+- **Session + sequence correlated pipeline**: `session_id` + monotonic `seq` on all record/transcribe events; stale events are ignored by design.
+- **Supervisor-driven sidecar lifecycle**: health checks, crash-loop protection, structured logs captured for diagnostics. Builds on existing `watchdog.rs`.
+- **Integrity-verified model installs**: checksums, atomic installs, resumable downloads, and explicit installed/available states.
+- **Parity text pipeline**: preview uses the exact same pipeline as injection; rules/presets/macros produce traceable metadata.
+- **Privacy-first with opt-in power**: history stays in memory by default (existing `TranscriptHistory`); encrypted persistence is explicitly opt-in.
 
-### Definition of Done (MVP release)
-- Fresh install → user can configure mic/hotkey → hold hotkey → speak → release → transcription injected in any app.
-- No unhandled panics/crashes during 1-hour manual soak test.
-- Sidecar crash triggers visible error + one-click restart; app remains responsive.
-- Builds produced for Windows/macOS/Linux; sidecar bundled; model downloaded on first run.
+### Success metrics
+- **Time-to-first-dictation:** < 2 minutes on a clean install (onboarding includes mic + hotkey + model readiness).
+- **Crash-loop resilience:** sidecar restart loop never wedges the UI; recovery UI action is always available.
+- **No "wrong session" injections:** 0 stale transcription injections due to `session_id`/`seq` gating.
+- **Latency:** stop→injection median < 1.2s on a typical laptop for short utterances (after model warm).
+- **CPU idle:** overlay + tray idle CPU near zero; audio meter updates throttled.
 
----
-
-## 1) Architecture (Single Responsibility + Clear Contracts)
-
-### Components
-1. **Tauri 2 (Rust) core**
-   - Global hotkey handling
-   - Sidecar lifecycle + IPC client
-   - State machine (idle/recording/transcribing/error)
-   - Text injection (clipboard paste/typing)
-   - Tray integration
-   - Config persistence + migrations
-2. **Web UI (React + TypeScript + Tailwind via Vite)**
-   - Settings + replacements CRUD
-   - Status indicator + last transcript
-   - Error surfaces + “copy diagnostics”
-3. **Python sidecar**
-   - JSON-RPC 2.0 server over stdin/stdout (NDJSON framing)
-   - Audio device enumeration + capture (sounddevice)
-   - ASR load + inference (NeMo/torch; CPU fallback)
-   - Postprocess + replacement engine
-   - Emits notifications for state/results/errors
-
-### Key design choices
-- **IPC:** JSON-RPC 2.0 over newline-delimited JSON on stdin/stdout; supports request/response + notifications.
-- **E2E flow runs in Rust**: hotkey triggers sidecar; Rust injects text; UI is optional for core loop.
-- **Injection default = clipboard paste** (most reliable for Unicode); “restore clipboard” is configurable.
-- **Config owned by Rust** (atomic writes); Rust pushes changes to sidecar via RPC (`audio.set_device`, `replacements.set_rules`, `asr.initialize`).
-
-### State machine contract (Rust-owned, source of truth)
-- States: `idle → loading (optional) → recording → transcribing → idle` or `error`.
-- A **session_id** is created by Rust at `recording.start` return and remains authoritative through completion/error.
-- Rust must ignore stale notifications (session mismatch) and must not inject twice for one session.
+### Explicit non-goals
+- Cloud/hosted ASR (everything remains offline/local).
+- Always-on wake word / hotword mode (future module, not this release).
+- Full-fledged voice command framework (lightweight macros only, per existing `IPC_PROTOCOL_V1.md` §Macros).
 
 ---
 
-## 2) Repository Structure (Consistent Naming)
+## 2. Core Architecture
 
-```
-/
-├─ src-tauri/
-│  ├─ Cargo.toml
-│  ├─ tauri.conf.json
-│  ├─ src/
-│  │  ├─ main.rs
-│  │  ├─ state.rs                # AppState + state machine
-│  │  ├─ config.rs               # load/save/migrate AppConfig (atomic)
-│  │  ├─ ipc/
-│  │  │  ├─ mod.rs               # RpcClient + read loop
-│  │  │  ├─ types.rs             # request/response/notifications + errors
-│  │  ├─ sidecar.rs              # spawn/supervise/restart/backoff
-│  │  ├─ recording.rs            # start/stop orchestration, session handling
-│  │  ├─ injection.rs            # paste/type + clipboard restore
-│  │  ├─ hotkey.rs               # register hotkey, hold/toggle modes
-│  │  ├─ tray.rs                 # tray icon + menu, state mapping
-│  │  └─ commands.rs             # Tauri commands for UI
-│  └─ icons/                     # app + tray icons (idle/recording/transcribing/error)
-│
-├─ src/                          # React UI
-│  ├─ main.tsx
-│  ├─ App.tsx
-│  ├─ components/
-│  │  ├─ StatusIndicator.tsx
-│  │  ├─ Settings/
-│  │  │  ├─ SettingsPanel.tsx
-│  │  │  ├─ MicrophoneSelect.tsx
-│  │  │  ├─ HotkeyConfig.tsx
-│  │  │  ├─ InjectionSettings.tsx
-│  │  │  └─ Diagnostics.tsx
-│  │  └─ Replacements/
-│  │     ├─ ReplacementList.tsx
-│  │     ├─ ReplacementEditor.tsx
-│  │     └─ ReplacementPreview.tsx
-│  ├─ stores/appStore.ts
-│  ├─ types.ts
-│  └─ styles/globals.css
-│
-├─ sidecar/
-│  ├─ pyproject.toml
-│  ├─ src/openvoicy_sidecar/
-│  │  ├─ __main__.py             # entry point
-│  │  ├─ server.py               # JSON-RPC loop + dispatch
-│  │  ├─ protocol.py             # message parsing + helpers
-│  │  ├─ audio.py                # devices + recorder
-│  │  ├─ asr.py                  # Parakeet loader + transcribe
-│  │  ├─ postprocess.py          # cleanup/casing/spacing
-│  │  └─ replacements.py         # rules + macros
-│  └─ tests/
-│     ├─ test_protocol.py
-│     ├─ test_postprocess.py
-│     └─ test_replacements.py
-│
-├─ shared/
-│  └─ ipc/IPC_PROTOCOL_V1.md      # authoritative contract + examples
-│
-├─ scripts/
-│  ├─ build-sidecar.(sh|ps1)      # PyInstaller build (per OS)
-│  └─ bundle-sidecar.(sh|ps1)     # copy artifacts into Tauri resources
-│
-└─ .github/workflows/build.yml    # CI builds for all OS targets
+### System diagram
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│                           Tauri Host (Rust)                              │
+│                                                                          │
+│  Contract layer (generated types + fixtures)                             │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │ shared/contracts/*  →  src-tauri/src/contracts.rs                    │  │
+│  │                    →  src/types.contracts.ts (generated)             │  │
+│  │                    →  src/types.ts (handwritten wrapper/exports)     │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  src-tauri/src/state.rs              src-tauri/src/config.rs             │
+│  ┌──────────────────────┐            ┌────────────────────────────────┐  │
+│  │ AppStateManager       │            │ AppConfig (schema v1)          │  │
+│  │ Idle/Loading/...      │            │ atomic write + migration       │  │
+│  └─────────┬────────────┘            └───────────────┬────────────────┘  │
+│            │ broadcast(app events)                    │ apply live       │
+│  ┌─────────▼──────────────────────────────────────────▼───────────────┐  │
+│  │ IntegrationManager (src-tauri/src/integration.rs)                  │  │
+│  │  - HotkeyManager (hotkey.rs)                                       │  │
+│  │  - RecordingController (recording.rs)                              │  │
+│  │  - InjectionController (injection.rs + focus.rs)                   │  │
+│  │  - TranscriptHistory (history.rs) (memory; optional encrypted disk)│  │
+│  │  - TrayManager (tray.rs) / OverlayManager (overlay.rs, new)        │  │
+│  │  - SidecarSupervisor (supervisor.rs, new; watchdog.rs upgraded)     │  │
+│  │  - RpcClient (ipc/*) to sidecar                                    │  │
+│  └───────────────┬───────────────────────────────────────┬────────────┘  │
+│                  │ JSON-RPC calls + captured logs          │ Tauri events  │
+└──────────────────▼────────────────────────────────────────▼───────────────┘
+                   │                                        │
+┌──────────────────▼───────────────────┐     ┌─────────────▼──────────────┐
+│          Python Sidecar              │     │   React Main + Overlay      │
+│ sidecar/src/openvoicy_sidecar/      │     │ src/App.tsx + src/overlay   │
+│  - audio.*, recording.*             │     │ Zustand store + hooks        │
+│  - model.*, asr.*                   │     │ listens to canonical events  │
+│  - replacements.*, status.get       │     │ (and legacy aliases)         │
+│  - (future) VAD + preprocess        │     └─────────────────────────────┘
+└──────────────────────────────────────┘
 ```
 
----
+### Design principles
+1. **Contracts are code, not prose**: schemas + generated types + fixtures are the source of truth.
+2. **One source of truth per concern**: state = `AppStateManager`; config = `AppConfig`; sidecar truth = JSON-RPC + notifications.
+3. **Deterministic state transitions**: state machine + session gating prevents racey "phantom" UI updates.
+4. **Fail-soft behavior**: degrade gracefully (clipboard-only injection; overlay disabled; whisper unavailable).
+5. **Observability by default**: every session has correlation IDs; diagnostics capture enough to debug without guesswork.
+6. **Privacy-first defaults**: no transcript persistence unless explicitly enabled.
+7. **Additive compatibility**: IPC v1 and config v1 only add optional params/fields with defaults.
+8. **Cross-platform first**: explicit handling for Windows/macOS/Linux differences in tray, overlay, permissions.
 
-## 3) IPC Protocol v1 (Authoritative Contract)
+### Contracts & versioning strategy
+- Add `shared/contracts/` containing:
+  - `tauri.commands.v1.json` (command names, params, results)
+  - `tauri.events.v1.json` (event names, payload schemas)
+  - `sidecar.rpc.v1.json` (JSON-RPC methods + params/results)
+  - `examples/*.jsonl` (golden messages used by validators/tests)
+- Add generators:
+  - `scripts/gen_contracts_ts.py` → updates `src/types.contracts.ts`
+  - `scripts/gen_contracts_rs.py` → updates `src-tauri/src/contracts.rs`
+- Add validators in CI:
+  - `python scripts/validate_contracts.py`
+  - `python scripts/validate_ipc_examples.py` (existing; extended)
+- **Brownfield integration rule:** generated files (`src/types.contracts.ts`, `src-tauri/src/contracts.rs`) are committed and treated as read-only; manual edits go into non-generated wrappers (`src/types.ts` and Rust modules).
 
-### Transport
-- **NDJSON**: one JSON object per line.
-- Requests include `id`; responses match `id`.
-- Notifications omit `id`.
-- Implementation requirement: messages MUST be single-line JSON (no embedded newlines); writer must flush after each line; reader must tolerate partial reads and buffer until newline.
+### Session correlation & sequencing
+- `session_id` is created by Rust at recording start and is used everywhere: recording, audio levels, transcription, injection, history. This aligns with the existing `session_id` param in `recording.start` (per `IPC_PROTOCOL_V1.md`).
+- Every event sent to UI includes monotonic `seq` (per-app runtime) to allow deterministic ordering / dedupe.
+- Sidecar notifications include `session_id` when relevant (already specified in `IPC_PROTOCOL_V1.md` for `event.audio_level` and `event.transcription_complete`); Rust drops any notification that does not match the current active session.  
+  - **Implementation detail:** “drop-stale” means: ignore if `session_id != current_session_id` OR if `seq <= last_seen_seq_by_event` (per-session).
 
-### Standard shapes
-- Request: `{ jsonrpc:"2.0", id:string|number, method:string, params?:object }`
-- Response: `{ jsonrpc:"2.0", id, result?:any, error?:{ code:string, message:string, details?:any } }`
-- Notification: `{ jsonrpc:"2.0", method:string, params:object }`
-
-### Methods (Rust → Python)
-- `system.ping` → `{ version: string, protocol: "v1" }`
-- `asr.initialize` `{ model: "parakeet-v3-0.6b", device_pref: "auto"|"cuda"|"cpu" }` → `{ status:"ready" }`
-  - Requirement: `asr.initialize` is idempotent; subsequent calls must be fast and must not reload weights unless model/device preference changed.
-- `audio.list_devices` → `{ devices: [{ id:number, name:string, is_default:boolean, sample_rate:number, channels:number }] }`
-- `audio.set_device` `{ device_id:number|null }` → `{ active_device_id:number|null }`
-- `recording.start` `{ device_id?:number|null }` → `{ session_id:string }`
-- `recording.stop` `{ session_id:string }` → `{ audio_duration_ms:number }`
-- `recording.cancel` `{ session_id:string }` → `{ status:"cancelled" }`
-- `replacements.set_rules` `{ rules: ReplacementRule[] }` → `{ count:number }`
-- `status.get` → `{ state:"idle"|"loading"|"recording"|"transcribing"|"error", detail?:string }`
-
-### Notifications (Python → Rust)
-- `event.status_changed` `{ state, detail? }`
-- `event.transcription_complete` `{ session_id, text, confidence?:number, duration_ms:number }`
-- `event.transcription_error` `{ session_id, code:string, message:string }`
-
-### Error codes (stable strings)
-- `E_METHOD_NOT_FOUND`, `E_INVALID_PARAMS`, `E_NOT_READY`, `E_MIC_PERMISSION`, `E_DEVICE_NOT_FOUND`, `E_AUDIO_IO`, `E_MODEL_LOAD`, `E_TRANSCRIBE`, `E_INTERNAL`
-
-### Contract clarifications (to make implementation testable)
-- Sidecar must emit **exactly one** of `event.transcription_complete` or `event.transcription_error` per `session_id` that reaches `recording.stop`.
-- `recording.stop` must return quickly (bounded time, e.g., <250ms) and transcription must happen asynchronously afterward.
-- Rust RPC client timeouts must be explicit per method (e.g., `system.ping` short; `asr.initialize` long) and surfaced as actionable error UI.
-
----
-
-## 4) Milestones, Tasks, and Acceptance Criteria (Optimized for 3–5 Agents)
-
-### Milestone M0 — Project + Contract Lock (Day 0–1)
-**Goal:** unblock parallel work with stable file layout + IPC contract + scaffolds.
-
-- M0.1 Create/confirm scaffolding for Tauri 2 + React/Vite/Tailwind; confirm dev run works.
-  - AC: `tauri dev` launches window; UI hot reload works; Rust command callable from UI.
-  - AC: platform permissions stubs are present (at minimum, documented placeholders for macOS microphone/accessibility usage strings and Linux/Windows notes).
-- M0.2 Write `shared/ipc/IPC_PROTOCOL_V1.md` (final method names + payloads + examples).
-  - AC: All teams implement against this contract; no ad-hoc methods.
-  - AC: Includes at least one example message for each method/notification and one example error response per common error type.
-- M0.3 Add sidecar skeleton + ping handler.
-  - AC: Rust spawns sidecar and successfully calls `system.ping`.
-
-**Coordination checkpoint:** “Ping demo” merged before M1/M2 proceed.
+### Data flow (happy path, clarified)
+1. Startup:
+   - Rust loads config → starts sidecar via `SidecarSupervisor` (evolved from `watchdog.rs`)
+   - Supervisor runs `system.ping`/`system.info` → emits `sidecar:status`
+   - Rust pulls `status.get` + `model.get_status(model_id?)` → emits `state:changed`, `sidecar:status`, `model:status`
+2. Mic test:
+   - UI `start_mic_test` → sidecar `audio.meter_start` → sidecar notifies `event.audio_level`
+   - Rust forwards as `audio:level` (throttled, includes `seq`)
+3. Start recording (from hotkey OR UI OR tray OR overlay):
+   - Rust creates `session_id` → `RecordingController::start(session_id)`
+   - sidecar `recording.start(session_id, device_uid?, vad?)`
+   - Rust emits `recording:status { phase:"recording", session_id }` and `state:changed`
+4. Stop/transcribe:
+   - `RecordingController::stop(session_id)`
+   - sidecar `recording.stop(session_id)` → returns `{ audio_duration_ms }`
+   - Rust transitions to `Transcribing` → sidecar `asr.transcribe(session_id?, audio_path?, language?)`
+   - **Sidecar applies normalization/macros/replacements** per `IPC_PROTOCOL_V1.md` pipeline; Rust must not re-apply replacements to avoid double transforms.
+   - Rust injects via `injection.rs` (with focus guard from `focus.rs`) → stores in `TranscriptHistory`
+   - Rust emits `transcript:complete { entry }` and returns to `Idle`
 
 ---
 
-### Milestone M1 — Python Sidecar MVP (Day 1–3)
-**Goal:** reliable audio capture + transcription + notifications.
+## 3. Data Models
 
-- M1.1 JSON-RPC server loop (`server.py`, `protocol.py`) with robust errors and clean EOF exit.
-  - AC: unknown method returns `E_METHOD_NOT_FOUND`; invalid payload returns `E_INVALID_PARAMS`.
-  - AC: malformed JSON line returns `E_INVALID_PARAMS` (when possible) and does not crash the process; EOF triggers clean shutdown with exit code 0 (unless in an internal fatal state).
-- M1.2 Device enumeration + set device (`audio.list_devices`, `audio.set_device`).
-  - AC: returns devices; handles “no devices” gracefully (empty list + `status=error` detail).
-  - AC: `audio.set_device` validates device existence and returns `E_DEVICE_NOT_FOUND` for invalid IDs.
-- M1.3 Recorder (push-to-talk) with bounded memory (max seconds; ring buffer/deque) at 16kHz mono float32.
-  - AC: start/stop works repeatedly; no buffer growth beyond configured cap; device disconnect returns `E_AUDIO_IO`.
-  - AC: if the input device does not support 16kHz mono, recorder must still operate by capturing at a supported rate/channels and converting deterministically to 16kHz mono float32 (conversion strategy documented and unit-tested at the boundary level).
-- M1.4 Parakeet loader + inference (`asr.initialize`, internal transcribe) with CUDA/CPU fallback.
-  - AC: model loads once per process; on failure emits `event.status_changed=error` with actionable detail; CPU fallback works.
-  - AC: model download/cache location is deterministic and documented; partial downloads are resumable (or safely retried) and failures are surfaced with next steps (disk space, network, permissions).
-- M1.5 Postprocess + replacements pipeline (macros `@@date`, `@@time`, `@@datetime`; snippet word-boundary replacements).
-  - AC: unit tests for replacements + postprocess; prevents recursive replacement loops (max depth or single-pass guarantees).
-  - AC: replacement rules validation rejects invalid patterns/empty keys and reports `E_INVALID_PARAMS` with details.
-- M1.6 Notifications emitted for status transitions + transcription completion/errors.
-  - AC: on stop, sidecar returns quickly and later emits exactly one completion/error for the session.
-  - AC: `event.status_changed` is emitted on entering/exiting `recording` and `transcribing`, and on `error` with `detail` suitable for UI display.
+### 3.1 AppConfig (schema v1, additive-only)
+**Files**
+- `shared/schema/AppConfig.schema.json` (canonical JSON Schema)
+- `src-tauri/src/config.rs` (Rust struct + validation)
+- `src/types.ts` (TypeScript types)
+
+**Existing fields** (preserved as-is):
+- `audio.device_uid`, `audio.audio_cues_enabled`
+- `hotkeys.primary`, `hotkeys.copy_last`, `hotkeys.mode`
+- `injection.paste_delay_ms`, `injection.restore_clipboard`, `injection.suffix`, `injection.focus_guard_enabled`
+- `model.model_id`, `model.device`
+- `replacements[]`
+- `ui.show_on_startup`, `ui.window_width`, `ui.window_height`
+- `presets.enabled_presets`
+
+**Additive fields (new)**
+
+UI:
+- `ui.theme: "system" | "light" | "dark"` (default `"system"`)
+- `ui.onboarding_completed: boolean` (default `false` for new installs; **true on migration** when missing)
+- `ui.overlay_enabled: boolean` (default `true`)
+- `ui.locale: string | null` (default `null`; future-proof for UI localization)
+- `ui.reduce_motion: boolean` (default `false`)
+
+Model / language:
+- `model.language: "auto" | string | null` (default `null`)
+  - `null`: no preference, sidecar decides.
+  - `"auto"`: sidecar auto-detect where supported.
+  - ISO 639-1 code: request that language when supported.
+- `model.preferred_device: "auto" | "cpu" | "gpu"` (default `"auto"`) — NOTE: maps to existing `model.device` / sidecar's `device_pref`. Consider whether this should coexist with or replace `model.device`. **Decision: keep as alias mapped to `device_pref` at the sidecar boundary. `model.device` remains for backwards compat.**  
+  - **Brownfield clarification:** existing schema enumerates `"auto"|"cpu"|"cuda"|"mps"`; implementation should store concrete device strings (`cuda`/`mps`) even if UI shows a single “GPU” option.
+
+Audio:
+- `audio.trim_silence: boolean` (default `true`)
+- `audio.vad_enabled: boolean` (default `false`) (opt-in; reduces accidental cutoffs)
+- `audio.vad_silence_ms: number` (default `1200`, clamp 400–5000)
+- `audio.vad_min_speech_ms: number` (default `250`, clamp 100–2000)
+
+History:
+- `history.persistence_mode: "memory" | "disk"` (default `"memory"`)
+- `history.max_entries: number` (default `100`, clamp 10–2000) — NOTE: existing `TranscriptHistory` defaults to 20; this raises it.
+- `history.encrypt_at_rest: boolean` (default `true` when `disk`, ignored otherwise)
+
+Injection:
+- `injection.app_overrides?: Record<string, { paste_delay_ms?: number; use_clipboard_only?: boolean }>` (default absent)
+
+**Validation rules**
+- All new enums invalid → safe defaults.
+- Numbers clamped to sane ranges with explicit logging.
+- Missing nested objects are treated as defaults (no "null object" traps).
+- Existing clamps remain (`paste_delay_ms` 10–500, window dims ≥ 200, non-empty hotkeys).
+
+### 3.2 Model catalog + manifests (hardened)
+**Files**
+- Keep: `shared/model/MODEL_MANIFEST.json` (default model for compatibility)
+- Add: `shared/model/MODEL_CATALOG.json`
+- Add: `shared/model/manifests/<model_id>.json`
+
+**Catalog entry**
+```ts
+export type ModelFamily = 'parakeet' | 'whisper';
+
+export interface ModelCatalogEntry {
+  model_id: string;
+  family: ModelFamily;
+  display_name: string;
+  description: string;
+
+  supported_languages: string[];  // include "auto" when relevant
+  default_language: string;       // usually "auto"
+
+  size_bytes?: number;
+  license_spdx?: string;
+
+  manifest_path: string;          // relative to shared/model/
+}
+```
+
+**Manifest additions (integrity + multi-mirror)**
+- `files[]` entries include:
+  - `path`
+  - `urls[]` (ordered mirrors)
+  - `size_bytes`
+  - `sha256`
+- Sidecar install rules:
+  - download to `.partial` → verify hash/size → atomic rename
+  - install is atomic per model ID (no half-installed visible state)
+  - resume supported when server allows (best effort)
+
+### 3.3 Transcript history (memory by default, disk optional)
+**Rust**: `src-tauri/src/history.rs` — existing `TranscriptEntry` + `TranscriptHistory` (ring buffer).
+
+**Entry fields (extended)**
+Existing fields preserved:
+- `id` (Uuid)
+- `text` (String)
+- `timestamp` (DateTime<Utc>)
+- `audio_duration_ms` (u32)
+- `transcription_duration_ms` (u32)
+- `injection_result` (HistoryInjectionResult)
+
+New fields:
+- `session_id: Uuid`
+- `raw_text: String` (before replacements/macros)
+- `final_text: String` (after replacements/macros — replaces role of `text` for display, but `text` stays for backward compat)
+- `language?: String`
+- `confidence?: f32`
+- `timings?: { inject_ms?: u32 }` (audio_ms and transcribe_ms already exist as top-level fields)  
+  - **Brownfield clarification:** since `IPC_PROTOCOL_V1.md` currently only guarantees final `text`, `raw_text` may initially be set equal to `final_text` until the sidecar optionally emits `raw_text` (additive).
+
+Disk persistence (opt-in, Phase 5):
+- Encrypted JSONL file under app data, key stored in OS keychain where available.
+- If keychain unavailable → fall back to "disk but not encrypted" **only** if user explicitly allows.
+
+### 3.4 Replacement rules + presets + macros
+- Schema: `shared/schema/ReplacementRule.schema.json` (existing)
+- Presets: `shared/replacements/PRESETS.json` (existing, embedded into app + sidecar)
+
+**Revised pipeline**
+- Preview and apply must be identical (no "preview lies").
+- Pipeline output includes metadata:
+  - `applied_rules_count`
+  - `applied_presets[]`
+  - `truncated: boolean`
+
+**Sidecar bug fixes remain required**
+- Fix imports and tuple handling in `sidecar/src/openvoicy_sidecar/notifications.py`.
+- Add unit tests for `process_text` and preset loading.
+- **Brownfield correctness fix:** Rust `ReplacementRule` in `src-tauri/src/config.rs` must be aligned to `shared/schema/ReplacementRule.schema.json` (additive migration):
+  - Add missing fields (`id`, `kind`, `word_boundary`, `case_sensitive`, `description?`, `origin?`) with defaults.
+  - Migration strategy: existing saved rules without `id` get generated IDs; missing flags default to schema defaults.
+
+### 3.5 IPC protocol entities (JSON-RPC v1, additive)
+Authoritative: `shared/ipc/IPC_PROTOCOL_V1.md` (LOCKED v1.0)
+
+**Additive extensions** (all optional fields; old sidecars ignore):
+- `recording.start.params.vad?: { enabled:boolean; silence_ms:number; min_speech_ms:number }`
+- `recording.stop.result.audio_path?: string`
+- `asr.initialize.params.language?: string | "auto" | null`
+- `asr.transcribe.params.session_id?: string`
+- Standard error payloads: `{ code, message, details?, recoverable? }` (consistent with existing `error.data.kind` convention from IPC_PROTOCOL_V1.md)
+
+**New method (additive)**
+- `model.install { model_id }` → `{ status:"installing" }` (download + verify + ready)  
+  - **Brownfield clarification:** current sidecar already implements `model.download`; host should treat `model.install` as optional and fall back to `model.download`/`asr.initialize` until `model.install` exists everywhere.
+
+### 3.6 Tauri events (Rust → UI/overlay)
+**Canonical events (revised naming)**
+- `state:changed`: `{ seq, state, enabled, detail?, timestamp }` — NOTE: rename from existing `state_changed`
+- `recording:status`: `{ seq, phase:"idle"|"recording"|"transcribing", session_id?, started_at?, audio_ms? }` — NEW
+- `model:status`: `{ seq, model_id, status, revision?, cache_path?, progress?, error? }`
+- `model:progress`: `{ seq, model_id, current, total?, unit, stage?, current_file?, files_completed?, files_total? }`
+- `audio:level`: `{ seq, source:"meter"|"recording", session_id?, rms:number, peak:number }`
+- `transcript:complete`: `{ seq, entry: TranscriptEntry }`
+- `transcript:error`: `{ seq, session_id?, error }` — NEW
+- `app:error`: `{ seq, error }` — now includes structured error, not just message string
+- `sidecar:status`: `{ seq, state:"starting"|"ready"|"failed"|"restarting"|"stopped", restart_count:number, message? }`
+
+**Compatibility**
+- For one release cycle, also emit legacy `state_changed` (no colon) with the same payload as `state:changed`.
+- Frontend `useTauriEvents.ts` currently listens to `state_changed` — it must be updated to listen to `state:changed` and tolerate legacy.
+- **Brownfield additions (must be handled during Phase 0):**
+  - Also emit legacy transcript events while migrating:
+    - Legacy: `transcription:complete` (current Rust emission) → Canonical: `transcript:complete`
+    - Legacy: `transcription:error` (current Rust emission) → Canonical: `transcript:error`
+  - Also bridge sidecar status events:
+    - Legacy: `status:changed` (current Rust forward) → Canonical: `sidecar:status` (structured + supervisor state)
+  - For `model:status`, emit both:
+    - Legacy payload shape currently used in Rust (e.g. `{ status: <enum> }`) and the canonical `{ model_id, status, ... }` until frontend types/store are updated.
 
 ---
 
-### Milestone M2 — Rust Core MVP (Day 1–3, parallel with M1)
-**Goal:** supervise sidecar, orchestrate recording, inject text, tray/hotkey.
+## 4. CLI/API Surface
 
-- M2.1 Sidecar manager (`sidecar.rs`): spawn, capture stdout/stderr, restart with backoff and max retries.
-  - AC: crash → auto-restart up to N times; then hard error state + tray shows error.
-  - AC: stdout is reserved for NDJSON only; stderr is captured for diagnostics without breaking protocol parsing.
-- M2.2 RPC client (`ipc/mod.rs` + `ipc/types.rs`): correlation by `id`, timeouts, notification fanout.
-  - AC: can handle concurrent calls safely (or explicitly serialized); notifications forwarded to app state.
-  - AC: parser tolerates split/partial lines and rejects oversized lines with a controlled error (to avoid memory blowups).
-- M2.3 Recording controller (`recording.rs`) + state machine (`state.rs`).
-  - AC: prevents double-start/double-stop; session_id tracked; stale notifications ignored.
-  - AC: rapid press/release produces a deterministic result (either a short transcription or a controlled “too short” user message) without deadlock.
-- M2.4 Text injection (`injection.rs`): clipboard paste default + optional restore; fallback to typing when configured.
-  - AC: Unicode injection works in browsers/editors; injection failures copy to clipboard + notify.
-  - AC: injection is serialized (no interleaving) and configurable with a small “paste delay” to accommodate apps that need focus settle time.
-- M2.5 Global hotkey (`hotkey.rs`) using Tauri global shortcut plugin.
-  - AC: press starts recording; release stops (or toggle fallback mode works); hotkey changes persist and apply without restart.
-  - AC: hotkey conflicts are detected where possible and surfaced as a user-actionable error (choose another hotkey).
-- M2.6 System tray (`tray.rs`): idle/recording/transcribing/error; menu: Show/Settings, Restart Sidecar, Quit.
-  - AC: tray always reflects current state; Restart Sidecar recovers from error.
-- M2.7 Config persistence (`config.rs`) with atomic writes + versioned migrations.
-  - AC: first run creates defaults; subsequent runs load; corruption fallback to last-known-good.
-  - AC: config schema includes (at minimum) mic device selection, hotkey + mode, injection mode + restore clipboard, replacements list, and logging/diagnostics settings; migration tests cover at least one prior version.
+### 4.1 Developer CLI
+Existing commands preserved:
+- Beads: `bd onboard`, `bd ready`, `bd show`, `bd update`, `bd close`, `bd sync`
+- Dev/build: `bun run tauri dev`, `bun run build`, `bun run test`, `bun run lint`
+- Schema/tools: `python shared/schema/validate.py --self-test`, `python scripts/validate_model_manifest.py`, `python scripts/validate_ipc_examples.py`
+- Sidecar packaging: `./scripts/build-sidecar.sh`, `./scripts/bundle-sidecar.sh`
+- E2E scripts: `./scripts/e2e/run-all.sh`, etc.  
+  - **Brownfield note:** commands can also be run via `npm run ...` (per `package.json`), but `bun` is preferred because `bun.lock` is present.
 
-**Coordination checkpoint:** “Record loop without ASR” (start/stop + status changes) merged before M3.
+New additions:
+- Contracts:
+  - `python scripts/validate_contracts.py`
+  - `python scripts/gen_contracts_ts.py`
+  - `python scripts/gen_contracts_rs.py`
+- Sidecar:
+  - `python -m openvoicy_sidecar.self_test` (fast sanity check; used in CI)
 
----
+### 4.2 Tauri Command API (UI → Rust)
+Implementation target: `src-tauri/src/commands.rs` (no TODO stubs; all delegate to IntegrationManager)  
+- **Brownfield clarity:** commands will take `tauri::State<IntegrationState>` where needed; this does not change JS `invoke()` signatures.
 
-### Milestone M3 — UI MVP (Day 2–4)
-**Goal:** configure the app without touching CLI; status visibility.
+**Existing commands** (preserved as-is):
+- `get_app_state`, `get_capabilities`, `get_capability_issues`, `can_start_recording`
+- `run_self_check`
+- `get_config`, `update_config`, `reset_config_to_defaults`
+- `list_audio_devices`, `set_audio_device`, `start_mic_test`, `stop_mic_test`
+- `get_model_status`, `download_model`, `purge_model_cache`, `get_model_catalog`
+- `get_transcript_history`, `copy_transcript`, `copy_last_transcript`, `clear_history`
+- `get_hotkey_status`, `set_hotkey`
+- `get_replacement_rules`, `set_replacement_rules`, `preview_replacement`
+- `get_available_presets`, `load_preset`
+- `toggle_enabled`, `is_enabled`, `set_enabled`
+- `generate_diagnostics`, `get_recent_logs`  
+  - **Brownfield note:** `get_model_catalog` is not currently implemented in `src-tauri/src/commands.rs`; it is treated as part of “remove TODO stubs / contract alignment” work.
 
-- M3.1 Status indicator (idle/recording/transcribing/error) + last transcript display.
-  - AC: UI updates within 200ms of status change events.
-- M3.2 Settings panel: microphone selection, hotkey picker (hold/toggle mode), injection delay, restore clipboard toggle.
-  - AC: all settings persist; invalid hotkeys blocked; mic list reflects `audio.list_devices`.
-- M3.3 Replacements manager: CRUD, enable/disable, import/export JSON, preview box (“input → processed output”).
-  - AC: saves rules to config; pushes rules to sidecar via `replacements.set_rules`; preview uses same engine path (sidecar call or local mirror).
-- M3.4 Diagnostics view: “Copy diagnostics” (versions, protocol, last error, sidecar status).
-  - AC: produces a single text blob suitable for bug reports.
-  - AC: includes OS + app version + sidecar version + model status (downloaded/initializing/ready/error) and last N lines of logs (bounded).
+**New commands:**
 
----
+Recording:
+- `start_recording` — `invoke<void>('start_recording')` — creates session_id, delegates to RecordingController
+- `stop_recording` — `invoke<void>('stop_recording')` — stops current session
+- `cancel_recording` — `invoke<void>('cancel_recording')` — cancels without transcription
 
-### Milestone M4 — End-to-End Integration + Hardening (Day 4–5)
-**Goal:** ship-grade MVP behavior and error handling.
+Sidecar lifecycle:
+- `restart_sidecar` — `invoke<void>('restart_sidecar')` — forces sidecar restart
 
-- M4.1 Wire hotkey → start/stop → transcription notifications → injection (Rust-owned E2E).
-  - AC: end-to-end works without UI open; tray reflects states.
-- M4.2 Error handling matrix implemented end-to-end:
-  - No microphone, mic permission denied, sidecar crash, model load fail, hotkey conflict, injection blocked, rapid press/release.
-  - AC: every case yields user-actionable message; no deadlocks.
-- M4.3 Logging (Rust + sidecar) with ring-buffer “recent logs” for diagnostics.
-  - AC: logs accessible via Diagnostics view; sidecar stderr captured with prefix.
-- M4.4 Tests + manual checklist
-  - Python unit tests: protocol parsing, postprocess, replacements.
-  - Rust tests: config load/save/migrate; IPC parsing; injection mode selection (mocked).
-  - Manual checklist: cross-app injection (VS Code, browser, terminal), long recording, replacements, restart recovery.
-  - AC: manual checklist is written as a runnable, step-by-step script with expected outcomes and at least one “known limitation” callout for Wayland/macOS permissions.
+Model (extended signatures):
+- `get_model_status` gains optional `{ modelId?: string }` param
+- `download_model` gains optional `{ modelId?: string, force?: boolean }` params
 
----
+Replacements (parity fix):
+- `preview_replacement` updated to call sidecar `replacements.preview` for pipeline parity
+- Output: `{ result, truncated, applied_rules_count }`
 
-### Milestone M5 — Packaging + CI (Day 5–7)
-**Goal:** reproducible builds for all platforms with bundled sidecar.
+History (extended):
+- `export_history` — `invoke<string>('export_history', { format:"md"|"csv" })` — returns file path
 
-- M5.1 Build sidecar binary (PyInstaller) per OS; ensure runtime deps included.
-  - AC: app runs without system Python; sidecar starts on first launch.
-  - AC: packaged sidecar can download/cache model in an app-writable directory; errors are reported cleanly when blocked by permissions.
-- M5.2 Tauri bundling configuration (`tauri.conf.json`) to ship sidecar in resources/externalBin.
-  - AC: `tauri build` produces installable artifacts.
-  - AC: per-OS resource paths are verified at runtime (clear error if missing/corrupt).
-- M5.3 CI workflow: build matrix for Windows/macOS/Linux; artifact upload.
-  - AC: builds succeed on CI; version stamping consistent across Rust/UI/sidecar.
-  - AC: CI runs unit tests (`cargo test`, `pytest`) and fails fast on protocol/schema mismatches.
+_All existing command signatures remain; any changes are additive-only (optional params)._
 
----
+### 4.3 Tauri events
+See §3.6. UI must subscribe to canonical names, but tolerate legacy aliases during migration.
 
-## 5) Parallel Execution (3–5 Agents)
+### 4.4 Sidecar JSON-RPC (Rust → Sidecar) + formats
+Transport: NDJSON over stdio. All methods per `shared/ipc/IPC_PROTOCOL_V1.md`.
 
-### 3 agents
-- **Agent A (Rust core + Integration):** M2 + M4 wiring
-- **Agent B (Python sidecar + ASR):** M1
-- **Agent C (UI + QA/CI):** M3 + M5 scaffolding + test harness
+**System**
+- `system.ping`, `system.info`, `system.shutdown`
 
-### 4 agents (recommended)
-- **Agent A (Rust IPC/sidecar/state):** M2.1–M2.3
-- **Agent B (Rust hotkey/tray/injection):** M2.4–M2.6
-- **Agent C (Python audio/protocol/postprocess/replacements):** M1.1–M1.3 + M1.5–M1.6
-- **Agent D (ML/ASR + packaging hooks):** M1.4 + M5.1
+**Status**
+- `status.get` → `{ state, detail?, model? }` (**must exist** — currently missing in sidecar, fix required)
 
-### 5 agents
-Add **Agent E (UI/QA)** split into UI vs CI/tests.
+**Audio**
+- `audio.list_devices`, `audio.set_device`, `audio.meter_start`, `audio.meter_stop`, `audio.meter_status`
 
-**Hard coordination gates**
-1. M0.2 IPC contract locked
-2. M0.3 ping demo
-3. M2.3 “record loop without ASR” demo
-4. M1.4 “ASR returns text” demo
-5. M4.1 “E2E inject without UI” demo
+**Recording**
+- `recording.start { session_id, device_uid?, vad? }` (vad is additive)
+- `recording.stop { session_id }` → `{ audio_duration_ms, audio_path? }` (audio_path is additive)
+- `recording.cancel { session_id }`
+- `recording.status`
 
----
+**Model**
+- `model.get_status { model_id? }`
+- `model.install { model_id }` (NEW — download + verify + ready)
+- `model.purge_cache { model_id? }`  
+  - **Brownfield note:** current sidecar also supports `model.download`; host should be tolerant and use whichever is available.
 
-## 6) Risk Mitigation (Must-Haves)
+**ASR**
+- `asr.initialize { model_id, device_pref, language? }` (language is additive)
+- `asr.status`
+- `asr.transcribe { audio_path, session_id?, language? }` (session_id, language are additive)
 
-- **Wayland hotkeys/injection:** document best-effort; prioritize X11; implement toggle mode fallback.
-  - Requirement: detect Wayland at runtime and proactively warn users about limitations; provide “clipboard-only” safe fallback behavior when injection is blocked.
-- **macOS permissions:** detect and show step-by-step instructions for Microphone + Accessibility; tray shows blocked state.
-  - Requirement: include required permission strings/entitlements in packaging; verify blocked states are distinguishable (mic vs accessibility).
-- **Model size/download failures:** explicit “Downloading model…” state; retry; clear cache path messaging.
-  - Requirement: download progress/state is surfaced to tray/UI; failures include at least (disk space, network, permissions) hints.
-- **Sidecar crash loops:** exponential backoff + capped retries; visible “Restart sidecar” action.
-- **Injection edge cases:** default to clipboard paste; serialize injections to avoid interleaving; clipboard restore best-effort.
-  - Requirement: when restoring clipboard fails, do not block injection; log and surface only if user opted into strict restore.
-- **Replacement safety:** avoid recursive cascades; validate rules; reject invalid JSON with clear error.
+**Replacements**
+- `replacements.get_rules`, `replacements.set_rules`, `replacements.get_presets`, `replacements.get_preset_rules`, `replacements.preview`
+
+### 4.5 Sidecar notifications (Sidecar → Rust)
+Per `IPC_PROTOCOL_V1.md`:
+- `event.status_changed`
+- `event.audio_level` (includes `session_id` when `source=recording`)
+- `event.transcription_complete` (**must include `session_id`**, `text`, `confidence?`, `duration_ms`)
+- `event.transcription_error` (**must include `session_id`**, `kind`, `message`)
+
+Additive (future):
+- `event.model_progress` (optional; for long downloads)
 
 ---
 
-## 7) Work Tracking (bd)
+## 5. Error Handling
 
-- Create bd epics: `M0 Contract`, `M1 Sidecar`, `M2 Rust Core`, `M3 UI`, `M4 Hardening`, `M5 Packaging/CI`.
-- For each task above, create a bd issue with: owner stream, dependencies, acceptance criteria, and a short demo script.
+### Standard error object
+Use one shape everywhere (Tauri command errors, app events, sidecar errors):
+```ts
+type AppError = {
+  code: string;           // stable identifier, e.g. "E_MIC_PERMISSION"
+  message: string;        // user-readable summary
+  details?: unknown;      // structured payload for diagnostics
+  recoverable: boolean;
+};
+```
+NOTE: This is the **Tauri event / UI-facing shape**. The existing `CommandError` enum in `commands.rs` and the `error.data.kind` convention in `IPC_PROTOCOL_V1.md` continue to serve their respective transport layers. The `AppError` shape is used for the `app:error` event and UI error display.  
+- **Compatibility requirement:** keep emitting the legacy `{ message, recoverable }` payload shape (or tolerate it in frontend) for one release cycle while migrating to `{ seq, error: AppError }`.
+
+### Recovery strategies
+- **Sidecar spawn/IPC failure**: Supervisor emits `sidecar:status=failed`; UI shows banner + "Restart sidecar" button; tray mirrors it. Crash-loop protection uses exponential backoff + circuit breaker (requires manual restart after N rapid failures). Builds on existing `watchdog.rs` (`WatchdogConfig` with `max_restart_count`, `backoff_factor`).  
+  - **Brownfield clarification:** current `WatchdogConfig` does not yet include `max_restart_count`/`backoff_factor`; add them (or introduce a `SidecarSupervisorConfig`) as part of Phase 0.5 while keeping existing fields (`check_interval`, `ping_timeout`, `hang_threshold`, `auto_restart_on_hang`) intact.
+- **Mic permission denied** (`E_MIC_PERMISSION`): actionable OS-specific steps + "recheck" flow. Already defined in `IPC_PROTOCOL_V1.md`.
+- **Device hot-swap**: on device removal, immediately stop recording (clipboard preserves transcript if already done); fall back to default device and emit `app:error` with guidance.
+- **Model install issues**:
+  - `E_DISK_FULL`: show required/available space; offer purge.
+  - `E_CACHE_CORRUPT`: suggest purge + reinstall (hash mismatch triggers this).
+  - `E_NETWORK`: retry with backoff; allow "offline mode" (keep existing installs usable).
+- **Injection failures**: never lose transcript; store `ClipboardOnly` with reason (existing `HistoryInjectionResult` handles this); include "copy again" actions.
+- **Overlay issues**: auto-disable overlay (set `ui.overlay_enabled=false`) only after repeated failures; always allow re-enable.
+- **IPC drift** (older sidecar): when `language` rejected, retry initialize without it; surface "Whisper not supported in this build".
+
+---
+
+## 6. Integration Points
+
+### Dependencies
+- Rust: `tauri`, `global_hotkey`, platform-specific injection backends in `injection.rs`, optional `rodio` for audio cues (existing `sounds/*.wav`).
+- Python: `sounddevice`, `numpy`; optional `faster-whisper` (+ `ctranslate2`) for Whisper; optional VAD deps (kept lightweight).
+- Contracts tooling: python scripts + CI validators.
+
+### Security / privacy
+- Never store tokens in config; redact in logs/diagnostics.
+- Never log full transcripts by default (only lengths/hashes unless user enables debug).
+- Model/license attribution stays in `docs/THIRD_PARTY_NOTICES.md` (existing).
+- Default mirrors `auth_required=false`. Optional HF token via env var `HF_TOKEN` (never stored in config).
+
+---
+
+## 7. Storage & Persistence
+- Config: platform dir `OpenVoicy/config.json` (plus `.tmp`, `.corrupt`) — existing in `config.rs`.
+- Models: cache dir (managed by sidecar, e.g. `~/.cache/openvoicy/models/<model_id>/...`) with atomic install staging.
+- Transcript history:
+  - default: in-memory ring buffer (`history.rs`, size from `history.max_entries`)
+  - optional: encrypted JSONL file when `history.persistence_mode="disk"` (Phase 5)
+- Presets/manifests/contracts: embedded into the app + sidecar package.
+- Logs: in-memory ring buffer (`log_buffer.rs`); optional file logs for diagnostics export (rotated).
+- Frontend build output: `dist/`; overlay adds an additional built HTML entry.
+
+---
+
+## 8. Implementation Roadmap
+
+Phased delivery with dependencies and complexity (S/M/L). Designed for 3–5 parallel agents.
+
+### Phase 0 — Contracts-as-Code + Baseline Stabilization (L)
+**Must land first.**
+
+- **P0.1 Sidecar spec compliance + blocking bug fixes (M)**
+  - Implement `status.get` in `sidecar/src/openvoicy_sidecar/server.py`.
+  - Fix replacements integration in `sidecar/src/openvoicy_sidecar/notifications.py` (missing `get_current_rules`, tuple return).
+  - Load presets on startup from `shared/replacements/PRESETS.json` (packaged resource path in release).
+  - Add regression tests under `sidecar/tests/` for the above.  
+  - **Acceptance criteria**
+    - `status.get` matches `IPC_PROTOCOL_V1.md` shape and is included in the handler dispatch table.
+    - `event.transcription_complete.params.text` is a string (not a tuple), and replacements/macros are applied exactly once.
+    - Presets load in dev and in packaged builds (resource path resolved).
+  - **Verification**
+    - `pytest sidecar/tests`
+    - `python scripts/validate_ipc_examples.py`
+
+- **P0.2 Rust↔UI contracts (L)**
+  - Make `src-tauri/src/commands.rs` delegate to `IntegrationState` + sidecar RPC (remove TODO `NotImplemented` paths for devices/model/meter/presets).
+  - Standardize Tauri event names: emit `state:changed` canonical + `state_changed` legacy alias.
+  - Fix sidecar notification parsing in `integration.rs` to match `IPC_PROTOCOL_V1.md`.
+  - Add `session_id` + `seq` propagation and drop-stale logic in `integration.rs`.  
+  - **Brownfield must-fix drift included in this item**
+    - Emit `transcript:complete` while preserving legacy `transcription:complete` for one release cycle.
+    - Emit `transcript:error` while preserving legacy `transcription:error` for one release cycle.
+    - Ensure UI actually receives state change events (not just tray updates).
+    - Align TS types in `src/types.ts` with Rust payload keys (`detail` vs `error_detail`, model event shapes).
+  - **Acceptance criteria**
+    - Frontend can run without console spam/errors from missing events; store updates on state/model/transcript events.
+    - All existing `#[tauri::command]` endpoints return non-placeholder data where defined in plan (no `NotImplemented` for core flows).
+  - **Verification**
+    - `bun run test`
+    - `cargo test` (in `src-tauri`)
+    - `python scripts/validate_contracts.py` (once P0.4 lands)
+
+- **P0.3 Schema/type alignment (M)**
+  - Add config fields: `ui.theme`, `ui.onboarding_completed`, `ui.overlay_enabled`, `model.language` across schema, Rust, TS.
+  - Update `shared/schema/validate.py` self-tests/examples accordingly.  
+  - **Brownfield addition:** align `ReplacementRule` Rust/TS/schema shapes as described in §3.4 with a migration step.
+  - **Acceptance criteria**
+    - `python shared/schema/validate.py --self-test` passes.
+    - Existing config files load and round-trip with defaults applied; no runtime panics on missing new fields.
+
+- **P0.4 Contract schemas + generators (M)**
+  - Add `shared/contracts/` with command, event, and RPC schemas.
+  - Add generators (`gen_contracts_ts.py`, `gen_contracts_rs.py`).
+  - Add CI validators.  
+  - **Acceptance criteria**
+    - Generators are deterministic (no local absolute paths/timestamps in output).
+    - CI fails if contracts and generated types are out of date.
+
+- **P0.5 Sidecar supervisor (M)**
+  - Evolve existing `watchdog.rs` into `SidecarSupervisor` with crash-loop protection and `restart_sidecar` command.
+  - Emit structured `sidecar:status` events.  
+  - **Brownfield clarification:** keep `watchdog.rs` as health monitoring + resume handling; add lifecycle/restart policy in a supervisor layer (new `supervisor.rs` or equivalent), potentially extending `WatchdogConfig` or adding `SidecarSupervisorConfig` (`max_restart_count`, `backoff_factor`, circuit breaker thresholds).
+  - **Acceptance criteria**
+    - Repeated sidecar crashes do not wedge UI; `restart_sidecar` reliably recovers in normal cases.
+    - `sidecar:status` includes `restart_count` and a stable `state` enum.
+
+### Phase 1 — Recording Controls + UI Coherence (M)
+Depends on: Phase 0.
+
+- P1.1 Add `start_recording`/`stop_recording`/`cancel_recording` Tauri commands; hotkeys, UI, and (later) tray all call same path.
+- P1.2 Top-level tabs: `src/components/Layout/TabBar.tsx`, `TabPanel.tsx`; wire in `src/App.tsx`.
+- P1.3 Status dashboard: `src/components/Status/StatusDashboard.tsx` (state, hotkey/mode, last transcript, model + sidecar badges).
+- P1.4 History panel: move to `src/components/History/HistoryPanel.tsx`; add search + clear-all confirm.
+- P1.5 Replacements tab: integrate existing `ReplacementList` + `PresetsPanel`; add tab badge counts. Preview must match apply (parity fix).  
+- **Acceptance criteria**
+  - Recording can be started/stopped from UI without relying on hotkeys.
+  - Replacements preview uses sidecar pipeline; UI preview matches injected output for same input.
+
+### Phase 2 — Tray + Overlay + Audio Cues (M/L)
+Depends on: Phase 0–1.
+
+- **P2.1 Tray enhancements (M)**
+  - Dynamic tray menu builder (`src-tauri/src/tray.rs` or new `tray_menu.rs`) with: enable toggle, mode, language, mic device, start/stop, recent transcripts, overlay toggle.
+  - Rebuild triggers on config/history/device changes; add Rust unit tests.
+
+- **P2.2 Audio cues (M)**
+  - Implement real audio playback (`src-tauri/src/audio_cue.rs`, `rodio`), use existing `src-tauri/sounds/*.wav` and add cancel cue.
+  - Wire into start/stop/cancel/error with timing to reduce beep capture; respects `audio.audio_cues_enabled`.
+
+- **P2.3 Overlay (M/L)**
+  - Add overlay window config to `src-tauri/tauri.conf.json`; implement `src-tauri/src/overlay.rs` show/hide/position/click-through gated by `ui.overlay_enabled`.
+  - Add Vite multi-page build (`vite.config.ts`) + `overlay.html` + `src/overlay/*` UI (pill, timer, waveform).
+  - Minimal CPU: throttled meter, multi-monitor positioning, clear state.  
+- **Acceptance criteria**
+  - Tray reflects current enabled/recording/model state within 250ms of changes.
+  - Overlay can be disabled safely via config; when disabled, it has zero impact on idle CPU.
+
+### Phase 3 — Audio Quality + VAD Auto-Stop (M)
+Depends on: Phase 1.
+
+- Sidecar preprocess: resample/trim/normalize (trim gated by `audio.trim_silence`).
+- Optional VAD auto-stop (config-driven: `audio.vad_enabled`, `audio.vad_silence_ms`, `audio.vad_min_speech_ms`) and UI affordances.
+- Add tests for VAD edge cases (short utterances, background noise).  
+- **Acceptance criteria**
+  - With VAD disabled, recording behavior matches current baseline.
+  - With VAD enabled, auto-stop triggers only after configured silence window and does not cut typical short utterances.
+
+### Phase 4 — Model Catalog + Optional Whisper Support (L)
+Depends on: Phase 0 + schema updates.
+
+- P4.1 Add `shared/model/MODEL_CATALOG.json` + per-model manifests with checksums.
+- P4.2 Implement `model.install` in sidecar + integrity verification (sha256 hash check).
+- P4.3 Sidecar ASR backend dispatch by `family` (Parakeet vs Whisper); implement Whisper backend (`faster-whisper`) with optional `language` param.
+- P4.4 IPC additive: `asr.initialize.language?`; host retries without language if unsupported.
+- P4.5 Update UI `src/components/Settings/ModelSettings.tsx` for model selection + language dropdown (Whisper only).  
+- **Acceptance criteria**
+  - Model install/update is atomic; corrupt partial downloads never produce “ready” state.
+  - Host tolerates missing `language` support and downgrades gracefully.
+
+### Phase 5 — Optional Encrypted Persistent History + Export (M)
+Depends on: Phase 1.
+
+- Disk persistence behind explicit toggle (`history.persistence_mode`); encryption via OS keychain.
+- Export to Markdown/CSV via `export_history` command; "purge history" controls.  
+- **Acceptance criteria**
+  - Default remains memory-only with no disk writes.
+  - If enabled, export produces deterministic output and handles empty history.
+
+### Phase 6 — Onboarding + Theme + Accessibility (M)
+Depends on: schema updates in Phase 0.
+
+- Onboarding wizard (`src/components/Onboarding/*`) gated by `ui.onboarding_completed` with migration-safe defaulting.
+- Theme override (`ui.theme`) with Tailwind `darkMode:'class'`, `src/hooks/useTheme.ts`, and Settings toggle.
+- Reduce motion (`ui.reduce_motion`); keyboard nav and ARIA improvements.  
+- **Acceptance criteria**
+  - First-run onboarding does not block power users (skip available).
+  - Accessibility checks: tab order sane, key controls reachable, reduced motion respected.
+
+### Phase 7 — CI/Packaging Hardening (M/L)
+Runs continuously; release gate.
+
+- OS matrix green; sidecar packaging includes contracts/manifests/presets.
+- Ensure overlay build works in CI builds.
+- Deterministic build inputs (lockfiles) and security scanning.
+- Stabilize tests across OS matrix in `.github/workflows/test.yml` and `.github/workflows/build.yml`.  
+- **Acceptance criteria**
+  - CI runs the same contract validators + unit tests as local (no “works locally only” gaps).
+  - Packaged app can locate sidecar resources (presets/manifests/contracts) without dev-only paths.
+
+### Parallelization (5 agents)
+- Agent A: Phase 0 plumbing (contracts, supervisor, session gating, P0.1–P0.5)
+- Agent B: Phase 1 UI (tabs/dashboard/history/replacements) + Phase 6 UI
+- Agent C: Tray + cues (Phase 2.1 + 2.2)
+- Agent D: Overlay (Phase 2.3)
+- Agent E: Models + Whisper + packaging (Phase 4 + Phase 7)  
+- **Brownfield parallelization guard:** minimize merge conflicts by owning file surfaces:
+  - `src-tauri/src/integration.rs` + IPC bridging: single owner at a time.
+  - Frontend event hooks/types (`src/hooks/useTauriEvents.ts`, `src/types.ts`): single owner at a time.
+
+---
+
+## 9. Testing Strategy
+
+### Contract tests (new cornerstone)
+- Validate generated types match schemas.
+- Golden JSONL fixtures for:
+  - sidecar notifications
+  - JSON-RPC requests/responses
+  - Tauri event payloads
+- Extends existing `scripts/validate_ipc_examples.py`.
+- **Brownfield requirement:** include fixtures for both canonical and legacy event aliases during the compatibility window.
+
+### Frontend
+- Vitest + Testing Library (existing framework in `vitest.config.ts`):
+  - State/recording badges, history/search/export, replacements parity, onboarding, theme/accessibility toggles, overlay throttling logic.
+  - Extends existing tests in `src/tests/`.
+
+### Rust
+- `cargo test` in `src-tauri`:
+  - Supervisor restart policy, stale-event dropping, tray builder snapshots, config migration defaults.
+  - Extends existing tests in `state.rs`, `history.rs`, `config.rs`.
+
+### Sidecar
+- `pytest sidecar/tests`:
+  - `status.get`, preset loading, replacements preview/apply, VAD behavior (synthetic audio), model install hash verification.
+  - Regression tests per `IPC_PROTOCOL_V1.md` §Test Requirements.
+
+### E2E
+- `scripts/e2e/run-all.sh` plus targeted OS smoke checks:
+  - Sidecar crash loop recovery
+  - Device removal mid-recording
+  - Offline install behavior (existing model usable)
+
+### Test data
+- No large audio/model artifacts committed.
+- Use generated audio for meter tests and mock transcription for unit tests.
+- Optional local-only whisper smoke fixture.
+
+---
+
+## 10. Comparison & Trade-offs
+
+### Why this approach
+- Contracts-as-code adds upfront work but pays off by eliminating recurring drift bugs.
+- Additive-only protocol/schema evolution preserves upgrade safety.
+- Event-driven updates reduce polling complexity and keep UI responsive.
+- Catalog + per-model manifests scale to future models without breaking the default manifest tooling.
+
+### Trade-offs
+- Contracts-as-code adds upfront work; worth it for eliminating drift.
+- VAD improves UX for many but must be opt-in to avoid surprise cutoffs.
+- Encrypted history persistence adds complexity; default remains memory-only for privacy.
+- Whisper support increases package size; treated as optional capability with clear UX.
+- Overlay click-through/always-on-top is inherently OS-fragile; mitigated via `ui.overlay_enabled` and graceful fallback.
+- Audio cues may still be picked up acoustically by microphones; delaying start reduces risk but cannot eliminate it.
+- In-memory history resets on restart (privacy-first); persistence is explicit opt-in.
+
+---
+
+## Appendix A: Brownfield Compatibility Notes
+
+This plan was developed with full awareness of the existing codebase:
+
+| Existing Module | Plan Impact | Notes |
+|---|---|---|
+| `src-tauri/src/state.rs` | No semantic changes | `AppState` enum untouched; may add metadata to `StateEvent` |
+| `src-tauri/src/config.rs` | Additive fields only | New optional fields with defaults; `validate_and_clamp` extended |
+| `src-tauri/src/history.rs` | Extended `TranscriptEntry` | New optional fields; ring buffer max_size becomes configurable |
+| `src-tauri/src/integration.rs` | Orchestrator role preserved | Session gating + supervisor wiring added |
+| `src-tauri/src/commands.rs` | Remove TODOs, add new commands | Existing signatures stable; new commands additive |
+| `src-tauri/src/watchdog.rs` | Evolved into supervisor | Same crate; enhanced with circuit breaker |
+| `src-tauri/src/injection.rs` | Minor: app_overrides support | Existing flow preserved |
+| `src-tauri/src/tray.rs` | Dynamic menu builder | Extends existing tray |
+| `src/hooks/useTauriEvents.ts` | Listen to `state:changed` + legacy | Current `state_changed` preserved as alias |
+| `src/types.ts` | Extended with new types | Existing types stable |
+| `shared/ipc/IPC_PROTOCOL_V1.md` | Additive only | LOCKED v1.0; new optional params |
+| `shared/schema/AppConfig.schema.json` | Additive fields only | `additionalProperties: false` requires explicit additions |
+| `sidecar/` | Bug fixes + new methods | `status.get` impl; `model.install` new |

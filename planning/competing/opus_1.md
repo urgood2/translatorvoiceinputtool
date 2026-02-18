@@ -1,1492 +1,1369 @@
-# OpenVoicy - Detailed Implementation Plan
 
-**Version:** 0.1.0 (MVP)
-**Date:** 2026-02-04
-**Status:** Ready for Implementation
 
----
+# Implementation Plan: Voice Input Tool — Usability & Polish Release
 
-## 1. Executive Summary (TL;DR)
+## Executive Summary (TL;DR)
 
-OpenVoicy is a cross-platform, offline speech-to-text tool that transcribes voice input and injects it into any focused text field. The MVP delivers:
-
-- **Push-to-talk recording** via global hotkey
-- **Offline transcription** using NVIDIA Parakeet V3 (0.6B params)
-- **Direct text injection** into any application
-- **Text replacement engine** for snippets and smart expansions
-- **System tray** integration with status indicators
-- **Settings UI** for configuration
-
-**Architecture:** Tauri (Rust) shell + React/TypeScript UI + Python sidecar for ML inference.
-
-**Target Platforms:** Windows 10+, macOS 12+, Linux (X11/Wayland)
+Transform the Voice Input Tool from a functional prototype into a polished cross-platform desktop app across 7 phases. The work decomposes into **~25 discrete tasks** spanning UI reorganization, recording overlay, audio feedback, multilingual Whisper support, onboarding, theming, and CI hardening. Phases 1–3 and 5–6 are low-risk frontend/Rust work; Phase 4 (Whisper) is the highest-risk item touching the sidecar ASR boundary; Phase 7 is CI plumbing. Most phases are parallelizable across agents, with Phase 4 as the critical path due to cross-boundary protocol changes.
 
 ---
 
-## 2. Architecture Overview
+## Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                           OpenVoicy Application                          │
-├──────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │                     Tauri Shell (Rust)                             │  │
-│  │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌───────────┐  │  │
-│  │  │ Hotkey Mgr   │ │ System Tray  │ │ Text Inject  │ │ IPC Bridge│  │  │
-│  │  │ (rdev crate) │ │ (tauri-tray) │ │ (enigo)      │ │ (sidecar) │  │  │
-│  │  └──────────────┘ └──────────────┘ └──────────────┘ └───────────┘  │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
-│                              ▲                                           │
-│                              │ Tauri Commands (invoke)                   │
-│                              ▼                                           │
-│  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │                   Web UI (React + TypeScript)                      │  │
-│  │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌───────────┐  │  │
-│  │  │ Settings     │ │ Replacements │ │ Status View  │ │ History   │  │  │
-│  │  │ Panel        │ │ Manager      │ │ (recording)  │ │ View      │  │  │
-│  │  └──────────────┘ └──────────────┘ └──────────────┘ └───────────┘  │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │                     Python Sidecar                                 │  │
-│  │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌───────────┐  │  │
-│  │  │ Audio        │ │ ASR Engine   │ │ Text Post-   │ │ JSON-RPC  │  │  │
-│  │  │ Capture      │ │ (Parakeet)   │ │ Processor    │ │ Server    │  │  │
-│  │  │ (sounddevice)│ │ (NeMo/MLX)   │ │              │ │ (stdio)   │  │  │
-│  │  └──────────────┘ └──────────────┘ └──────────────┘ └───────────┘  │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-└──────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  Tauri Host (Rust)                                      │
+│  ┌──────────┐ ┌──────────┐ ┌────────────┐ ┌──────────┐│
+│  │ Recording │ │ AudioCue │ │ TrayMgr    │ │ Overlay  ││
+│  │ Controller│ │ Player   │ │ (tray.rs)  │ │ Window   ││
+│  └────┬─────┘ └────┬─────┘ └─────┬──────┘ └────┬─────┘│
+│       │             │             │              │       │
+│  ┌────▼─────────────▼─────────────▼──────────────▼─────┐│
+│  │              AppStateManager                        ││
+│  │  (state machine: Idle→Recording→Transcribing→...)   ││
+│  └───────────────────┬─────────────────────────────────┘│
+│                      │ IPC_PROTOCOL_V1 (locked)          │
+│  ┌───────────────────▼─────────────────────────────────┐│
+│  │              Sidecar (Python)                        ││
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  ││
+│  │  │ Parakeet │  │ Whisper  │  │ model_cache.py   │  ││
+│  │  │ Pipeline │  │ Pipeline │  │ (HF download)    │  ││
+│  │  └──────────┘  └──────────┘  └──────────────────┘  ││
+│  └─────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│  React Frontend (Vite + Tailwind)                       │
+│  ┌────────┐ ┌──────────┐ ┌─────────┐ ┌──────────────┐ │
+│  │ Main   │ │ Overlay  │ │ Zustand │ │ Onboarding   │ │
+│  │ Window │ │ Window   │ │ Store   │ │ Wizard       │ │
+│  │ (tabs) │ │ (pill)   │ │         │ │              │ │
+│  └────────┘ └──────────┘ └─────────┘ └──────────────┘ │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### Data Flow
-
-```
-User holds hotkey → Tauri registers keydown → Signals Python sidecar "start_recording"
-                                                        │
-                                                        ▼
-                                              Audio capture begins
-                                              (sounddevice streams to buffer)
-                                                        │
-User releases hotkey → Tauri registers keyup → Signals Python "stop_recording"
-                                                        │
-                                                        ▼
-                                              Parakeet V3 inference on buffer
-                                                        │
-                                                        ▼
-                                              Text post-processing + replacements
-                                                        │
-                                                        ▼
-                                              Returns transcribed text via JSON-RPC
-                                                        │
-                    Tauri receives text ◄───────────────┘
-                            │
-                            ▼
-                    enigo injects text into focused field
-                            │
-                            ▼
-                    UI updated (history, status)
-```
+**Locked boundaries:**
+- IPC Protocol V1 (`shared/ipc/IPC_PROTOCOL_V1.md`) — additive-only changes
+- `AppState` enum — new states require migration plan
+- Config `schema_version: 1` — new fields get defaults, existing fields unchanged
+- Sidecar boundary — Python owns audio+ASR, Rust owns orchestration+UI+injection
 
 ---
 
-## 3. Project Structure
+## Phase Breakdown
 
-```
-openvoicy/
-├── src-tauri/                    # Rust/Tauri backend
-│   ├── Cargo.toml
-│   ├── tauri.conf.json
-│   ├── src/
-│   │   ├── main.rs              # Entry point, app setup
-│   │   ├── lib.rs               # Module exports
-│   │   ├── hotkey.rs            # Global hotkey management
-│   │   ├── tray.rs              # System tray logic
-│   │   ├── inject.rs            # Text injection via enigo
-│   │   ├── sidecar.rs           # Python process management
-│   │   ├── ipc.rs               # JSON-RPC message handling
-│   │   ├── config.rs            # Settings persistence
-│   │   └── commands.rs          # Tauri command handlers
-│   └── icons/                   # App icons
-│
-├── src/                         # React frontend
-│   ├── main.tsx                 # React entry point
-│   ├── App.tsx                  # Root component
-│   ├── components/
-│   │   ├── Settings/
-│   │   │   ├── SettingsPanel.tsx
-│   │   │   ├── MicrophoneSelect.tsx
-│   │   │   ├── HotkeyConfig.tsx
-│   │   │   └── GeneralSettings.tsx
-│   │   ├── Replacements/
-│   │   │   ├── ReplacementList.tsx
-│   │   │   ├── ReplacementEditor.tsx
-│   │   │   └── SmartExpansions.tsx
-│   │   ├── Status/
-│   │   │   ├── RecordingIndicator.tsx
-│   │   │   └── StatusBar.tsx
-│   │   └── History/
-│   │       └── HistoryView.tsx
-│   ├── hooks/
-│   │   ├── useTauriCommand.ts
-│   │   ├── useRecordingState.ts
-│   │   └── useSettings.ts
-│   ├── stores/
-│   │   └── appStore.ts          # Zustand store
-│   ├── types/
-│   │   └── index.ts
-│   └── styles/
-│       └── globals.css          # Tailwind imports
-│
-├── sidecar/                     # Python ML backend
-│   ├── pyproject.toml           # uv/poetry project
-│   ├── src/
-│   │   └── openvoicy_sidecar/
-│   │       ├── __init__.py
-│   │       ├── __main__.py      # Entry point
-│   │       ├── server.py        # JSON-RPC stdio server
-│   │       ├── audio.py         # Audio capture
-│   │       ├── asr.py           # Parakeet inference
-│   │       ├── postprocess.py   # Text cleanup
-│   │       └── replacements.py  # Replacement engine
-│   └── tests/
-│
-├── package.json                 # Node deps (Vite, React)
-├── vite.config.ts
-├── tailwind.config.js
-├── tsconfig.json
-└── README.md
-```
+### Phase 1: UI/UX Overhaul — Tab Layout & Polish
+
+**Goal:** Reorganize monolithic settings panel into navigable tabbed interface.
+**Risk:** Low — purely frontend, no backend changes.
+**Parallelism:** Tasks 1.1 must complete first; then 1.2–1.5 can run in parallel.
 
 ---
 
-## 4. Phase 1 Implementation Tasks
+#### Task 1.1: Tab Navigation Component [Size: S]
 
-### Phase 1A: Foundation (Parallel Track - Infrastructure)
+**Files to create:**
+- `src/components/Layout/TabBar.tsx`
+- `src/components/Layout/TabPanel.tsx`
 
-These tasks have no dependencies and can be executed in parallel by separate agents.
+**Files to modify:**
+- `src/App.tsx` — replace single-panel render with `<TabBar>` + `<TabPanel>` layout
+- `src/store/appStore.ts` — add `activeTab: 'status' | 'settings' | 'history' | 'replacements'` to Zustand store (ephemeral, not persisted to config)
 
----
+**Implementation details:**
+- `TabBar` renders horizontal tab buttons: **Status** | **Settings** | **History** | **Replacements**
+- Each tab button has an inline SVG icon (no icon library — keep bundle small)
+- Active tab gets a bottom border indicator with a 150ms CSS transition
+- `TabPanel` is a simple container that renders only the active tab's content via conditional rendering (not CSS display:none — avoid mounting unused components)
+- Keyboard navigation: Left/Right arrow keys move between tabs when tab bar is focused, per WAI-ARIA Tabs pattern (`role="tablist"`, `role="tab"`, `role="tabpanel"`, `aria-selected`)
+- Tab bar is sticky at top of window
 
-#### Task 1A.1: Tauri Project Scaffold
-**Complexity:** S (Small)
-**Assignable:** Yes (independent)
+**Acceptance criteria:**
+- [ ] Four tabs render with icons and labels
+- [ ] Clicking a tab switches content; only one tab content mounted at a time
+- [ ] Active tab state persists in Zustand across re-renders (but NOT across app restarts — ephemeral)
+- [ ] Arrow key navigation works per ARIA tab pattern
+- [ ] No visual regressions on existing settings content
 
-**Description:** Initialize Tauri 2.x project with React frontend template.
-
-**Files to Create:**
-- `src-tauri/Cargo.toml`
-- `src-tauri/tauri.conf.json`
-- `src-tauri/src/main.rs`
-- `src-tauri/src/lib.rs`
-- `package.json`
-- `vite.config.ts`
-- `tsconfig.json`
-- `tailwind.config.js`
-- `src/main.tsx`
-- `src/App.tsx`
-
-**Implementation Details:**
-```rust
-// src-tauri/Cargo.toml dependencies
-[dependencies]
-tauri = { version = "2", features = ["tray-icon", "shell-sidecar"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-enigo = "0.2"
-rdev = "0.5"
-```
-
-**Acceptance Criteria:**
-- [ ] `npm run tauri dev` launches app with empty React window
-- [ ] Tauri commands can be invoked from React
-- [ ] Hot reload works for both Rust and React
-- [ ] Tailwind CSS classes render correctly
+**Tests:**
+- `src/components/Layout/__tests__/TabBar.test.tsx` — tab switching, keyboard nav, active state rendering
+- Integration: verify `appStore.activeTab` updates correctly
 
 ---
 
-#### Task 1A.2: Python Sidecar Scaffold
-**Complexity:** S (Small)
-**Assignable:** Yes (independent)
+#### Task 1.2: Status Dashboard Tab [Size: M]
 
-**Description:** Create Python project structure with uv, basic JSON-RPC server.
+**Files to create:**
+- `src/components/Status/StatusDashboard.tsx`
 
-**Files to Create:**
-- `sidecar/pyproject.toml`
-- `sidecar/src/openvoicy_sidecar/__init__.py`
-- `sidecar/src/openvoicy_sidecar/__main__.py`
-- `sidecar/src/openvoicy_sidecar/server.py`
+**Files to modify:**
+- `src/components/StatusIndicator.tsx` — extract reusable status display logic; keep existing component as a compact variant
 
-**Implementation Details:**
-```python
-# server.py - Basic JSON-RPC over stdio
-import sys
-import json
+**Implementation details:**
+- Large animated state indicator in center:
+  - `Idle` → gray circle with subtle pulse
+  - `Recording` → red circle with breathing animation
+  - `Transcribing` → yellow circle with spinning dots
+  - `Error` → red exclamation
+  - `LoadingModel` → blue spinner
+- Current mode badge below indicator: "Push-to-Talk" or "Push-to-Start/Stop" with small icon
+- Hotkey hint: reads `config.hotkey` from store, renders as keyboard shortcut badge ("Hold `Ctrl+Shift+Space` to record")
+- Last transcription preview card: text (truncated to 200 chars), timestamp (relative: "2 min ago"), confidence percentage badge
+- Quick stats row: "12 transcriptions today · 4m 32s total audio" — computed from history store
+- Model status badge: "Parakeet Ready" / "Downloading 45%" / "No model"
+- Sidecar health: green/red dot from existing sidecar health check
 
-def handle_request(request: dict) -> dict:
-    method = request.get("method")
-    params = request.get("params", {})
-    request_id = request.get("id")
-    
-    handlers = {
-        "ping": lambda p: {"pong": True},
-        "get_microphones": get_microphones,
-        "start_recording": start_recording,
-        "stop_recording": stop_recording,
-    }
-    
-    if method in handlers:
-        result = handlers[method](params)
-        return {"jsonrpc": "2.0", "result": result, "id": request_id}
-    else:
-        return {"jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found"}, "id": request_id}
+**Data sources (all from existing Zustand store):**
+- `appStore.appState` — current state
+- `appStore.config.activation_mode` — mode badge
+- `appStore.config.hotkey` — hotkey hint
+- `appStore.history` — last transcription, daily stats
+- `appStore.modelStatus` — model badge
+- `appStore.sidecarHealth` — health indicator
 
-def main():
-    for line in sys.stdin:
-        request = json.loads(line)
-        response = handle_request(request)
-        sys.stdout.write(json.dumps(response) + "\n")
-        sys.stdout.flush()
-```
+**Acceptance criteria:**
+- [ ] Renders correctly for each of the 5 `AppState` values
+- [ ] Stats are computed from actual history data
+- [ ] No errors when history is empty (first launch)
+- [ ] Responsive: works at minimum window size (400px width)
 
-**Acceptance Criteria:**
-- [ ] `uv run python -m openvoicy_sidecar` starts and responds to ping
-- [ ] JSON-RPC messages flow correctly via stdio
-- [ ] Error responses follow JSON-RPC 2.0 spec
-- [ ] Process exits cleanly on EOF
+**Tests:**
+- Render with each `AppState` — verify correct icon/animation class
+- Empty history — verify graceful fallback ("No transcriptions yet")
+- Stats computation — verify count and duration math
 
 ---
 
-#### Task 1A.3: IPC Bridge (Tauri ↔ Python)
-**Complexity:** M (Medium)
-**Assignable:** Yes (after 1A.1 and 1A.2)
-**Dependencies:** 1A.1, 1A.2
+#### Task 1.3: Settings Tab Reorganization [Size: M]
 
-**Description:** Implement Tauri sidecar management and JSON-RPC communication.
+**Files to modify:**
+- `src/components/Settings/SettingsPanel.tsx` — restructure into collapsible sections
 
-**Files to Create/Modify:**
-- `src-tauri/src/sidecar.rs`
-- `src-tauri/src/ipc.rs`
-- `src-tauri/src/commands.rs` (add sidecar commands)
+**Implementation details:**
+- Collapsible sections with `<details>`/`<summary>` (native HTML, accessible by default):
+  1. **Audio** — microphone selector, audio cues toggle, input level meter
+  2. **Hotkeys** — hotkey recorder, activation mode selector
+  3. **Injection** — text injection method, clipboard fallback toggle
+  4. **Model** — model selector, language (Phase 4 placeholder)
+  5. **UI** — theme selector (Phase 6 placeholder), onboarding reset
+- Activation mode selector as prominent radio group with description text:
+  - "Push-to-Talk (Hold)" — "Hold the hotkey while speaking. Release to stop."
+  - "Push-to-Start/Stop (Toggle)" — "Press once to start. Press again to stop."
+- Each section header has a small inline SVG icon
+- Better spacing: `space-y-4` between fields, `space-y-6` between sections
+- Help text under each setting in `text-sm text-gray-500`
+- All sections expanded by default on first render; collapsed state is ephemeral
 
-**Implementation Details:**
-```rust
-// sidecar.rs
-use tauri::api::process::{Command, CommandEvent};
-use tokio::sync::mpsc;
+**Acceptance criteria:**
+- [ ] All existing settings are accessible (no settings lost in reorganization)
+- [ ] Sections expand/collapse correctly
+- [ ] Activation mode selector works and persists to config
+- [ ] Visual hierarchy is clear: section headers > field labels > help text
 
-pub struct SidecarManager {
-    child: Option<CommandChild>,
-    sender: mpsc::Sender<String>,
-    receiver: mpsc::Receiver<String>,
-}
+**Tests:**
+- Section expand/collapse interaction
+- Mode switching persists to config store
+- All existing settings still render and function
 
-impl SidecarManager {
-    pub async fn spawn() -> Result<Self, Error> {
-        let (mut rx, child) = Command::new_sidecar("openvoicy-sidecar")?
-            .spawn()?;
-        // ... setup channels
-    }
-    
-    pub async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, Error> {
-        let request = json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": uuid::Uuid::new_v4().to_string()
-        });
-        // Send to stdin, await response from stdout
-    }
+---
+
+#### Task 1.4: History Tab Enhancement [Size: M]
+
+**Files to modify:**
+- `src/components/Settings/HistoryPanel.tsx` → **move to** `src/components/History/HistoryPanel.tsx`
+
+**Files to create:**
+- `src/components/History/HistoryEntry.tsx` — individual entry card
+- `src/components/History/HistorySearch.tsx` — search input
+
+**Implementation details:**
+- Search bar at top: `<input>` with debounced (300ms) client-side filter on transcription text (case-insensitive `includes`)
+- Entry cards with:
+  - Full transcription text (expandable if > 3 lines)
+  - Timestamp: relative ("3 min ago") with full datetime on hover tooltip
+  - Duration badge: "4.2s"
+  - Confidence badge: color-coded (green ≥90%, yellow ≥70%, red <70%)
+  - Copy button (right side) — copies text to clipboard, shows "Copied!" toast for 2s
+- "Clear All" button at bottom with confirmation dialog (`window.confirm` is fine — no need for custom modal)
+- Empty state: centered message "No transcriptions yet. Press [hotkey] to get started."
+- Update imports in `src/App.tsx` to point to new location
+
+**Acceptance criteria:**
+- [ ] Search filters entries in real-time with debounce
+- [ ] Copy button copies correct text to clipboard
+- [ ] Clear All shows confirmation before deleting
+- [ ] Empty state renders when no history
+- [ ] Moved file path works correctly (no broken imports)
+
+**Tests:**
+- Search filtering with multiple entries
+- Copy action (mock clipboard API)
+- Clear confirmation flow (confirm → clear, cancel → keep)
+- Empty state rendering
+
+---
+
+#### Task 1.5: Replacements Tab Polish [Size: S]
+
+**Files to modify:**
+- `src/components/Replacements/ReplacementsList.tsx` (or equivalent existing component)
+- `src/components/Replacements/PresetSelector.tsx` (if exists, else create)
+
+**Implementation details:**
+- Visual separation: "Your Rules" section header above user rules, "Presets" section header above presets
+- Inline regex validation: when user types a regex pattern, validate with `try { new RegExp(pattern) } catch { showError }` — show red border + error message below input
+- Preset cards: name, description, "Apply" button that copies preset rules into user rules
+- Rule count badge: shown on the **Replacements** tab label in `TabBar` (e.g., "Replacements (12)")
+- Tab badge requires lifting rule count to store or computing from store in TabBar
+
+**Acceptance criteria:**
+- [ ] User rules and presets are visually distinct
+- [ ] Invalid regex shows inline error immediately
+- [ ] Preset "Apply" adds rules without duplicating existing ones
+- [ ] Tab badge shows correct count
+
+**Tests:**
+- Rule CRUD operations still work
+- Regex validation: valid pattern → no error, invalid → error message
+- Preset loading: applies rules, doesn't duplicate
+
+---
+
+### Phase 2: Recording Overlay & Tray Indicator
+
+**Goal:** Visual feedback when recording is active.
+**Risk:** Medium — new Tauri window, platform-specific always-on-top.
+**Parallelism:** Tasks 2.1+2.2 are coupled (window config + UI). Task 2.3 and 2.4 are independent of each other but both depend on existing tray code.
+
+**Dependencies:** None on Phase 1 (can run in parallel).
+
+---
+
+#### Task 2.1: Floating Overlay Window — Tauri Config [Size: M]
+
+**Files to modify:**
+- `src-tauri/tauri.conf.json` — add `recording-overlay` window configuration
+- `src-tauri/src/lib.rs` — add window creation/management logic
+
+**Implementation details:**
+
+Add to `tauri.conf.json` windows array:
+```json
+{
+  "label": "recording-overlay",
+  "url": "/overlay.html",
+  "width": 300,
+  "height": 60,
+  "resizable": false,
+  "decorations": false,
+  "transparent": true,
+  "alwaysOnTop": true,
+  "visible": false,
+  "skipTaskbar": true,
+  "center": true
 }
 ```
 
-**Acceptance Criteria:**
-- [ ] Sidecar spawns automatically on app start
-- [ ] `invoke("sidecar_call", {method: "ping"})` returns `{pong: true}`
-- [ ] Sidecar restarts automatically if it crashes
-- [ ] Clean shutdown: sidecar terminates when app closes
-- [ ] Timeout handling for unresponsive sidecar (5s default)
+In Rust (`lib.rs` or new `src-tauri/src/overlay.rs`):
+- `show_overlay(app: &AppHandle)` — gets window by label, calls `.show()`, positions at top-center of primary monitor
+- `hide_overlay(app: &AppHandle)` — calls `.hide()`
+- Register `AppStateManager` listener: on `Recording` → `show_overlay()`, on any other state → `hide_overlay()`
+- Click-through: use Tauri's `set_ignore_cursor_events(true)` (available in Tauri 2)
+- Position calculation: get primary monitor dimensions, center horizontally, offset 40px from top
+
+**Platform considerations:**
+- Windows: `transparent: true` + `decorations: false` works natively
+- macOS: may need `NSPanel` level for proper always-on-top behavior — Tauri 2 handles this via `alwaysOnTop`
+- Test that overlay doesn't steal focus from the active application
+
+**Acceptance criteria:**
+- [ ] Overlay window exists in Tauri config but is hidden by default
+- [ ] Overlay shows when state transitions to `Recording`
+- [ ] Overlay hides when state transitions away from `Recording`
+- [ ] Window is transparent, borderless, always-on-top, click-through
+- [ ] Window doesn't steal focus
+- [ ] Positioned at top-center of primary monitor
+
+**Tests:**
+- Unit test: state → show/hide mapping logic
+- Manual test on Windows and macOS (CI can't easily test window behavior)
 
 ---
 
-#### Task 1A.4: Configuration System
-**Complexity:** S (Small)
-**Assignable:** Yes (independent)
+#### Task 2.2: Overlay React UI [Size: M]
 
-**Description:** Implement settings persistence using Tauri's app data directory.
+**Files to create:**
+- `index-overlay.html` — minimal HTML entry for overlay window
+- `src/overlay/main.tsx` — React root for overlay
+- `src/overlay/RecordingOverlay.tsx` — main overlay component
+- `src/overlay/Waveform.tsx` — canvas-based mini waveform
 
-**Files to Create:**
-- `src-tauri/src/config.rs`
-- `src/stores/appStore.ts`
-- `src/types/index.ts`
+**Files to modify:**
+- `vite.config.ts` — add `overlay` entry point for multi-page build:
+  ```ts
+  build: {
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        overlay: resolve(__dirname, 'index-overlay.html'),
+      },
+    },
+  }
+  ```
 
-**Data Structures:**
-```typescript
-// src/types/index.ts
-interface AppConfig {
-  audio: {
-    inputDeviceId: string | null;
-    sampleRate: 16000;
-  };
-  hotkey: {
-    modifier: "ctrl" | "alt" | "meta" | "shift";
-    key: string; // e.g., "Space"
-  };
-  injection: {
-    delayMs: number; // 0-100ms
-  };
-  replacements: Replacement[];
-}
+**Implementation details:**
 
-interface Replacement {
-  id: string;
-  trigger: string;        // e.g., "brb"
-  replacement: string;    // e.g., "be right back"
-  type: "snippet" | "smart";
-  enabled: boolean;
-}
-```
+`RecordingOverlay.tsx`:
+- Pill-shaped container: `rounded-full bg-black/80 backdrop-blur-sm px-4 py-2 flex items-center gap-3`
+- Red dot: `w-3 h-3 rounded-full bg-red-500` with CSS `@keyframes pulse` animation
+- Elapsed timer: starts at `00:00`, updates every 100ms via `setInterval`, formats as `MM:SS`
+- Mini waveform component (right side)
+- Smooth fade-in: `opacity-0 → opacity-100` with 200ms CSS transition on mount
+- Listen to Tauri events:
+  - `state_changed` — if state ≠ Recording, trigger fade-out (the Rust side hides the window after a 200ms delay to allow animation)
+  - `audio:level` — forward RMS level samples to Waveform
 
-```rust
-// config.rs
-#[derive(Serialize, Deserialize, Default)]
-pub struct AppConfig {
-    pub audio: AudioConfig,
-    pub hotkey: HotkeyConfig,
-    pub injection: InjectionConfig,
-    pub replacements: Vec<Replacement>,
-}
+`Waveform.tsx`:
+- `<canvas>` element, ~100px × 30px
+- Maintains ring buffer of last 50 audio level samples (float 0.0–1.0)
+- On each new sample: shift buffer, append new value, redraw
+- Drawing: vertical bars, width 2px, gap 0px, height = `sample * canvasHeight`
+- Color: white with 70% opacity
+- Renders via `requestAnimationFrame` for smooth 60fps updates
+- Graceful fallback: if no `audio:level` events arrive, show flat line
 
-impl AppConfig {
-    pub fn load(app_handle: &AppHandle) -> Result<Self, Error> {
-        let path = app_handle.path_resolver()
-            .app_config_dir()?
-            .join("config.json");
-        // ...
-    }
-    
-    pub fn save(&self, app_handle: &AppHandle) -> Result<(), Error> {
-        // Atomic write with temp file
-    }
-}
-```
+**Bundle size concern:** Overlay React root is separate from main — keep imports minimal (no Zustand, no full component library). Only import Tauri event listener and React.
 
-**Acceptance Criteria:**
-- [ ] Config loads on app start, creates default if missing
-- [ ] Config saves atomically (no corruption on crash)
-- [ ] React store syncs with Rust config via Tauri commands
-- [ ] Config file location: `~/.config/openvoicy/config.json` (Linux), `~/Library/Application Support/openvoicy/` (macOS), `%APPDATA%\openvoicy\` (Windows)
+**Acceptance criteria:**
+- [ ] Overlay renders pill with red dot, timer, waveform
+- [ ] Timer counts up accurately (±100ms)
+- [ ] Waveform animates with incoming audio level data
+- [ ] Separate Vite entry point builds correctly
+- [ ] Overlay bundle is < 50KB gzipped
+
+**Tests:**
+- `Waveform.test.tsx` — renders with mock data array, canvas draws correct number of bars
+- `RecordingOverlay.test.tsx` — timer starts and increments, responds to state events
 
 ---
 
-### Phase 1B: Audio Pipeline (Sequential - Python Sidecar)
+#### Task 2.3: System Tray State Indicator [Size: S]
 
-These tasks must be done sequentially as they build upon each other.
-
----
-
-#### Task 1B.1: Audio Device Enumeration
-**Complexity:** S (Small)
-**Assignable:** Yes (after 1A.2)
-**Dependencies:** 1A.2
-
-**Description:** List available audio input devices.
-
-**Files to Create/Modify:**
-- `sidecar/src/openvoicy_sidecar/audio.py`
-
-**Implementation Details:**
-```python
-# audio.py
-import sounddevice as sd
-from dataclasses import dataclass
-
-@dataclass
-class AudioDevice:
-    id: int
-    name: str
-    channels: int
-    sample_rate: float
-    is_default: bool
-
-def get_input_devices() -> list[AudioDevice]:
-    devices = sd.query_devices()
-    default_input = sd.default.device[0]
-    
-    return [
-        AudioDevice(
-            id=i,
-            name=d["name"],
-            channels=d["max_input_channels"],
-            sample_rate=d["default_samplerate"],
-            is_default=(i == default_input)
-        )
-        for i, d in enumerate(devices)
-        if d["max_input_channels"] > 0
-    ]
-```
-
-**Acceptance Criteria:**
-- [ ] Returns list of input devices with correct metadata
-- [ ] Identifies default device correctly
-- [ ] Handles systems with no input devices (returns empty list)
-- [ ] Works on Windows, macOS, Linux
-
----
-
-#### Task 1B.2: Audio Capture
-**Complexity:** M (Medium)
-**Assignable:** Yes (after 1B.1)
-**Dependencies:** 1B.1
-
-**Description:** Implement push-to-talk audio recording.
-
-**Files to Modify:**
-- `sidecar/src/openvoicy_sidecar/audio.py`
-
-**Implementation Details:**
-```python
-# audio.py
-import numpy as np
-import sounddevice as sd
-from threading import Event
-from queue import Queue
-
-class AudioRecorder:
-    def __init__(self, device_id: int | None = None, sample_rate: int = 16000):
-        self.device_id = device_id
-        self.sample_rate = sample_rate
-        self.buffer: list[np.ndarray] = []
-        self._recording = Event()
-        self._stream: sd.InputStream | None = None
-    
-    def start(self):
-        """Begin recording audio."""
-        self.buffer.clear()
-        self._recording.set()
-        
-        def callback(indata, frames, time, status):
-            if self._recording.is_set():
-                self.buffer.append(indata.copy())
-        
-        self._stream = sd.InputStream(
-            device=self.device_id,
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype=np.float32,
-            callback=callback
-        )
-        self._stream.start()
-    
-    def stop(self) -> np.ndarray:
-        """Stop recording and return audio buffer."""
-        self._recording.clear()
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
-        
-        if not self.buffer:
-            return np.array([], dtype=np.float32)
-        
-        return np.concatenate(self.buffer)
-```
-
-**Acceptance Criteria:**
-- [ ] `start()` begins capturing audio immediately
-- [ ] `stop()` returns numpy array of recorded audio
-- [ ] Audio is mono, 16kHz, float32 (Parakeet's expected format)
-- [ ] No audio data lost at start/stop boundaries
-- [ ] Handles device disconnection gracefully
-- [ ] Memory usage stays bounded (max 5 minutes = ~10MB)
-
----
-
-#### Task 1B.3: Parakeet Model Loading
-**Complexity:** L (Large)
-**Assignable:** Yes (after 1A.2)
-**Dependencies:** 1A.2
-
-**Description:** Load and initialize Parakeet V3 model with GPU/CPU fallback.
-
-**Files to Create:**
-- `sidecar/src/openvoicy_sidecar/asr.py`
-
-**Implementation Details:**
-```python
-# asr.py
-import torch
-import nemo.collections.asr as nemo_asr
-from pathlib import Path
-import logging
-
-logger = logging.getLogger(__name__)
-
-class ParakeetASR:
-    MODEL_NAME = "nvidia/parakeet-tdt-0.6b-v2"
-    
-    def __init__(self, device: str | None = None):
-        self.device = device or self._detect_device()
-        self.model = None
-        self._loaded = False
-    
-    def _detect_device(self) -> str:
-        if torch.cuda.is_available():
-            logger.info("CUDA available, using GPU")
-            return "cuda"
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            logger.info("MPS available, using Apple Silicon GPU")
-            return "mps"
-        else:
-            logger.info("No GPU available, using CPU")
-            return "cpu"
-    
-    def load(self):
-        """Load model (call once at startup)."""
-        if self._loaded:
-            return
-        
-        logger.info(f"Loading Parakeet model on {self.device}...")
-        self.model = nemo_asr.models.ASRModel.from_pretrained(
-            model_name=self.MODEL_NAME
-        )
-        self.model = self.model.to(self.device)
-        self.model.eval()
-        self._loaded = True
-        logger.info("Model loaded successfully")
-    
-    def transcribe(self, audio: np.ndarray) -> str:
-        """Transcribe audio array to text."""
-        if not self._loaded:
-            raise RuntimeError("Model not loaded. Call load() first.")
-        
-        with torch.no_grad():
-            # Parakeet expects audio as a list of file paths or numpy arrays
-            transcription = self.model.transcribe([audio])
-        
-        return transcription[0] if transcription else ""
-```
-
-**Edge Cases & Error Handling:**
-- Empty audio buffer → return empty string
-- Audio too short (<0.1s) → return empty string
-- Model download failure → raise with helpful message
-- OOM on GPU → fall back to CPU with warning
-
-**Acceptance Criteria:**
-- [ ] Model downloads automatically on first run (~1.2GB)
-- [ ] CUDA acceleration works on NVIDIA GPUs
-- [ ] MPS acceleration works on Apple Silicon
-- [ ] CPU fallback works (slower but functional)
-- [ ] Transcription latency <2s for 10s audio on GPU
-- [ ] Model stays loaded between transcriptions (no reload)
-
----
-
-#### Task 1B.4: Text Post-Processing
-**Complexity:** S (Small)
-**Assignable:** Yes (independent)
-**Dependencies:** None
-
-**Description:** Clean up transcribed text (punctuation, capitalization, formatting).
-
-**Files to Create:**
-- `sidecar/src/openvoicy_sidecar/postprocess.py`
-
-**Implementation Details:**
-```python
-# postprocess.py
-import re
-
-def postprocess_transcription(text: str) -> str:
-    """Clean up raw transcription output."""
-    if not text:
-        return ""
-    
-    # Parakeet usually handles punctuation, but ensure basics
-    text = text.strip()
-    
-    # Ensure first letter is capitalized
-    if text and text[0].islower():
-        text = text[0].upper() + text[1:]
-    
-    # Normalize whitespace
-    text = re.sub(r'\s+', ' ', text)
-    
-    # Remove duplicate punctuation
-    text = re.sub(r'([.!?])\1+', r'\1', text)
-    
-    return text
-```
-
-**Acceptance Criteria:**
-- [ ] Capitalizes first letter of transcription
-- [ ] Normalizes multiple spaces to single space
-- [ ] Handles empty/whitespace-only input
-- [ ] Preserves intentional punctuation from model
-
----
-
-#### Task 1B.5: Replacement Engine
-**Complexity:** M (Medium)
-**Assignable:** Yes (independent)
-**Dependencies:** None
-
-**Description:** Implement text replacement/expansion system.
-
-**Files to Create:**
-- `sidecar/src/openvoicy_sidecar/replacements.py`
-
-**Implementation Details:**
-```python
-# replacements.py
-from dataclasses import dataclass
-from datetime import datetime
-import re
-
-@dataclass
-class Replacement:
-    trigger: str
-    replacement: str
-    type: str  # "snippet" or "smart"
-    case_sensitive: bool = False
-    whole_word: bool = True
-
-class ReplacementEngine:
-    SMART_EXPANSIONS = {
-        "@@date": lambda: datetime.now().strftime("%Y-%m-%d"),
-        "@@time": lambda: datetime.now().strftime("%H:%M"),
-        "@@datetime": lambda: datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "@@email": lambda: "",  # Configured per-user
-    }
-    
-    def __init__(self, replacements: list[Replacement] = None):
-        self.replacements = replacements or []
-        self.user_email = ""
-    
-    def apply(self, text: str) -> str:
-        """Apply all replacements to text."""
-        # First, apply smart expansions
-        for trigger, expander in self.SMART_EXPANSIONS.items():
-            if trigger == "@@email":
-                text = text.replace(trigger, self.user_email)
-            else:
-                text = text.replace(trigger, expander())
-        
-        # Then, apply user-defined replacements
-        for r in self.replacements:
-            if r.type == "snippet":
-                text = self._apply_snippet(text, r)
-        
-        return text
-    
-    def _apply_snippet(self, text: str, r: Replacement) -> str:
-        if r.whole_word:
-            pattern = r'\b' + re.escape(r.trigger) + r'\b'
-            flags = 0 if r.case_sensitive else re.IGNORECASE
-            return re.sub(pattern, r.replacement, text, flags=flags)
-        else:
-            if r.case_sensitive:
-                return text.replace(r.trigger, r.replacement)
-            else:
-                return re.sub(re.escape(r.trigger), r.replacement, text, flags=re.IGNORECASE)
-```
-
-**Acceptance Criteria:**
-- [ ] Snippet replacement: "brb" → "be right back"
-- [ ] Smart expansion: "@@date" → "2026-02-04"
-- [ ] Case-insensitive matching by default
-- [ ] Whole-word matching prevents "abroad" → "abe right backoad"
-- [ ] Multiple replacements in single text
-- [ ] Order-independent (no cascade effects)
-
----
-
-### Phase 1C: Desktop Integration (Parallel Track - Rust)
-
----
-
-#### Task 1C.1: Global Hotkey System
-**Complexity:** M (Medium)
-**Assignable:** Yes (after 1A.1)
-**Dependencies:** 1A.1
-
-**Description:** Register and handle global hotkeys for push-to-talk.
-
-**Files to Create:**
-- `src-tauri/src/hotkey.rs`
-
-**Implementation Details:**
-```rust
-// hotkey.rs
-use rdev::{listen, Event, EventType, Key};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use tokio::sync::mpsc;
-
-pub struct HotkeyManager {
-    modifier: Key,
-    key: Key,
-    is_pressed: Arc<AtomicBool>,
-    tx: mpsc::Sender<HotkeyEvent>,
-}
-
-pub enum HotkeyEvent {
-    Pressed,
-    Released,
-}
-
-impl HotkeyManager {
-    pub fn new(modifier: Key, key: Key) -> (Self, mpsc::Receiver<HotkeyEvent>) {
-        let (tx, rx) = mpsc::channel(32);
-        let is_pressed = Arc::new(AtomicBool::new(false));
-        
-        (Self { modifier, key, is_pressed, tx }, rx)
-    }
-    
-    pub fn start(&self) {
-        let modifier = self.modifier;
-        let key = self.key;
-        let is_pressed = self.is_pressed.clone();
-        let tx = self.tx.clone();
-        
-        std::thread::spawn(move || {
-            let mut modifier_down = false;
-            
-            listen(move |event: Event| {
-                match event.event_type {
-                    EventType::KeyPress(k) if k == modifier => {
-                        modifier_down = true;
-                    }
-                    EventType::KeyRelease(k) if k == modifier => {
-                        modifier_down = false;
-                        if is_pressed.swap(false, Ordering::SeqCst) {
-                            let _ = tx.blocking_send(HotkeyEvent::Released);
-                        }
-                    }
-                    EventType::KeyPress(k) if k == key && modifier_down => {
-                        if !is_pressed.swap(true, Ordering::SeqCst) {
-                            let _ = tx.blocking_send(HotkeyEvent::Pressed);
-                        }
-                    }
-                    EventType::KeyRelease(k) if k == key => {
-                        if is_pressed.swap(false, Ordering::SeqCst) {
-                            let _ = tx.blocking_send(HotkeyEvent::Released);
-                        }
-                    }
-                    _ => {}
-                }
-            }).unwrap();
-        });
-    }
-}
-```
-
-**Platform-Specific Notes:**
-- **macOS:** Requires Accessibility permission (prompt user)
-- **Linux:** Works on X11; Wayland needs `libxdo` or portal
-- **Windows:** Works out of box
-
-**Acceptance Criteria:**
-- [ ] Ctrl+Space (default) triggers recording
-- [ ] Hold to record, release to stop
-- [ ] Hotkey works when app is not focused
-- [ ] Configurable modifier (Ctrl/Alt/Meta/Shift)
-- [ ] Configurable key
-- [ ] Conflict detection (warn if system hotkey)
-- [ ] macOS: Prompts for Accessibility permission
-
----
-
-#### Task 1C.2: Text Injection
-**Complexity:** M (Medium)
-**Assignable:** Yes (after 1A.1)
-**Dependencies:** 1A.1
-
-**Description:** Inject transcribed text into focused text field.
-
-**Files to Create:**
-- `src-tauri/src/inject.rs`
-
-**Implementation Details:**
-```rust
-// inject.rs
-use enigo::{Enigo, Key, KeyboardControllable};
-use std::time::Duration;
-use tokio::time::sleep;
-
-pub struct TextInjector {
-    enigo: Enigo,
-    delay_ms: u64,
-}
-
-impl TextInjector {
-    pub fn new(delay_ms: u64) -> Self {
-        Self {
-            enigo: Enigo::new(),
-            delay_ms,
-        }
-    }
-    
-    pub async fn inject(&mut self, text: &str) -> Result<(), Error> {
-        // Small delay to ensure focus is stable
-        if self.delay_ms > 0 {
-            sleep(Duration::from_millis(self.delay_ms)).await;
-        }
-        
-        // Use clipboard for complex text (Unicode, special chars)
-        // Fall back to key-by-key for simple ASCII
-        if text.is_ascii() && text.len() < 100 {
-            self.enigo.key_sequence(text);
-        } else {
-            self.inject_via_clipboard(text)?;
-        }
-        
-        Ok(())
-    }
-    
-    fn inject_via_clipboard(&mut self, text: &str) -> Result<(), Error> {
-        // Save current clipboard
-        let previous = clipboard::get_contents()?;
-        
-        // Set text to clipboard
-        clipboard::set_contents(text)?;
-        
-        // Paste
-        #[cfg(target_os = "macos")]
-        {
-            self.enigo.key_down(Key::Meta);
-            self.enigo.key_click(Key::Layout('v'));
-            self.enigo.key_up(Key::Meta);
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            self.enigo.key_down(Key::Control);
-            self.enigo.key_click(Key::Layout('v'));
-            self.enigo.key_up(Key::Control);
-        }
-        
-        // Restore clipboard (optional, configurable)
-        clipboard::set_contents(&previous)?;
-        
-        Ok(())
-    }
-}
-```
-
-**Acceptance Criteria:**
-- [ ] ASCII text injects correctly
-- [ ] Unicode text (emoji, accented chars) injects correctly
-- [ ] Works in all applications (browsers, editors, terminals)
-- [ ] Configurable delay (0-100ms)
-- [ ] Preserves original clipboard (optional setting)
-- [ ] Handles empty text (no-op)
-
----
-
-#### Task 1C.3: System Tray
-**Complexity:** S (Small)
-**Assignable:** Yes (after 1A.1)
-**Dependencies:** 1A.1
-
-**Description:** Implement system tray icon with status and menu.
-
-**Files to Create:**
+**Files to modify:**
 - `src-tauri/src/tray.rs`
-- `src-tauri/icons/tray-idle.png`
-- `src-tauri/icons/tray-recording.png`
 
-**Implementation Details:**
+**Files to create (assets):**
+- `src-tauri/icons/tray-idle.png` (32x32, default icon)
+- `src-tauri/icons/tray-recording.png` (32x32, red variant)
+- `src-tauri/icons/tray-transcribing.png` (32x32, yellow variant)
+- `src-tauri/icons/tray-disabled.png` (32x32, gray variant)
+
+**Implementation details:**
+- Icon mapping function:
+  ```rust
+  fn tray_icon_for_state(state: &AppState) -> &'static [u8] {
+      match state {
+          AppState::Idle => include_bytes!("../icons/tray-idle.png"),
+          AppState::Recording => include_bytes!("../icons/tray-recording.png"),
+          AppState::Transcribing => include_bytes!("../icons/tray-transcribing.png"),
+          AppState::Error(_) => include_bytes!("../icons/tray-idle.png"),
+          AppState::LoadingModel => include_bytes!("../icons/tray-transcribing.png"),
+      }
+  }
+  ```
+- Subscribe to `AppStateManager` state changes; on change, call `tray.set_icon()`
+- Tooltip update: `tray.set_tooltip(&format!("Voice Input - {}", state.display_name()))`
+- Icon generation: create simple colored circle variants (can be done with a script or manually in any image editor)
+
+**Acceptance criteria:**
+- [ ] Tray icon changes on each state transition
+- [ ] Tooltip text updates with current state name
+- [ ] Icons are visually distinct at 32x32 and 16x16 (macOS retina)
+
+**Tests:**
+- Unit test: `tray_icon_for_state` returns correct bytes for each variant
+- Unit test: tooltip string format
+
+---
+
+#### Task 2.4: Full Tray Context Menu [Size: M]
+
+**Files to modify:**
+- `src-tauri/src/tray.rs`
+
+**Files to create (optional):**
+- `src-tauri/src/tray_menu.rs` — if tray.rs gets too large, extract menu building
+
+**Implementation details:**
+
+Menu structure (rebuilt dynamically):
+```
+✓ Enabled                          (toggle, checkmark when enabled)
+─────────────────────────
+  Mode ►
+    ● Push-to-Talk (Hold)          (radio, selected)
+    ○ Push-to-Start/Stop (Toggle)
+─────────────────────────
+  Recent ►
+    "Hello this is a test..."      (click → copy to clipboard)
+    "Another transcription..."
+    (empty: "No recent transcriptions")
+─────────────────────────
+  Microphone ►
+    ✓ MacBook Pro Microphone       (radio, selected)
+      External USB Mic
+─────────────────────────
+  Open Settings                    (brings main window to front)
+  About Voice Input Tool           (shows version dialog)
+  Quit
+```
+
+- `build_tray_menu(state: &AppState, config: &AppConfig, history: &[HistoryEntry], devices: &[AudioDevice]) -> SystemTrayMenu`
+- Menu rebuild triggers: state change, new transcription added, device list refresh, config change
+- "Recent" submenu: last 5 entries, text truncated to 50 chars + "..."
+- Click handlers:
+  - Enable/Disable → toggle `config.enabled`, emit config change event
+  - Mode radio → update `config.activation_mode`, emit config change event
+  - Recent item → copy full text to clipboard via `app.clipboard_manager()`
+  - Microphone radio → update `config.audio.device_id`, emit config change
+  - Open Settings → `main_window.show()`, `main_window.set_focus()`
+  - About → Tauri dialog with version from `Cargo.toml`
+  - Quit → `app.exit(0)`
+
+**Platform note:** macOS menus have a practical limit of ~100 items. Our max is ~20, so no concern.
+
+**Acceptance criteria:**
+- [ ] All menu items render correctly
+- [ ] Toggle/radio items show correct state
+- [ ] Click handlers perform correct actions
+- [ ] Menu rebuilds when state/config/history changes
+- [ ] "Recent" items copy text to clipboard on click
+
+**Tests:**
+- `build_tray_menu` unit test: given specific state/config/history, verify menu structure
+- Click handler unit tests for each action type
+
+---
+
+### Phase 3: Audio Feedback
+
+**Goal:** Auditory confirmation for recording lifecycle events.
+**Risk:** Low — straightforward audio playback via `rodio`.
+**Parallelism:** All 3 tasks are sequential (3.1 → 3.2 → 3.3).
+**Dependencies:** None on Phases 1–2 (can run in parallel).
+
+---
+
+#### Task 3.1: Audio Assets [Size: S]
+
+**Files to create:**
+- `src-tauri/assets/sounds/start.ogg` (< 50KB)
+- `src-tauri/assets/sounds/stop.ogg` (< 50KB)
+- `src-tauri/assets/sounds/cancel.ogg` (< 50KB)
+- `src-tauri/assets/sounds/error.ogg` (< 50KB)
+
+**Implementation details:**
+- Source royalty-free audio cues or generate with a tone generator:
+  - `start.ogg` — 440Hz sine, 100ms, quick fade-out (soft "bip")
+  - `stop.ogg` — 880Hz sine, 100ms, quick fade-out (higher "bip")
+  - `cancel.ogg` — 440Hz→220Hz sweep, 200ms (descending tone)
+  - `error.ogg` — 220Hz square wave, 150ms, two pulses (gentle alert)
+- OGG Vorbis format: best cross-platform support with `rodio`, small file size
+- Total size budget: < 200KB for all 4 cues
+
+**Acceptance criteria:**
+- [ ] 4 OGG files exist in `src-tauri/assets/sounds/`
+- [ ] Each file is < 50KB
+- [ ] Files play correctly in any audio player
+- [ ] Sounds are distinct and recognizable
+
+---
+
+#### Task 3.2: Audio Playback in Rust [Size: M]
+
+**Files to create:**
+- `src-tauri/src/audio_cue.rs`
+
+**Files to modify:**
+- `src-tauri/Cargo.toml` — add `rodio = "0.19"` dependency
+
+**Implementation details:**
 ```rust
-// tray.rs
-use tauri::{
-    AppHandle, CustomMenuItem, SystemTray, SystemTrayEvent, SystemTrayMenu,
-};
+use rodio::{Decoder, OutputStream, Sink};
+use std::io::Cursor;
 
-pub fn create_tray() -> SystemTray {
-    let menu = SystemTrayMenu::new()
-        .add_item(CustomMenuItem::new("show", "Show OpenVoicy"))
-        .add_native_item(tauri::SystemTrayMenuItem::Separator)
-        .add_item(CustomMenuItem::new("settings", "Settings..."))
-        .add_native_item(tauri::SystemTrayMenuItem::Separator)
-        .add_item(CustomMenuItem::new("quit", "Quit"));
-    
-    SystemTray::new()
-        .with_menu(menu)
-        .with_tooltip("OpenVoicy - Ready")
+pub enum Cue {
+    Start,
+    Stop,
+    Cancel,
+    Error,
 }
 
-pub fn update_tray_icon(app: &AppHandle, recording: bool) {
-    let icon = if recording {
-        include_bytes!("../icons/tray-recording.png").to_vec()
-    } else {
-        include_bytes!("../icons/tray-idle.png").to_vec()
-    };
-    
-    app.tray_handle().set_icon(tauri::Icon::Raw(icon)).unwrap();
-    
-    let tooltip = if recording {
-        "OpenVoicy - Recording..."
-    } else {
-        "OpenVoicy - Ready"
-    };
-    app.tray_handle().set_tooltip(tooltip).unwrap();
+pub struct AudioCuePlayer {
+    start: &'static [u8],
+    stop: &'static [u8],
+    cancel: &'static [u8],
+    error: &'static [u8],
+}
+
+impl AudioCuePlayer {
+    pub fn new() -> Self {
+        Self {
+            start: include_bytes!("../assets/sounds/start.ogg"),
+            stop: include_bytes!("../assets/sounds/stop.ogg"),
+            cancel: include_bytes!("../assets/sounds/cancel.ogg"),
+            error: include_bytes!("../assets/sounds/error.ogg"),
+        }
+    }
+
+    pub fn play(&self, cue: Cue, enabled: bool) {
+        if !enabled { return; }
+        let bytes = match cue {
+            Cue::Start => self.start,
+            Cue::Stop => self.stop,
+            Cue::Cancel => self.cancel,
+            Cue::Error => self.error,
+        };
+        // Spawn thread to avoid blocking
+        let bytes = bytes.to_vec();
+        std::thread::spawn(move || {
+            if let Ok((_stream, handle)) = OutputStream::try_default() {
+                let sink = Sink::try_new(&handle).ok();
+                if let Some(sink) = sink {
+                    if let Ok(source) = Decoder::new(Cursor::new(bytes)) {
+                        sink.append(source);
+                        sink.sleep_until_end();
+                    }
+                }
+            }
+        });
+    }
 }
 ```
 
-**Icon Design:**
-- Idle: Microphone outline (gray/white)
-- Recording: Microphone filled (red/orange pulse effect)
-- Size: 22x22 (macOS), 16x16 (Windows), 24x24 (Linux)
+- `AudioCuePlayer` is created once at app init, stored in Tauri managed state
+- `play()` is fire-and-forget: spawns a short-lived thread for each cue
+- Plays on system default **output** device (NOT the recording input)
+- Respects `config.audio.audio_cues_enabled` (checked at call site)
+- Thread lifetime is ~100-200ms per cue; no cleanup needed
 
-**Acceptance Criteria:**
-- [ ] Tray icon visible on all platforms
-- [ ] Icon changes when recording starts/stops
-- [ ] Tooltip shows current status
-- [ ] Menu items work: Show, Settings, Quit
-- [ ] Double-click opens main window (Windows/Linux)
-- [ ] Single-click opens menu (macOS behavior)
+**Config addition:** Add `audio_cues_enabled: bool` to `config.audio` section (default: `true`). This is an additive config change, schema_version stays 1.
+
+**Acceptance criteria:**
+- [ ] `AudioCuePlayer` compiles and plays each cue variant
+- [ ] Playback does not block the calling thread
+- [ ] No audio plays when `enabled = false`
+- [ ] Plays on default output device, not recording input
+- [ ] `rodio` builds on Windows, macOS, and Linux
+
+**Tests:**
+- Unit test: cue selection logic (correct bytes for each variant)
+- Unit test: `enabled = false` → no thread spawn (mock or verify)
+- Build test: `cargo check` on all 3 platforms (CI)
 
 ---
 
-### Phase 1D: User Interface (Parallel Track - React)
+#### Task 3.3: Integration with State Machine [Size: S]
+
+**Files to modify:**
+- `src-tauri/src/integration.rs` (or wherever `RecordingController` handles state transitions)
+- `src-tauri/src/recording.rs` (if transition hooks live here)
+
+**Implementation details:**
+- **Critical timing:** Play `start` cue and wait for it to finish (~100ms) BEFORE activating the microphone, so the beep isn't captured in the recording
+- State transition → cue mapping:
+  ```
+  Idle → Recording:         play(Start), then start mic
+  Recording → Transcribing: play(Stop)
+  Recording → Idle (cancel): play(Cancel)
+  Any → Error:              play(Error)
+  ```
+- Access `AudioCuePlayer` from Tauri managed state in the transition handler
+- Access `config.audio.audio_cues_enabled` from config state
+
+**Timing implementation:**
+```rust
+// In recording start handler:
+audio_cue_player.play_sync(Cue::Start, config.audio.audio_cues_enabled);
+// play_sync blocks for ~100ms until cue finishes
+// Then start recording...
+```
+
+Add `play_sync` variant to `AudioCuePlayer` that blocks until playback completes (for the start cue only). Other cues use fire-and-forget `play`.
+
+**Acceptance criteria:**
+- [ ] Start cue plays before mic activation (beep is NOT in the recording)
+- [ ] Stop cue plays when recording ends
+- [ ] Cancel cue plays on double-tap cancel
+- [ ] Error cue plays on error state transition
+- [ ] Disabling audio cues in config stops all cues
+
+**Tests:**
+- Integration test: mock `AudioCuePlayer`, verify correct cue is requested on each transition
+- Verify start cue is synchronous (plays before mic activation)
 
 ---
 
-#### Task 1D.1: Status Display Component
-**Complexity:** S (Small)
-**Assignable:** Yes (after 1A.1)
-**Dependencies:** 1A.1
+### Phase 4: Language Selection & Whisper Support
 
-**Description:** Visual indicator showing recording state in main window.
-
-**Files to Create:**
-- `src/components/Status/RecordingIndicator.tsx`
-- `src/components/Status/StatusBar.tsx`
-- `src/hooks/useRecordingState.ts`
-
-**Implementation Details:**
-```tsx
-// RecordingIndicator.tsx
-import { useRecordingState } from "@/hooks/useRecordingState";
-
-export function RecordingIndicator() {
-  const { isRecording, lastTranscription } = useRecordingState();
-  
-  return (
-    <div className="flex flex-col items-center gap-4 p-8">
-      <div
-        className={`
-          w-24 h-24 rounded-full flex items-center justify-center
-          transition-all duration-200
-          ${isRecording 
-            ? "bg-red-500 animate-pulse shadow-lg shadow-red-500/50" 
-            : "bg-gray-200 dark:bg-gray-700"
-          }
-        `}
-      >
-        <MicrophoneIcon 
-          className={`w-12 h-12 ${isRecording ? "text-white" : "text-gray-500"}`} 
-        />
-      </div>
-      
-      <p className="text-sm text-gray-500">
-        {isRecording ? "Recording... Release to transcribe" : "Press Ctrl+Space to record"}
-      </p>
-      
-      {lastTranscription && (
-        <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg max-w-md">
-          <p className="text-sm text-gray-600 dark:text-gray-300">
-            {lastTranscription}
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-```
-
-**Acceptance Criteria:**
-- [ ] Shows idle state with hotkey hint
-- [ ] Animates when recording (pulse effect)
-- [ ] Displays last transcription after completion
-- [ ] Responsive to window size
-- [ ] Accessible (screen reader friendly)
+**Goal:** Multilingual transcription via Whisper models.
+**Risk:** HIGH — touches sidecar ASR, model manifest, config schema, and UI.
+**Parallelism:** Task 4.1 and 4.3 can run in parallel (manifest + config). Task 4.2 depends on 4.1. Task 4.4 depends on 4.2+4.3.
+**Dependencies:** None on Phases 1–3, but should be scheduled after Phase 1 (needs Settings UI ready for model selector).
 
 ---
 
-#### Task 1D.2: Settings Panel
-**Complexity:** M (Medium)
-**Assignable:** Yes (after 1A.4)
-**Dependencies:** 1A.4
+#### Task 4.1: Expand Model Manifest [Size: S]
 
-**Description:** Settings UI for microphone, hotkey, and general options.
+**Files to modify:**
+- `shared/model/MODEL_MANIFEST.json`
 
-**Files to Create:**
-- `src/components/Settings/SettingsPanel.tsx`
-- `src/components/Settings/MicrophoneSelect.tsx`
-- `src/components/Settings/HotkeyConfig.tsx`
-- `src/components/Settings/GeneralSettings.tsx`
+**Implementation details:**
 
-**Implementation Details:**
-```tsx
-// MicrophoneSelect.tsx
-import { invoke } from "@tauri-apps/api/tauri";
-import { useEffect, useState } from "react";
-
-interface AudioDevice {
-  id: number;
-  name: string;
-  isDefault: boolean;
-}
-
-export function MicrophoneSelect() {
-  const [devices, setDevices] = useState<AudioDevice[]>([]);
-  const [selected, setSelected] = useState<number | null>(null);
-  
-  useEffect(() => {
-    invoke<AudioDevice[]>("get_audio_devices").then(setDevices);
-  }, []);
-  
-  const handleChange = async (deviceId: number) => {
-    await invoke("set_audio_device", { deviceId });
-    setSelected(deviceId);
-  };
-  
-  return (
-    <div className="space-y-2">
-      <label className="text-sm font-medium">Microphone</label>
-      <select 
-        value={selected ?? ""} 
-        onChange={(e) => handleChange(Number(e.target.value))}
-        className="w-full p-2 border rounded"
-      >
-        {devices.map((d) => (
-          <option key={d.id} value={d.id}>
-            {d.name} {d.isDefault && "(Default)"}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-```
-
-```tsx
-// HotkeyConfig.tsx
-export function HotkeyConfig() {
-  const [listening, setListening] = useState(false);
-  const [hotkey, setHotkey] = useState({ modifier: "ctrl", key: "Space" });
-  
-  const handleRecord = () => {
-    setListening(true);
-    // Listen for next key combination...
-  };
-  
-  return (
-    <div className="space-y-2">
-      <label className="text-sm font-medium">Push-to-Talk Hotkey</label>
-      <button
-        onClick={handleRecord}
-        className={`
-          w-full p-3 border rounded text-left
-          ${listening ? "border-blue-500 bg-blue-50" : ""}
-        `}
-      >
-        {listening ? "Press new hotkey..." : `${hotkey.modifier}+${hotkey.key}`}
-      </button>
-    </div>
-  );
-}
-```
-
-**Acceptance Criteria:**
-- [ ] Microphone dropdown populated with available devices
-- [ ] Hotkey recorder captures key combinations
-- [ ] Settings save immediately on change
-- [ ] Validation prevents invalid configurations
-- [ ] Reset to defaults option
-
----
-
-#### Task 1D.3: Replacement Manager
-**Complexity:** M (Medium)
-**Assignable:** Yes (after 1A.4)
-**Dependencies:** 1A.4
-
-**Description:** CRUD interface for text replacements.
-
-**Files to Create:**
-- `src/components/Replacements/ReplacementList.tsx`
-- `src/components/Replacements/ReplacementEditor.tsx`
-- `src/components/Replacements/SmartExpansions.tsx`
-
-**Implementation Details:**
-```tsx
-// ReplacementList.tsx
-interface Replacement {
-  id: string;
-  trigger: string;
-  replacement: string;
-  type: "snippet" | "smart";
-  enabled: boolean;
-}
-
-export function ReplacementList() {
-  const [replacements, setReplacements] = useState<Replacement[]>([]);
-  const [editing, setEditing] = useState<string | null>(null);
-  
-  return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center">
-        <h2 className="text-lg font-semibold">Text Replacements</h2>
-        <button 
-          onClick={addNew}
-          className="px-3 py-1 bg-blue-500 text-white rounded"
-        >
-          Add New
-        </button>
-      </div>
-      
-      <table className="w-full">
-        <thead>
-          <tr className="text-left text-sm text-gray-500">
-            <th className="pb-2">Trigger</th>
-            <th className="pb-2">Replacement</th>
-            <th className="pb-2">Enabled</th>
-            <th className="pb-2"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {replacements.map((r) => (
-            <ReplacementRow 
-              key={r.id} 
-              replacement={r} 
-              onEdit={() => setEditing(r.id)}
-              onDelete={() => deleteReplacement(r.id)}
-              onToggle={() => toggleEnabled(r.id)}
-            />
-          ))}
-        </tbody>
-      </table>
-      
-      {editing && (
-        <ReplacementEditor
-          replacement={replacements.find(r => r.id === editing)!}
-          onSave={saveReplacement}
-          onCancel={() => setEditing(null)}
-        />
-      )}
-    </div>
-  );
-}
-```
-
-**Default Replacements (ship with app):**
+New manifest structure (additive — existing Parakeet entry stays):
 ```json
 [
-  {"trigger": "brb", "replacement": "be right back", "type": "snippet"},
-  {"trigger": "ty", "replacement": "thank you", "type": "snippet"},
-  {"trigger": "@@date", "replacement": "", "type": "smart"},
-  {"trigger": "@@time", "replacement": "", "type": "smart"}
+  {
+    "id": "nvidia/parakeet-tdt-0.6b",
+    "family": "parakeet",
+    "name": "Parakeet TDT 0.6B (English)",
+    "languages": ["en"],
+    "size_mb": 600,
+    "speed": "fast",
+    "quality": "excellent",
+    "description": "Best English-only model. Fast and accurate.",
+    "hf_repo": "nvidia/parakeet-tdt_ctc-0.6b-release2",
+    "hf_filename": "parakeet-tdt_ctc-0.6b-release2.nemo"
+  },
+  {
+    "id": "openai/whisper-base",
+    "family": "whisper",
+    "name": "Whisper Base (Multilingual)",
+    "languages": ["auto", "en", "es", "fr", "de", "it", "pt", "zh", "ja", "ko", "nl", "pl", "ru", "sv", "tr", "ar", "hi", "th", "vi", "uk"],
+    "size_mb": 290,
+    "speed": "fast",
+    "quality": "good",
+    "description": "Good balance of speed and accuracy. Supports 99 languages.",
+    "hf_repo": "openai/whisper-base",
+    "hf_filename": null
+  },
+  {
+    "id": "openai/whisper-small",
+    "family": "whisper",
+    "name": "Whisper Small (Multilingual)",
+    "languages": ["auto", "en", "es", "fr", "de", "it", "pt", "zh", "ja", "ko", "nl", "pl", "ru", "sv", "tr", "ar", "hi", "th", "vi", "uk"],
+    "size_mb": 967,
+    "speed": "medium",
+    "quality": "very good",
+    "description": "Better accuracy than Base. Recommended for non-English languages.",
+    "hf_repo": "openai/whisper-small",
+    "hf_filename": null
+  },
+  {
+    "id": "openai/whisper-medium",
+    "family": "whisper",
+    "name": "Whisper Medium (Multilingual)",
+    "languages": ["auto", "en", "es", "fr", "de", "it", "pt", "zh", "ja", "ko", "nl", "pl", "ru", "sv", "tr", "ar", "hi", "th", "vi", "uk"],
+    "size_mb": 3060,
+    "speed": "slow",
+    "quality": "excellent",
+    "description": "Highest accuracy. Requires more RAM and time.",
+    "hf_repo": "openai/whisper-medium",
+    "hf_filename": null
+  }
 ]
 ```
 
-**Acceptance Criteria:**
-- [ ] List view shows all replacements
-- [ ] Add new replacement with validation
-- [ ] Edit existing replacements inline or modal
-- [ ] Delete with confirmation
-- [ ] Toggle enabled/disabled per replacement
-- [ ] Import/export replacements as JSON
-- [ ] Search/filter replacements
+- Add `family` field to existing Parakeet entry (must remain backward compatible — consuming code must handle missing `family` as `"parakeet"`)
+- `languages` array uses ISO 639-1 codes. `"auto"` means auto-detect.
+- `hf_filename: null` for Whisper means use the default HuggingFace model download (no specific file)
+
+**Acceptance criteria:**
+- [ ] Manifest is valid JSON
+- [ ] Existing Parakeet entry unchanged except for new additive fields
+- [ ] All Whisper variants have correct size estimates
+- [ ] `languages` arrays are consistent across Whisper variants
+
+**Tests:**
+- JSON schema validation test
+- Manifest parsing test in both Rust and Python
 
 ---
 
-### Phase 1E: Integration & Testing
+#### Task 4.2: Sidecar Whisper Support [Size: L]
+
+**Files to modify:**
+- `sidecar/asr/engine.py` (or equivalent ASR module)
+- `sidecar/model_cache.py`
+- `sidecar/pyproject.toml` — add `faster-whisper` as dependency
+
+**Files to create:**
+- `sidecar/asr/whisper_pipeline.py` — Whisper-specific ASR pipeline
+
+**Implementation details:**
+
+1. **Dependency:** Use `faster-whisper` (CTranslate2-based, ~4x faster than OpenAI whisper):
+   ```toml
+   [project.optional-dependencies]
+   whisper = ["faster-whisper>=1.0.0"]
+   ```
+
+2. **ASR Engine dispatch** — modify `engine.py`:
+   ```python
+   class AsrEngine:
+       def initialize(self, model_id: str, language: str | None = None):
+           manifest_entry = load_manifest_entry(model_id)
+           if manifest_entry["family"] == "parakeet":
+               self.pipeline = ParakeetPipeline(model_id)
+           elif manifest_entry["family"] == "whisper":
+               self.pipeline = WhisperPipeline(model_id, language)
+           else:
+               raise ValueError(f"Unknown model family: {manifest_entry['family']}")
+   ```
+
+3. **WhisperPipeline** (`whisper_pipeline.py`):
+   ```python
+   from faster_whisper import WhisperModel
+
+   class WhisperPipeline:
+       def __init__(self, model_id: str, language: str | None):
+           model_size = model_id.split("/")[-1]  # "whisper-base" → "base"
+           model_size = model_size.replace("whisper-", "")
+           self.model = WhisperModel(model_size, device="cpu", compute_type="int8")
+           self.language = language if language != "auto" else None
+
+       def transcribe(self, audio_path: str) -> TranscriptionResult:
+           segments, info = self.model.transcribe(
+               audio_path,
+               language=self.language,
+               beam_size=5,
+               vad_filter=True,
+           )
+           text = " ".join(seg.text for seg in segments)
+           return TranscriptionResult(
+               text=text.strip(),
+               confidence=info.language_probability if self.language is None else None,
+               language=info.language,
+           )
+   ```
+
+4. **IPC Protocol addendum** — additive change to `asr.initialize`:
+   - New optional parameter: `language: string | null` (default: `null`)
+   - When `null`: Parakeet uses English, Whisper uses auto-detect
+   - This is backward-compatible: old callers that don't send `language` get default behavior
+
+5. **Model cache** — `model_cache.py` modifications:
+   - `faster-whisper` handles its own model download from HuggingFace
+   - Cache directory: use same base cache dir, subfolder per model family
+   - Download progress reporting: hook into `faster-whisper`'s download callback, emit progress events via IPC
+
+**Failure modes:**
+- `faster-whisper` not installed → clear error message: "Whisper support requires faster-whisper. Install with: pip install faster-whisper"
+- Model download fails → retry logic with exponential backoff (3 attempts)
+- Out of memory → catch `RuntimeError`, report to user with model size recommendation
+
+**Acceptance criteria:**
+- [ ] Whisper Base transcribes English audio correctly
+- [ ] Whisper Base transcribes non-English audio (e.g., Spanish) correctly
+- [ ] Language auto-detect works when `language=null`
+- [ ] Explicit language selection works (e.g., `language="es"`)
+- [ ] Parakeet pipeline unchanged and still works
+- [ ] Model download shows progress via IPC
+- [ ] Clear error if `faster-whisper` not installed
+
+**Tests:**
+- Unit test: `WhisperPipeline` with mock audio file
+- Unit test: ASR engine dispatch (parakeet vs whisper based on model_id)
+- Integration test: full pipeline with a short test audio file (English + non-English)
+- Error handling: missing dependency, download failure, OOM
 
 ---
 
-#### Task 1E.1: End-to-End Flow Integration
-**Complexity:** M (Medium)
-**Assignable:** Yes (after all previous tasks)
-**Dependencies:** 1B.2, 1B.3, 1B.5, 1C.1, 1C.2
+#### Task 4.3: Config Schema Update [Size: S]
 
-**Description:** Wire up complete flow: hotkey → record → transcribe → inject.
+**Files to modify:**
+- `shared/schema/AppConfig.schema.json` — add new fields
+- `src-tauri/src/config.rs` — Rust config struct + migration
+- `src/types.ts` — TypeScript types
 
-**Files to Modify:**
-- `src-tauri/src/main.rs`
-- `src-tauri/src/commands.rs`
+**Implementation details:**
 
-**Implementation Details:**
-```rust
-// main.rs - Main application loop
-#[tokio::main]
-async fn main() {
-    let (hotkey_mgr, mut hotkey_rx) = HotkeyManager::new(Key::ControlLeft, Key::Space);
-    let sidecar = SidecarManager::spawn().await.unwrap();
-    let injector = TextInjector::new(50);
-    
-    tauri::Builder::default()
-        .setup(|app| {
-            let app_handle = app.handle();
-            
-            // Hotkey listener task
-            tokio::spawn(async move {
-                while let Some(event) = hotkey_rx.recv().await {
-                    match event {
-                        HotkeyEvent::Pressed => {
-                            update_tray_icon(&app_handle, true);
-                            sidecar.call("start_recording", json!({})).await.unwrap();
-                        }
-                        HotkeyEvent::Released => {
-                            update_tray_icon(&app_handle, false);
-                            let result = sidecar.call("stop_and_transcribe", json!({})).await.unwrap();
-                            let text = result["text"].as_str().unwrap_or("");
-                            if !text.is_empty() {
-                                injector.inject(text).await.unwrap();
-                            }
-                        }
-                    }
-                }
-            });
-            
-            hotkey_mgr.start();
-            Ok(())
-        })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+New config fields (additive, defaults preserve existing behavior):
+```json
+{
+  "model": {
+    "model_id": "nvidia/parakeet-tdt-0.6b",
+    "language": null,
+    "family": "parakeet"
+  }
 }
 ```
 
-**Acceptance Criteria:**
-- [ ] Press hotkey → tray icon changes to recording
-- [ ] Release hotkey → transcription appears in focused field
-- [ ] Replacements applied before injection
-- [ ] Works across all target platforms
-- [ ] Error handling shows user-friendly messages
-- [ ] No crash on rapid press/release
+- `model.language: string | null` — ISO 639-1 code or `null` for auto/default. Default: `null`
+- `model.family: "parakeet" | "whisper"` — derived from model_id, but cached for quick access. Default: `"parakeet"`
+- `schema_version` stays at `1` — these are additive fields with defaults
+
+Rust migration in `config.rs`:
+```rust
+// When loading config, fill missing fields with defaults
+if config.model.language.is_none() {
+    config.model.language = None; // already None, but explicit
+}
+if config.model.family.is_empty() {
+    config.model.family = "parakeet".to_string();
+}
+```
+
+TypeScript types:
+```typescript
+interface ModelConfig {
+  model_id: string;
+  language: string | null;
+  family: 'parakeet' | 'whisper';
+}
+```
+
+**Acceptance criteria:**
+- [ ] Old config files load without errors (missing fields get defaults)
+- [ ] New config fields serialize/deserialize correctly
+- [ ] Schema version unchanged
+- [ ] TypeScript types match Rust types match JSON schema
+
+**Tests:**
+- Config migration: load v1 config without new fields → verify defaults applied
+- Round-trip: write config with new fields, read back, verify equality
 
 ---
 
-#### Task 1E.2: Error Handling & Recovery
-**Complexity:** S (Small)
-**Assignable:** Yes (after 1E.1)
-**Dependencies:** 1E.1
+#### Task 4.4: Model Settings UI [Size: M]
 
-**Description:** Comprehensive error handling throughout the app.
+**Files to modify:**
+- `src/components/Settings/ModelSettings.tsx` (or create if not exists)
 
-**Error Scenarios:**
-| Scenario | Handling |
-|----------|----------|
-| No microphone | Show settings with error message |
-| Sidecar crash | Auto-restart, show notification |
-| Model load fail | Retry with progress, fallback to CPU |
-| Transcription fail | Show error, allow retry |
-| Injection fail | Copy to clipboard instead, notify user |
-| Hotkey conflict | Warn user, suggest alternatives |
+**Implementation details:**
 
-**Acceptance Criteria:**
-- [ ] All error scenarios have user-friendly messages
-- [ ] Sidecar auto-restarts on crash (max 3 times, then alert)
-- [ ] Fallback behaviors work correctly
-- [ ] No unhandled promise rejections or panics
+Two-step selector UI:
+
+**Step 1: Model Family Cards**
+```
+┌─────────────────────────┐  ┌─────────────────────────┐
+│ 🇺🇸 Parakeet (English)  │  │ 🌍 Whisper (Multilingual)│
+│                         │  │                         │
+│ 600 MB · Fast · Best    │  │ 290 MB+ · Multiple sizes│
+│ for English dictation   │  │ 99 languages supported  │
+│                         │  │                         │
+│ [● Selected]            │  │ [○ Select]              │
+└─────────────────────────┘  └─────────────────────────┘
+```
+
+**Step 2: Whisper Sub-options (shown only when Whisper selected)**
+- Model size selector: Base (290MB) / Small (967MB) / Medium (3GB) — radio cards with size/quality/speed badges
+- Language dropdown: populated from manifest's `languages` array, with "Auto-detect" as first option
+- Search/filter in dropdown for easy language finding
+
+**Common elements:**
+- Download status: "Downloaded ✓" / "Not downloaded (290 MB)" / "Downloading... 45%"
+- "Download" button when model not cached
+- "Currently loaded" green badge on the active model
+- Storage usage: "Models: 890 MB used"
+
+**Data flow:**
+- Read model manifest from `shared/model/MODEL_MANIFEST.json` (loaded via Tauri command or bundled)
+- Config writes: update `config.model.model_id`, `config.model.family`, `config.model.language`
+- Trigger model download via existing sidecar IPC
+- Listen to download progress events
+
+**Acceptance criteria:**
+- [ ] Family cards render with correct info from manifest
+- [ ] Language dropdown only visible for Whisper family
+- [ ] Model download triggers correctly and shows progress
+- [ ] Config updates correctly on selection change
+- [ ] "Currently loaded" indicator is accurate
+
+**Tests:**
+- Render with Parakeet selected → no language dropdown
+- Render with Whisper selected → language dropdown visible
+- Model download trigger with mock IPC
+- Config update on selection change
 
 ---
 
-#### Task 1E.3: Build & Packaging
-**Complexity:** M (Medium)
-**Assignable:** Yes (after 1E.1)
-**Dependencies:** 1E.1
+### Phase 5: First-Run Onboarding
 
-**Description:** Configure builds for Windows, macOS, Linux.
+**Goal:** Guide new users through setup in < 2 minutes.
+**Risk:** Low — new component, minimal backend changes.
+**Dependencies:** Phase 4 recommended (model selector in onboarding), but can ship with Parakeet-only initially.
 
-**Files to Create/Modify:**
-- `src-tauri/tauri.conf.json`
+---
+
+#### Task 5.1: Onboarding Wizard Component [Size: M]
+
+**Files to create:**
+- `src/components/Onboarding/OnboardingWizard.tsx` — wizard container
+- `src/components/Onboarding/WelcomeStep.tsx`
+- `src/components/Onboarding/MicrophoneStep.tsx`
+- `src/components/Onboarding/ModelStep.tsx`
+- `src/components/Onboarding/HotkeyStep.tsx`
+
+**Implementation details:**
+
+Wizard container:
+- `currentStep` state: 0–3
+- Progress dots at bottom (4 dots)
+- "Next" / "Back" / "Skip" buttons
+- Slide transition between steps (CSS `transform: translateX`)
+
+**Step 1 — Welcome:**
+- App logo/icon
+- "Voice Input Tool" heading
+- Brief description: "Transcribe your speech to text in any application. All processing happens locally on your device — your audio never leaves your computer."
+- Privacy badge: "🔒 100% Local Processing"
+- "Get Started" button
+
+**Step 2 — Microphone:**
+- Reuse existing `MicrophoneTest` component (or extract from Settings)
+- Microphone device selector dropdown
+- Live level meter showing mic input
+- "Say something to test your microphone" prompt
+- Visual feedback: green checkmark when audio detected above threshold
+
+**Step 3 — Model:**
+- If Phase 4 complete: show model family cards + language selector
+- If Phase 4 not complete: show Parakeet card with "Download" button
+- Download progress bar
+- Skip option: "I'll download later" (app will prompt again on first use)
+
+**Step 4 — Hotkey:**
+- Show current hotkey binding in large key badge
+- Activation mode selector (Push-to-Talk / Push-to-Start/Stop) with descriptions
+- "Try it now!" prompt — user can press hotkey to test (if model downloaded)
+- "Customize" button to change hotkey (reuse hotkey recorder from Settings)
+
+**Completion screen:**
+- "You're all set! 🎉"
+- Summary: selected mic, model, hotkey, mode
+- "Start Using Voice Input" button → sets `config.ui.onboarding_completed = true`, transitions to main UI
+
+**Acceptance criteria:**
+- [ ] 4-step wizard with forward/back navigation
+- [ ] Skip button available on each step
+- [ ] Progress dots show current step
+- [ ] Each step's functionality works (mic test, model download, hotkey test)
+- [ ] Completion sets config flag
+
+**Tests:**
+- Navigation: forward, back, skip
+- Completion flow: verify config flag set
+- Each step renders without errors
+
+---
+
+#### Task 5.2: Onboarding Trigger [Size: S]
+
+**Files to modify:**
+- `src/App.tsx` — conditional render
+- `src/types.ts` — add `onboarding_completed` to config types
+- `shared/schema/AppConfig.schema.json` — add field
+- `src-tauri/src/config.rs` — add field with default `false`
+
+**Implementation details:**
+- On app launch, check `config.ui.onboarding_completed`
+- If `false` (or missing — default): render `<OnboardingWizard />` instead of tab layout
+- On wizard completion: update config, trigger re-render → main UI appears
+- In Settings > UI section: "Reset Onboarding" button that sets `onboarding_completed = false` and requires app restart (or immediate wizard re-render)
+
+**Config field:**
+```json
+{
+  "ui": {
+    "onboarding_completed": false
+  }
+}
+```
+
+**Acceptance criteria:**
+- [ ] First launch shows onboarding wizard
+- [ ] Subsequent launches show main UI
+- [ ] "Reset Onboarding" in settings works
+- [ ] Missing config field defaults to `false` (triggers onboarding)
+
+**Tests:**
+- `App.tsx` render: `onboarding_completed=false` → wizard, `true` → tabs
+- Config default: old config without field → onboarding shown
+
+---
+
+### Phase 6: Dark/Light Theme
+
+**Goal:** Respect system theme preference with manual override.
+**Risk:** Low — Tailwind dark mode is well-established.
+**Parallelism:** Task 6.1 first, then 6.2 and 6.3 in parallel.
+**Dependencies:** Phase 1 (tab layout) should be complete for consistent theming.
+
+---
+
+#### Task 6.1: Theme Infrastructure [Size: S]
+
+**Files to modify:**
+- `tailwind.config.js` — add `darkMode: 'class'`
+- `src/index.css` — add CSS custom properties for theme-aware colors (optional, Tailwind `dark:` may suffice)
+- `src/store/appStore.ts` — add `resolvedTheme: 'light' | 'dark'` to store
+
+**Files to create:**
+- `src/hooks/useTheme.ts` — theme management hook
+
+**Implementation details:**
+```typescript
+// src/hooks/useTheme.ts
+export function useTheme() {
+  const configTheme = useAppStore(s => s.config.ui.theme); // 'system' | 'light' | 'dark'
+  const setResolvedTheme = useAppStore(s => s.setResolvedTheme);
+
+  useEffect(() => {
+    const resolve = () => {
+      if (configTheme === 'system') {
+        return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      return configTheme;
+    };
+
+    const resolved = resolve();
+    setResolvedTheme(resolved);
+
+    // Apply to <html>
+    document.documentElement.classList.toggle('dark', resolved === 'dark');
+
+    // Listen for system theme changes
+    if (configTheme === 'system') {
+      const mql = window.matchMedia('(prefers-color-scheme: dark)');
+      const handler = () => {
+        const newResolved = resolve();
+        setResolvedTheme(newResolved);
+        document.documentElement.classList.toggle('dark', newResolved === 'dark');
+      };
+      mql.addEventListener('change', handler);
+      return () => mql.removeEventListener('change', handler);
+    }
+  }, [configTheme]);
+}
+```
+
+Config field: `config.ui.theme: "system" | "light" | "dark"` (default: `"system"`)
+
+**Acceptance criteria:**
+- [ ] `darkMode: 'class'` in Tailwind config
+- [ ] `dark` class applied to `<html>` based on resolved theme
+- [ ] System preference changes detected in real-time
+- [ ] Manual override works
+
+**Tests:**
+- `useTheme` hook: mock `matchMedia`, verify class toggle
+- System → dark, system → light, manual dark, manual light
+
+---
+
+#### Task 6.2: Component Dark Mode Styles [Size: L]
+
+**Files to modify:**
+- All component files under `src/components/` — add `dark:` Tailwind variants
+
+**Implementation details:**
+
+Core color mapping:
+| Element | Light | Dark |
+|---------|-------|------|
+| Background | `bg-white` | `dark:bg-gray-900` |
+| Surface | `bg-gray-50` | `dark:bg-gray-800` |
+| Card | `bg-white border-gray-200` | `dark:bg-gray-800 dark:border-gray-700` |
+| Text primary | `text-gray-900` | `dark:text-gray-100` |
+| Text secondary | `text-gray-500` | `dark:text-gray-400` |
+| Input | `bg-white border-gray-300` | `dark:bg-gray-700 dark:border-gray-600` |
+| Button primary | `bg-blue-600 text-white` | `dark:bg-blue-500` |
+| Button secondary | `bg-gray-100` | `dark:bg-gray-700` |
+| Divider | `border-gray-200` | `dark:border-gray-700` |
+
+Components to update:
+- `TabBar`, `TabPanel` — tab backgrounds, active indicator
+- `StatusDashboard` — status colors, card backgrounds
+- `SettingsPanel` — section headers, inputs, toggles
+- `HistoryPanel`, `HistoryEntry` — entry cards, search input
+- `Replacements` components — rule cards, input fields
+- `OnboardingWizard` — step backgrounds, buttons
+- All shared elements: buttons, inputs, dropdowns, tooltips
+
+Overlay window: already dark-themed (transparent bg), minimal changes needed.
+
+**Acceptance criteria:**
+- [ ] All components have dark variants
+- [ ] No white flash on dark theme load
+- [ ] Text contrast meets WCAG AA (4.5:1 for normal text)
+- [ ] Inputs, buttons, cards all have appropriate dark styles
+- [ ] Overlay window looks correct in both themes
+
+**Tests:**
+- Visual regression: render each major component in light and dark, snapshot test
+- Contrast check: computed styles meet minimum ratios
+
+---
+
+#### Task 6.3: Theme Toggle in Settings [Size: S]
+
+**Files to modify:**
+- Settings UI (part of `SettingsPanel.tsx`, in the UI section from Task 1.3)
+
+**Implementation details:**
+- Three-way segmented control: `[ System | Light | Dark ]`
+- Active option highlighted with filled background
+- Updates config immediately (no save button needed)
+- Preview: theme changes instantly on selection
+- Persist to `config.ui.theme`
+
+**Acceptance criteria:**
+- [ ] Three options render correctly
+- [ ] Selection persists to config
+- [ ] Theme changes immediately on click
+- [ ] Current selection matches actual theme
+
+**Tests:**
+- Click each option → verify config update
+- Verify immediate visual change
+
+---
+
+### Phase 7: CI/CD for Windows & macOS
+
+**Goal:** Cross-platform build and test coverage.
+**Risk:** Medium — platform-specific CI issues.
+**Dependencies:** All previous phases should be feature-complete before CI hardening.
+
+---
+
+#### Task 7.1: Expand CI Matrix [Size: M]
+
+**Files to modify:**
+- `.github/workflows/test.yml`
 - `.github/workflows/build.yml`
-- `scripts/bundle-sidecar.sh`
 
-**Build Artifacts:**
-| Platform | Format | Notes |
-|----------|--------|-------|
-| Windows | `.msi`, `.exe` | Bundled Python runtime |
-| macOS | `.dmg`, `.app` | Universal binary (Intel + ARM) |
-| Linux | `.AppImage`, `.deb` | Python via system or bundled |
+**Implementation details:**
 
-**Python Bundling Strategy:**
-- Use `pyinstaller` to create standalone sidecar binary
-- OR bundle `python3.11-embed` (Windows) / use system Python (Linux/macOS)
-- Sidecar binary placed in `resources/` folder
+Test workflow:
+```yaml
+strategy:
+  matrix:
+    os: [ubuntu-latest, macos-latest, windows-latest]
+  fail-fast: false
 
-**Acceptance Criteria:**
-- [ ] `npm run tauri build` produces installable artifacts
-- [ ] Python sidecar bundled correctly on all platforms
-- [ ] Installer prompts for Accessibility permission (macOS)
-- [ ] App launches without requiring Python installation
-- [ ] Code signing configured (placeholder for production)
+steps:
+  - uses: actions/checkout@v4
 
----
+  # Platform-specific deps
+  - name: Install Linux deps
+    if: runner.os == 'Linux'
+    run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libasound2-dev
 
-## 5. Critical Path & Dependencies
+  - name: Install Rust
+    uses: dtolnay/rust-toolchain@stable
 
-```
-                    1A.1 Tauri Scaffold
-                           │
-         ┌─────────────────┼─────────────────┐
-         │                 │                 │
-         ▼                 ▼                 ▼
-    1C.1 Hotkey      1C.2 Inject       1C.3 Tray
-         │                 │                 │
-         └────────┬────────┴────────┬────────┘
-                  │                 │
-                  ▼                 │
-    1A.2 Python Scaffold            │
-         │                          │
-    ┌────┴────┐                     │
-    │         │                     │
-    ▼         ▼                     │
- 1B.1 Enum  1B.3 ASR                │
-    │         │                     │
-    ▼         │                     │
- 1B.2 Capture │                     │
-    │         │                     │
-    └────┬────┘                     │
-         │                          │
-         ▼                          │
-    1A.3 IPC Bridge ◄───────────────┘
-         │
-         ▼
-    1A.4 Config ────────► 1D.2 Settings
-                              │
-    1B.4 Postprocess          │
-         │                    │
-    1B.5 Replacements ──► 1D.3 Replace UI
-         │                    │
-         └────────┬───────────┘
-                  │
-                  ▼
-    1D.1 Status Display
-                  │
-                  ▼
-    1E.1 Integration
-         │
-    ┌────┴────┐
-    │         │
-    ▼         ▼
- 1E.2 Errors 1E.3 Build
+  - name: Rust cache
+    uses: Swatinem/rust-cache@v2
+    with:
+      workspaces: "src-tauri -> target"
+
+  - name: Node setup
+    uses: actions/setup-node@v4
+    with:
+      node-version: 20
+      cache: 'npm'
+
+  - run: npm ci
+  - run: npm run test          # Vitest (frontend)
+  - run: npm run lint
+  - run: cd src-tauri && cargo test  # Rust tests
 ```
 
-**Critical Path (longest dependency chain):**
-1A.1 → 1A.2 → 1B.1 → 1B.2 → 1A.3 → 1E.1 → 1E.3
+Build workflow (release builds):
+```yaml
+strategy:
+  matrix:
+    include:
+      - os: macos-latest
+        target: universal-apple-darwin
+      - os: windows-latest
+        target: x86_64-pc-windows-msvc
+  fail-fast: false
 
-**Parallelization Opportunities:**
-- 1C.* (Hotkey, Inject, Tray) can run in parallel after 1A.1
-- 1B.3 (ASR) can run in parallel with 1B.1/1B.2
-- 1B.4, 1B.5 are independent
-- 1D.* can run in parallel after their dependencies
+steps:
+  # ... setup steps ...
+  - run: npm run tauri build
+  - uses: actions/upload-artifact@v4
+    with:
+      name: release-${{ matrix.os }}
+      path: |
+        src-tauri/target/release/bundle/**/*.dmg
+        src-tauri/target/release/bundle/**/*.msi
+```
 
----
+Caching strategy:
+- Cargo registry + target dir: `Swatinem/rust-cache@v2`
+- node_modules: `actions/setup-node` built-in cache
+- Python sidecar deps: `actions/setup-python` + pip cache
 
-## 6. Risk Mitigation
+**Acceptance criteria:**
+- [ ] Tests run on all 3 platforms
+- [ ] Release builds produce artifacts on macOS and Windows
+- [ ] Caching works (second run is significantly faster)
+- [ ] Matrix failures don't block other platforms (`fail-fast: false`)
 
-### Technical Risks
-
-| Risk | Likelihood | Impact | Mitigation |
-|------|------------|--------|------------|
-| Parakeet model too large | Medium | High | Offer smaller model option; lazy loading |
-| Hotkey doesn't work on Wayland | High | Medium | Use D-Bus portal; document limitation |
-| Text injection blocked by app | Medium | Medium | Clipboard fallback; whitelist apps |
-| Python bundling increases size | High | Low | Accept ~50MB overhead; optimize later |
-| CUDA not detected | Medium | Medium | Clear messaging; CPU fallback works |
-
-### Platform-Specific Risks
-
-**macOS:**
-- Accessibility permission required → Prompt with clear instructions
-- Notarization required for distribution → Configure in CI
-- Gatekeeper blocks unsigned apps → Document manual override
-
-**Windows:**
-- Antivirus may flag keyboard simulation → Sign binary, submit to vendors
-- Windows Defender SmartScreen → Sign with EV certificate (future)
-
-**Linux:**
-- Wayland hotkey limitations → Support X11 fully, Wayland best-effort
-- Audio permissions (PipeWire/PulseAudio) → Document setup
+**Tests:**
+- CI workflow itself is the test — verify green runs on all platforms
 
 ---
 
-## 7. Testing Strategy
+#### Task 7.2: Platform-Specific Test Fixes [Size: M]
 
-### Unit Tests
-- `sidecar/tests/test_replacements.py` - Replacement engine
-- `sidecar/tests/test_postprocess.py` - Text cleanup
-- `src-tauri/src/config.rs` - Config serialization
+**Files to modify:** Various — depends on failures discovered.
 
-### Integration Tests
-- IPC round-trip (Tauri ↔ Python)
-- Audio capture → transcription flow (mock model)
-- Hotkey → injection flow (UI automation)
+**Common issues to anticipate and fix:**
 
-### Manual Testing Checklist
-- [ ] Fresh install on each platform
-- [ ] Microphone selection works
-- [ ] Hotkey triggers recording
-- [ ] Transcription appears in various apps (browser, VS Code, terminal)
-- [ ] Replacements applied correctly
-- [ ] Settings persist across restarts
-- [ ] Tray icon updates correctly
-- [ ] App quits cleanly
+1. **Path separators:** `\` vs `/` in test assertions
+   - Fix: use `path.join()` or normalize paths in assertions
 
----
+2. **Audio API stubs:** `rodio`/`cpal` may fail to initialize in CI (no audio device)
+   - Fix: gate audio tests with `#[cfg(not(ci))]` or mock audio backend
+   - Add `AUDIO_TESTS_ENABLED` env var check
 
-## 8. Delivery Milestones
+3. **File permissions:** Unix permissions don't exist on Windows
+   - Fix: conditional assertions
 
-| Milestone | Tasks | Target |
-|-----------|-------|--------|
-| **M1: Foundation** | 1A.1, 1A.2, 1A.3, 1A.4 | Week 1 |
-| **M2: Audio Pipeline** | 1B.1, 1B.2, 1B.3, 1B.4, 1B.5 | Week 2 |
-| **M3: Desktop Integration** | 1C.1, 1C.2, 1C.3 | Week 2 (parallel) |
-| **M4: UI** | 1D.1, 1D.2, 1D.3 | Week 3 |
-| **M5: Integration** | 1E.1, 1E.2, 1E.3 | Week 4 |
-| **MVP Release** | All Phase 1 | End of Week 4 |
+4. **Line endings:** `\r\n` vs `\n` in text comparison
+   - Fix: normalize line endings in test helpers
+
+5. **Process spawning:** sidecar process handling differs across platforms
+   - Fix: platform-specific test helpers
+
+6. **Hotkey registration:** global hotkey APIs differ per platform
+   - Fix: mock in tests, only test registration logic
+
+**Acceptance criteria:**
+- [ ] All existing tests pass on all 3 CI platforms
+- [ ] No flaky tests (run matrix 3 times to verify)
+- [ ] Platform-specific test skips are documented with `// SKIP: <reason>`
 
 ---
 
-## 9. Task Assignment Matrix
+## Critical Path & Dependencies
 
-For parallel agent execution, tasks are grouped by independence:
+```
+                    Phase 1 (UI Tabs)
+                    ┌──────────────┐
+                    │ T1.1 TabBar  │
+                    └──────┬───────┘
+            ┌──────────────┼──────────────┬──────────────┐
+            ▼              ▼              ▼              ▼
+      T1.2 Status   T1.3 Settings  T1.4 History  T1.5 Replacements
+            │              │              │              │
+            └──────────────┴──────────────┴──────────────┘
+                                │
+                    ┌───────────▼────────────┐
+                    │    Phase 6 (Theming)   │
+                    │ T6.1 → T6.2 + T6.3    │
+                    └────────────────────────┘
 
-**Group A (No dependencies - start immediately):**
-- 1A.1 Tauri Scaffold
-- 1A.2 Python Scaffold
-- 1B.4 Text Post-Processing
-- 1B.5 Replacement Engine
+    Phase 2 (Overlay)                Phase 3 (Audio)          Phase 4 (Whisper)
+    ┌────────────────┐               ┌──────────────┐         ┌──────────────┐
+    │ T2.1 Window    │               │ T3.1 Assets  │         │ T4.1 Manifest│
+    │ T2.2 UI       ├─(parallel)─   │ T3.2 Player  │         │ T4.3 Config  │──(parallel)
+    │ T2.3 Tray Icon│               │ T3.3 Integrate│         └──────┬───────┘
+    │ T2.4 Tray Menu│               └──────────────┘                │
+    └────────────────┘                                         T4.2 Sidecar
+                                                                    │
+                                                               T4.4 Model UI
+                                                                    │
+                                                         Phase 5 (Onboarding)
+                                                         ┌──────────────────┐
+                                                         │ T5.1 Wizard      │
+                                                         │ T5.2 Trigger     │
+                                                         └──────────────────┘
 
-**Group B (After 1A.1):**
-- 1C.1 Hotkey System
-- 1C.2 Text Injection
-- 1C.3 System Tray
+                              ┌──────────────────────────┐
+                              │    Phase 7 (CI/CD)       │
+                              │ T7.1 Matrix + T7.2 Fixes │
+                              │ (after all features done) │
+                              └──────────────────────────┘
+```
 
-**Group C (After 1A.2):**
-- 1B.1 Audio Enumeration
-- 1B.3 Parakeet Loading
+**Critical path:** Phase 4 (Whisper) is the longest sequential chain and highest risk item:
+`T4.1 Manifest → T4.2 Sidecar Whisper → T4.4 Model UI → T5.1 Onboarding (model step)`
 
-**Group D (After 1A.1 + 1A.2):**
-- 1A.3 IPC Bridge
+**Parallel execution strategy for multiple agents:**
 
-**Group E (After 1A.3 + 1A.4):**
-- 1D.1 Status Display
-- 1D.2 Settings Panel
-- 1D.3 Replacement Manager
+| Agent | Phase/Tasks | Dependencies |
+|-------|------------|--------------|
+| Agent A | Phase 1 (all tasks) then Phase 6 | None initially |
+| Agent B | Phase 2 (overlay + tray) | None |
+| Agent C | Phase 3 (audio feedback) | None |
+| Agent D | Phase 4 (Whisper) then Phase 5 | T4.4 needs Phase 1 Settings UI |
+| Agent E | Phase 7 (CI) — after all features | All phases complete |
 
-**Group F (After all above):**
-- 1E.1 Integration
-- 1E.2 Error Handling
-- 1E.3 Build & Packaging
+**File reservation strategy:**
+- Agent A: `src/components/**`, `src/App.tsx`, `src/store/`, `tailwind.config.js`
+- Agent B: `src-tauri/tauri.conf.json`, `src-tauri/src/tray.rs`, `src/overlay/**`, `vite.config.ts`
+- Agent C: `src-tauri/src/audio_cue.rs`, `src-tauri/assets/sounds/`, `src-tauri/Cargo.toml` (shared — coordinate)
+- Agent D: `sidecar/**`, `shared/model/`, `shared/schema/`, `src/components/Settings/ModelSettings.tsx`
+- Shared files needing coordination: `src-tauri/Cargo.toml`, `src-tauri/src/lib.rs`, `src/types.ts`, `shared/schema/AppConfig.schema.json`
 
 ---
 
-*End of Implementation Plan*
+## Risk Mitigation
+
+### High Risk: Phase 4 — Sidecar Whisper Integration
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| `faster-whisper` dependency conflicts with existing sidecar deps | Blocks all Whisper work | Pin versions early; test in isolated virtualenv; use optional dependency group |
+| Whisper model download is slow/unreliable | Poor UX, user frustration | Implement retry with exponential backoff; cache aggressively; show clear progress + cancel button |
+| Whisper transcription quality varies by language | User expectations mismatch | Document quality expectations per language; recommend "Small" for non-English; show confidence scores |
+| IPC protocol change breaks backward compatibility | Violates guardrail #1 | New `language` param is optional with `null` default — existing callers unaffected |
+| Memory usage with larger Whisper models | Crashes on low-RAM machines | Show RAM requirements in UI; warn when selecting Medium model on < 8GB RAM systems |
+
+### Medium Risk: Phase 2 — Multi-Window Overlay
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| Always-on-top doesn't work consistently on macOS | Overlay hidden behind other apps | Test with multiple macOS versions; use Tauri's native window level API; fallback: tray icon only |
+| Click-through doesn't work on all platforms | Overlay blocks user input | Feature-flag overlay; test early on both platforms; provide "disable overlay" setting |
+| Separate Vite entry point increases build complexity | CI failures, dev confusion | Test multi-entry build in CI early; document in README |
+
+### Low Risk: Phase 1, 3, 5, 6
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| Tab layout breaks existing settings | Settings inaccessible | Incremental migration: move one panel at a time, keep old code until verified |
+| `rodio` audio playback issues on some systems | No audio cues | Make audio cues optional (config toggle); graceful failure (log warning, continue) |
+| Theme flash on load | Poor UX | Apply theme class in `<script>` tag in `index.html` head (before React mounts) |
+
+### Cross-Cutting Risks
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| Multiple agents editing shared files | Merge conflicts, broken code | File reservations via agent mail; shared files (`Cargo.toml`, `types.ts`) edited by one agent at a time |
+| Config schema changes across phases | Incompatible defaults | All config changes are additive with explicit defaults; test migration from base config in each phase |
+| Bundle size growth | Slower downloads | Budget: main bundle < 500KB gzip, overlay < 50KB gzip; monitor with `vite-bundle-visualizer` |
+
+---
+
+## Estimated Effort Summary
+
+| Phase | Tasks | Complexity | Est. Total |
+|-------|-------|------------|------------|
+| Phase 1: UI/UX Tabs | 5 | S+M+M+M+S | Medium |
+| Phase 2: Overlay & Tray | 4 | M+M+S+M | Medium-Large |
+| Phase 3: Audio Feedback | 3 | S+M+S | Small-Medium |
+| Phase 4: Whisper | 4 | S+L+S+M | Large |
+| Phase 5: Onboarding | 2 | M+S | Small-Medium |
+| Phase 6: Dark/Light | 3 | S+L+S | Medium |
+| Phase 7: CI/CD | 2 | M+M | Medium |
+
+**Total: 23 tasks across 7 phases.**
+
+With 4 agents running in parallel on Phases 1–4, followed by sequential work on Phases 5–7, the critical path runs through Phase 4 (Whisper sidecar integration).
