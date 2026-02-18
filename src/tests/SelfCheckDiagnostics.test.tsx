@@ -79,6 +79,10 @@ const mockConfig: AppConfig = {
     show_on_startup: false,
     window_width: 800,
     window_height: 600,
+    theme: 'dark',
+    onboarding_completed: true,
+    overlay_enabled: true,
+    locale: 'de-DE',
   },
   presets: {
     enabled_presets: [],

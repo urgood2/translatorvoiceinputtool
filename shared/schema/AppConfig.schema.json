@@ -173,13 +173,38 @@
           "minimum": 200,
           "maximum": 4096,
           "default": 500
+        },
+        "theme": {
+          "type": "string",
+          "description": "UI theme preference. 'system' follows OS appearance.",
+          "enum": ["system", "light", "dark"],
+          "default": "system"
+        },
+        "onboarding_completed": {
+          "type": "boolean",
+          "description": "Whether onboarding has been completed. Existing users are auto-migrated to true.",
+          "default": false
+        },
+        "overlay_enabled": {
+          "type": "boolean",
+          "description": "Enable floating overlay UI during recording/transcription.",
+          "default": true
+        },
+        "locale": {
+          "type": ["string", "null"],
+          "description": "Preferred UI locale tag (BCP 47), or null to use system locale.",
+          "default": null
         }
       },
       "additionalProperties": false,
       "default": {
         "show_on_startup": true,
         "window_width": 600,
-        "window_height": 500
+        "window_height": 500,
+        "theme": "system",
+        "onboarding_completed": false,
+        "overlay_enabled": true,
+        "locale": null
       }
     },
     "PresetsConfig": {
@@ -227,7 +252,11 @@
       "ui": {
         "show_on_startup": true,
         "window_width": 600,
-        "window_height": 500
+        "window_height": 500,
+        "theme": "system",
+        "onboarding_completed": false,
+        "overlay_enabled": true,
+        "locale": null
       },
       "presets": {
         "enabled_presets": []
@@ -268,7 +297,11 @@
       "ui": {
         "show_on_startup": false,
         "window_width": 800,
-        "window_height": 600
+        "window_height": 600,
+        "theme": "dark",
+        "onboarding_completed": true,
+        "overlay_enabled": true,
+        "locale": "de-DE"
       },
       "presets": {
         "enabled_presets": ["punctuation", "common-abbreviations"]

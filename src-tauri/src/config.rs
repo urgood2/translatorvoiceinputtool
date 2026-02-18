@@ -100,6 +100,16 @@ impl AppConfig {
         // Validate window dimensions (minimum 200x200)
         self.ui.window_width = self.ui.window_width.max(200);
         self.ui.window_height = self.ui.window_height.max(200);
+
+        // Validate theme selection
+        if !matches!(self.ui.theme.as_str(), "system" | "light" | "dark") {
+            log::info!(
+                "Invalid ui.theme value '{}', resetting to '{}'",
+                self.ui.theme,
+                default_theme()
+            );
+            self.ui.theme = default_theme();
+        }
     }
 }
 
@@ -206,6 +216,18 @@ pub struct UiConfig {
     pub window_width: u32,
     /// Window height.
     pub window_height: u32,
+    /// Theme preference ("system", "light", "dark").
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// Whether onboarding has been completed.
+    #[serde(default = "default_onboarding_completed")]
+    pub onboarding_completed: bool,
+    /// Whether overlay UI is enabled.
+    #[serde(default = "default_overlay_enabled")]
+    pub overlay_enabled: bool,
+    /// Preferred UI locale (e.g., "en-US"), or None for system locale.
+    #[serde(default)]
+    pub locale: Option<String>,
 }
 
 impl Default for UiConfig {
@@ -214,8 +236,24 @@ impl Default for UiConfig {
             show_on_startup: true, // First run shows settings
             window_width: 600,
             window_height: 500,
+            theme: default_theme(),
+            onboarding_completed: default_onboarding_completed(),
+            overlay_enabled: default_overlay_enabled(),
+            locale: None,
         }
     }
+}
+
+fn default_theme() -> String {
+    "system".to_string()
+}
+
+fn default_onboarding_completed() -> bool {
+    false
+}
+
+fn default_overlay_enabled() -> bool {
+    true
 }
 
 /// Preset configurations.
@@ -355,6 +393,26 @@ fn migrate_config(mut config: Value) -> AppConfig {
         log::info!("Migrated config v0 → v1: added focus_guard_enabled");
     }
 
+    // Existing config migration: missing onboarding_completed means "already onboarded".
+    let needs_onboarding_migration = match config.get("ui") {
+        Some(Value::Object(ui)) => !ui.contains_key("onboarding_completed"),
+        None => true,
+        _ => false,
+    };
+    if needs_onboarding_migration {
+        match config.get_mut("ui") {
+            Some(Value::Object(ui)) => {
+                ui.insert("onboarding_completed".to_string(), serde_json::json!(true));
+                log::info!("Existing user detected, skipping onboarding");
+            }
+            None => {
+                config["ui"] = serde_json::json!({ "onboarding_completed": true });
+                log::info!("Existing user detected, skipping onboarding");
+            }
+            Some(_) => {}
+        }
+    }
+
     // Future migrations go here:
     // if version < 2 { ... }
 
@@ -393,6 +451,10 @@ mod tests {
         assert!(config.injection.focus_guard_enabled);
         assert!(config.replacements.is_empty());
         assert!(config.ui.show_on_startup);
+        assert_eq!(config.ui.theme, "system");
+        assert!(!config.ui.onboarding_completed);
+        assert!(config.ui.overlay_enabled);
+        assert_eq!(config.ui.locale, None);
     }
 
     #[test]
@@ -404,6 +466,7 @@ mod tests {
         config.audio.device_uid = Some("test-device-uid".to_string());
         config.hotkeys.primary = "Ctrl+Space".to_string();
         config.injection.paste_delay_ms = 100;
+        config.ui.locale = Some("en-US".to_string());
 
         // Save
         save_config_to_path(&config, &config_path).unwrap();
@@ -416,6 +479,7 @@ mod tests {
         assert_eq!(loaded.audio.device_uid, Some("test-device-uid".to_string()));
         assert_eq!(loaded.hotkeys.primary, "Ctrl+Space");
         assert_eq!(loaded.injection.paste_delay_ms, 100);
+        assert_eq!(loaded.ui.locale, Some("en-US".to_string()));
     }
 
     #[test]
@@ -476,6 +540,9 @@ mod tests {
 
         let config = load_config_from_path(&config_path);
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(!config.ui.onboarding_completed);
+        assert!(config.ui.overlay_enabled);
+        assert_eq!(config.ui.locale, None);
     }
 
     #[test]
@@ -497,6 +564,7 @@ mod tests {
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.audio.device_uid, Some("my-device".to_string()));
         assert!(config.injection.focus_guard_enabled); // Should be added by migration
+        assert!(config.ui.onboarding_completed); // Existing users should skip onboarding
     }
 
     #[test]
@@ -514,6 +582,10 @@ mod tests {
         assert!(config.audio.audio_cues_enabled);
         assert_eq!(config.hotkeys.primary, "Ctrl+Shift+Space");
         assert_eq!(config.injection.paste_delay_ms, 40);
+        assert_eq!(config.ui.theme, "system");
+        assert!(config.ui.onboarding_completed); // Existing config file should skip onboarding
+        assert!(config.ui.overlay_enabled);
+        assert_eq!(config.ui.locale, None);
     }
 
     #[test]
@@ -576,6 +648,9 @@ mod tests {
         assert!(json.contains("audio"));
         assert!(json.contains("hotkeys"));
         assert!(json.contains("injection"));
+        assert!(json.contains("onboarding_completed"));
+        assert!(json.contains("overlay_enabled"));
+        assert!(json.contains("locale"));
     }
 
     #[test]
@@ -615,5 +690,123 @@ mod tests {
 
         assert_eq!(config.ui.window_width, 200);
         assert_eq!(config.ui.window_height, 200);
+    }
+
+    #[test]
+    fn test_invalid_theme_gets_default() {
+        let mut config = AppConfig::default();
+        config.ui.theme = "ultra-dark".to_string();
+
+        config.validate_and_clamp();
+
+        assert_eq!(config.ui.theme, "system");
+    }
+
+    #[test]
+    fn test_missing_theme_in_ui_object_defaults_to_system() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        fs::write(
+            &config_path,
+            r#"{
+                "schema_version": 1,
+                "ui": {
+                    "show_on_startup": true,
+                    "window_width": 640,
+                    "window_height": 480
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config_from_path(&config_path);
+        assert_eq!(config.ui.theme, "system");
+        assert!(config.ui.onboarding_completed);
+        assert!(config.ui.overlay_enabled);
+        assert_eq!(config.ui.locale, None);
+    }
+
+    #[test]
+    fn test_existing_config_preserves_explicit_onboarding_false() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        fs::write(
+            &config_path,
+            r#"{
+                "schema_version": 1,
+                "ui": {
+                    "onboarding_completed": false
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config_from_path(&config_path);
+        assert!(!config.ui.onboarding_completed);
+        assert!(config.ui.overlay_enabled);
+        assert_eq!(config.ui.locale, None);
+    }
+
+    #[test]
+    fn test_existing_config_preserves_explicit_overlay_false() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        fs::write(
+            &config_path,
+            r#"{
+                "schema_version": 1,
+                "ui": {
+                    "overlay_enabled": false
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config_from_path(&config_path);
+        assert!(!config.ui.overlay_enabled);
+        assert_eq!(config.ui.locale, None);
+    }
+
+    #[test]
+    fn test_existing_config_preserves_explicit_locale_string() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        fs::write(
+            &config_path,
+            r#"{
+                "schema_version": 1,
+                "ui": {
+                    "locale": "ja-JP"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config_from_path(&config_path);
+        assert_eq!(config.ui.locale, Some("ja-JP".to_string()));
+    }
+
+    #[test]
+    fn test_existing_config_preserves_explicit_locale_null() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        fs::write(
+            &config_path,
+            r#"{
+                "schema_version": 1,
+                "ui": {
+                    "locale": null
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config_from_path(&config_path);
+        assert_eq!(config.ui.locale, None);
     }
 }

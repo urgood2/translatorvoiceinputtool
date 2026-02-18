@@ -121,6 +121,10 @@ export interface UiConfig {
   show_on_startup: boolean;
   window_width: number;
   window_height: number;
+  theme: 'system' | 'light' | 'dark';
+  onboarding_completed: boolean;
+  overlay_enabled: boolean;
+  locale: string | null;
 }
 
 /** Text replacement rule kind. */

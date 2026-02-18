@@ -29,7 +29,15 @@ const mockConfig: AppConfig = {
   hotkeys: { primary: 'Ctrl+Shift+A', copy_last: 'Ctrl+Shift+C', mode: 'hold' },
   injection: mockInjectionConfig,
   replacements: [],
-  ui: { show_on_startup: true, window_width: 800, window_height: 600 },
+  ui: {
+    show_on_startup: true,
+    window_width: 800,
+    window_height: 600,
+    theme: 'system',
+    onboarding_completed: true,
+    overlay_enabled: true,
+    locale: null,
+  },
   presets: { enabled_presets: [] },
 };
 
