@@ -26,6 +26,7 @@ from .recording import (
     InvalidSessionError,
     NotRecordingError,
     RecordingError,
+    get_recorder,
     handle_recording_cancel,
     handle_recording_start,
     handle_recording_status,
@@ -57,10 +58,12 @@ from .asr import (
     ModelNotFoundError,
     NotInitializedError,
     TranscriptionError,
+    get_engine,
     handle_asr_initialize,
     handle_asr_status,
     handle_asr_transcribe,
 )
+from .notifications import get_session_tracker
 from .protocol import (
     ERROR_ALREADY_RECORDING,
     ERROR_AUDIO_IO,
@@ -137,11 +140,45 @@ def handle_system_shutdown(request: Request) -> dict[str, Any]:
     return {"status": "shutting_down"}
 
 
+def handle_status_get(request: Request) -> dict[str, Any]:
+    """Handle status.get request."""
+    asr_status = get_engine().get_status()
+    asr_state = asr_status.get("state")
+
+    result: dict[str, Any] = {"state": "idle"}
+
+    if asr_state == "error":
+        result["state"] = "error"
+        result["detail"] = "ASR engine error"
+    else:
+        recording_state = get_recorder().state.value
+        if recording_state in ("recording", "stopping"):
+            result["state"] = "recording"
+        elif get_session_tracker().has_pending():
+            result["state"] = "transcribing"
+
+    model_id = asr_status.get("model_id")
+    model_status = {
+        "ready": "ready",
+        "loading": "loading",
+        "downloading": "loading",
+        "error": "error",
+    }.get(asr_state)
+    if model_id is not None and model_status is not None:
+        result["model"] = {
+            "model_id": model_id,
+            "status": model_status,
+        }
+
+    return result
+
+
 # Method dispatch table
 HANDLERS: dict[str, Any] = {
     "system.ping": handle_system_ping,
     "system.info": handle_system_info,
     "system.shutdown": handle_system_shutdown,
+    "status.get": handle_status_get,
     "audio.list_devices": handle_audio_list_devices,
     "audio.set_device": handle_audio_set_device,
     "audio.meter_start": handle_audio_meter_start,

@@ -137,6 +137,14 @@ class SessionTracker:
             session = self._sessions.get(session_id)
             return session.state if session else None
 
+    def has_pending(self) -> bool:
+        """Return True if any transcription session is still pending."""
+        with self._lock:
+            return any(
+                session.state == SessionState.PENDING and not session.result_emitted
+                for session in self._sessions.values()
+            )
+
     def _cleanup_old(self) -> None:
         """Remove sessions older than max_age (internal, called with lock)."""
         now = time.monotonic()

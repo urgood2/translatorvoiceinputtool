@@ -202,6 +202,20 @@ class TestServerIntegration:
         assert "runtime" in result
         assert result["protocol"] == "v1"
 
+    def test_status_get(self, run_sidecar):
+        """status.get should be implemented and return a valid status shape."""
+        responses, _ = run_sidecar(['{"jsonrpc":"2.0","id":20,"method":"status.get"}'])
+        assert len(responses) == 1
+        assert "error" not in responses[0]
+
+        result = responses[0]["result"]
+        assert result["state"] in {"idle", "recording", "transcribing", "error"}
+        if "detail" in result:
+            assert isinstance(result["detail"], str)
+        if "model" in result:
+            assert result["model"]["status"] in {"ready", "loading", "error"}
+            assert isinstance(result["model"]["model_id"], str)
+
     def test_unknown_method(self, run_sidecar):
         """Unknown method should return E_METHOD_NOT_FOUND error."""
         responses, _ = run_sidecar(['{"jsonrpc":"2.0","id":3,"method":"unknown.method"}'])
