@@ -41,21 +41,6 @@ function getLevelColor(level: number): string {
   return 'bg-green-500';
 }
 
-/** Get gradient style for smooth color transition. */
-function getLevelGradient(level: number): string {
-  const greenEnd = Math.min(level / LEVEL_THRESHOLDS.green, 1) * 50;
-  const yellowEnd = Math.min(level / LEVEL_THRESHOLDS.yellow, 1) * 80;
-
-  if (level <= LEVEL_THRESHOLDS.green) {
-    return `linear-gradient(to right, #22c55e ${greenEnd}%, transparent ${greenEnd}%)`;
-  }
-  if (level <= LEVEL_THRESHOLDS.yellow) {
-    return `linear-gradient(to right, #22c55e 50%, #eab308 ${yellowEnd}%, transparent ${yellowEnd}%)`;
-  }
-  const redEnd = Math.min(level, 1) * 100;
-  return `linear-gradient(to right, #22c55e 50%, #eab308 80%, #ef4444 ${redEnd}%, transparent ${redEnd}%)`;
-}
-
 export function MicrophoneTest({
   deviceUid,
   onStartTest,

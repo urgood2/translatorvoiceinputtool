@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { ReplacementList } from '../components/Replacements/ReplacementList';
 import { ReplacementEditor } from '../components/Replacements/ReplacementEditor';
 import { ReplacementPreview } from '../components/Replacements/ReplacementPreview';

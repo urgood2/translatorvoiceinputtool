@@ -7,7 +7,7 @@
  * - Live-applies selection with rollback on failure
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { AudioDevice } from '../../types';
 
 interface MicrophoneSelectProps {
