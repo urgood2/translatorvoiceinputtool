@@ -1424,6 +1424,126 @@ mod tests {
     }
 
     #[test]
+    fn test_replacement_rule_schema_alignment_migration_matrix() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        let raw_json = r#"{
+            "schema_version": 1,
+            "replacements": [
+                {"pattern": "BTW", "replacement": "by the way", "enabled": true},
+                {"id": "legacy-no-kind", "pattern": "ASAP", "replacement": "as soon as possible", "enabled": true},
+                {
+                    "id": "rule-full",
+                    "kind": "regex",
+                    "pattern": "\\b([A-Z]{2,})\\b",
+                    "replacement": "[CAPS:\\1]",
+                    "enabled": true,
+                    "word_boundary": false,
+                    "case_sensitive": false,
+                    "description": "preserve full fields",
+                    "origin": "user"
+                },
+                {
+                    "id": "punctuation:period",
+                    "kind": "literal",
+                    "pattern": " period",
+                    "replacement": ".",
+                    "enabled": true,
+                    "word_boundary": false,
+                    "case_sensitive": false,
+                    "origin": "preset:punctuation"
+                }
+            ]
+        }"#;
+
+        fs::write(&config_path, raw_json).unwrap();
+        println!("replacement migration input json: {raw_json}");
+
+        let loaded = load_config_from_path(&config_path);
+        println!(
+            "replacement migration parsed struct: {:?}",
+            loaded.replacements
+        );
+        assert_eq!(loaded.replacements.len(), 4);
+
+        // Case 1: Missing id gets generated UUID and missing fields receive schema defaults.
+        let generated = &loaded.replacements[0];
+        assert!(
+            Uuid::parse_str(&generated.id).is_ok(),
+            "{:?}",
+            loaded.replacements
+        );
+        assert_eq!(generated.kind, "literal", "{:?}", loaded.replacements);
+        assert!(!generated.word_boundary, "{:?}", loaded.replacements);
+        assert!(generated.case_sensitive, "{:?}", loaded.replacements);
+        assert!(generated.description.is_none(), "{:?}", loaded.replacements);
+        assert!(generated.origin.is_none(), "{:?}", loaded.replacements);
+
+        // Case 2: Existing id remains and missing kind/flags default correctly.
+        let legacy = &loaded.replacements[1];
+        assert_eq!(legacy.id, "legacy-no-kind", "{:?}", loaded.replacements);
+        assert_eq!(legacy.kind, "literal", "{:?}", loaded.replacements);
+        assert!(!legacy.word_boundary, "{:?}", loaded.replacements);
+        assert!(legacy.case_sensitive, "{:?}", loaded.replacements);
+
+        // Case 3: Full-field rule stays unchanged.
+        let full = &loaded.replacements[2];
+        assert_eq!(full.id, "rule-full", "{:?}", loaded.replacements);
+        assert_eq!(full.kind, "regex", "{:?}", loaded.replacements);
+        assert_eq!(
+            full.pattern, r"\b([A-Z]{2,})\b",
+            "{:?}",
+            loaded.replacements
+        );
+        assert_eq!(full.replacement, "[CAPS:\\1]", "{:?}", loaded.replacements);
+        assert!(!full.word_boundary, "{:?}", loaded.replacements);
+        assert!(!full.case_sensitive, "{:?}", loaded.replacements);
+        assert_eq!(
+            full.description.as_deref(),
+            Some("preserve full fields"),
+            "{:?}",
+            loaded.replacements
+        );
+        assert_eq!(
+            full.origin.as_deref(),
+            Some("user"),
+            "{:?}",
+            loaded.replacements
+        );
+
+        // Case 7: Config and preset-style origins both retain valid structure.
+        let preset_style = &loaded.replacements[3];
+        assert_eq!(
+            preset_style.origin.as_deref(),
+            Some("preset:punctuation"),
+            "{:?}",
+            loaded.replacements
+        );
+        for rule in &loaded.replacements {
+            assert!(!rule.id.trim().is_empty(), "{:?}", loaded.replacements);
+            assert!(
+                matches!(rule.kind.as_str(), "literal" | "regex"),
+                "{:?}",
+                loaded.replacements
+            );
+            assert!(is_valid_replacement_origin(
+                rule.origin.as_deref().unwrap_or("user")
+            ));
+        }
+
+        // Case 6: Generated IDs are stable across load/save/load.
+        let generated_id_first_load = generated.id.clone();
+        save_config_to_path(&loaded, &config_path).unwrap();
+        let reloaded = load_config_from_path(&config_path);
+        println!(
+            "replacement migration reloaded struct: {:?}",
+            reloaded.replacements
+        );
+        assert_eq!(reloaded.replacements[0].id, generated_id_first_load);
+    }
+
+    #[test]
     fn test_missing_optional_fields_get_defaults() {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("config.json");
