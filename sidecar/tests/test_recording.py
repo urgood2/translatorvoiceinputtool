@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import suppress
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -29,7 +30,6 @@ from openvoicy_sidecar.recording import (
     handle_recording_status,
     handle_recording_stop,
 )
-
 
 # === Fixtures ===
 
@@ -84,10 +84,8 @@ def recorder(mock_sounddevice):
 
         # Cleanup: make sure recording is stopped
         if r.state == RecordingState.RECORDING:
-            try:
+            with suppress(Exception):
                 r.cancel(r.session_id)
-            except Exception:
-                pass
 
 
 @pytest.fixture
@@ -445,6 +443,71 @@ class TestRecordingHandlers:
 
             assert result["cancelled"] is True
             assert result["session_id"] == session_id
+
+    def test_handle_recording_cancel_when_idle_raises_not_recording(
+        self, reset_global_recorder
+    ):
+        """Cancel while idle should return NotRecordingError, not crash."""
+        request = Request(
+            method="recording.cancel",
+            id=1,
+            params={"session_id": "nonexistent"},
+        )
+
+        with pytest.raises(NotRecordingError):
+            handle_recording_cancel(request)
+
+    def test_handle_recording_cancel_mismatched_session_id(
+        self, mock_sounddevice, reset_global_recorder
+    ):
+        """Cancel with wrong session_id should raise InvalidSessionError."""
+        with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
+            start_request = Request(method="recording.start", id=1)
+            start_result = handle_recording_start(start_request)
+
+            with pytest.raises(InvalidSessionError):
+                handle_recording_cancel(
+                    Request(
+                        method="recording.cancel",
+                        id=2,
+                        params={"session_id": "wrong-session-id"},
+                    )
+                )
+
+            recorder = get_recorder()
+            # Active recording should still be associated with the original session.
+            assert recorder.session_id == start_result["session_id"]
+
+            # Cleanup
+            if recorder.state == RecordingState.RECORDING:
+                recorder.cancel(recorder.session_id)
+
+    def test_handle_recording_cancel_does_not_trigger_transcription(
+        self, mock_sounddevice, reset_global_recorder
+    ):
+        """Cancel should not call transcribe_session_async or emit status change."""
+        with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
+            start_request = Request(method="recording.start", id=1)
+            start_result = handle_recording_start(start_request)
+            session_id = start_result["session_id"]
+
+            with (
+                patch("openvoicy_sidecar.notifications.transcribe_session_async") as mock_transcribe,
+                patch("openvoicy_sidecar.notifications.emit_status_changed") as mock_status_changed,
+            ):
+                result = handle_recording_cancel(
+                    Request(
+                        method="recording.cancel",
+                        id=2,
+                        params={"session_id": session_id},
+                    )
+                )
+
+            assert result["cancelled"] is True
+            assert result["session_id"] == session_id
+            assert get_pending_audio(session_id) is None
+            mock_transcribe.assert_not_called()
+            mock_status_changed.assert_not_called()
 
     def test_handle_recording_status(self, mock_sounddevice, reset_global_recorder):
         """Should return current status."""
