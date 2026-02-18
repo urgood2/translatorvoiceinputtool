@@ -658,4 +658,35 @@ mod tests {
         assert!(manager.copy_last_id.is_none());
         assert!(manager.copy_last_hotkey.is_none());
     }
+
+    #[test]
+    fn test_process_event_routes_registered_hotkeys_to_actions() {
+        let mut manager = HotkeyManager::new();
+        let mut rx = manager.take_action_receiver().unwrap();
+
+        manager.primary_id = Some(10);
+        manager.copy_last_id = Some(20);
+
+        manager.process_event(GlobalHotKeyEvent {
+            id: 10,
+            state: HotKeyState::Pressed,
+        });
+        manager.process_event(GlobalHotKeyEvent {
+            id: 10,
+            state: HotKeyState::Released,
+        });
+        manager.process_event(GlobalHotKeyEvent {
+            id: 20,
+            state: HotKeyState::Pressed,
+        });
+        manager.process_event(GlobalHotKeyEvent {
+            id: 20,
+            state: HotKeyState::Released,
+        });
+
+        assert!(matches!(rx.try_recv(), Ok(HotkeyAction::PrimaryDown)));
+        assert!(matches!(rx.try_recv(), Ok(HotkeyAction::PrimaryUp)));
+        assert!(matches!(rx.try_recv(), Ok(HotkeyAction::CopyLast)));
+        assert!(rx.try_recv().is_err());
+    }
 }

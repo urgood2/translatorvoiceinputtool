@@ -12,8 +12,9 @@
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use global_hotkey::GlobalHotKeyEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -1097,7 +1098,22 @@ impl IntegrationManager {
 
             log::info!("Hotkey event loop started");
 
-            while let Some(action) = receiver.recv().await {
+            loop {
+                // Drain global hotkey events and forward them into the hotkey action channel.
+                {
+                    let hk = hotkey_manager.read().await;
+                    while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
+                        hk.process_event(event);
+                    }
+                }
+
+                let action =
+                    match tokio::time::timeout(Duration::from_millis(25), receiver.recv()).await {
+                        Ok(Some(action)) => action,
+                        Ok(None) => break,
+                        Err(_) => continue,
+                    };
+
                 let config = config::load_config();
 
                 match action {
