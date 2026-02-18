@@ -272,21 +272,50 @@ impl Log for BufferLogger {
     }
 }
 
+/// Logger that tees records to a primary logger and the diagnostics buffer.
+struct CombinedLogger {
+    primary: Box<dyn Log + Send + Sync>,
+    buffer: BufferLogger,
+}
+
+impl CombinedLogger {
+    fn new(primary: Box<dyn Log + Send + Sync>, buffer: BufferLogger) -> Self {
+        Self { primary, buffer }
+    }
+}
+
+impl Log for CombinedLogger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        self.primary.enabled(metadata) || self.buffer.enabled(metadata)
+    }
+
+    fn log(&self, record: &Record) {
+        if self.primary.enabled(record.metadata()) {
+            self.primary.log(record);
+        }
+        if self.buffer.enabled(record.metadata()) {
+            self.buffer.log(record);
+        }
+    }
+
+    fn flush(&self) {
+        self.primary.flush();
+        self.buffer.flush();
+    }
+}
+
 /// Initialize the buffer logger alongside the existing logger.
 /// Call this early in application startup.
 pub fn init_buffer_logger(min_level: Level) {
-    // Note: This needs to be integrated with your existing logging setup.
-    // If using env_logger or similar, you may need a multi-logger approach.
-    // For now, this provides the buffer that can be written to manually.
-    let _logger = BufferLogger::global(min_level);
+    let primary_logger =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .build();
+    let combined = CombinedLogger::new(Box::new(primary_logger), BufferLogger::global(min_level));
 
-    // The actual integration depends on your logging framework.
-    // With log crate, you'd do:
-    // log::set_logger(Box::leak(Box::new(logger))).ok();
-    // log::set_max_level(min_level.to_level_filter());
-
-    // But if you already have a logger, you need a multi-logger.
-    // For MVP, we'll push to the buffer manually from key points.
+    if log::set_boxed_logger(Box::new(combined)).is_ok() {
+        // Keep this permissive so env_logger and buffer logger can apply their own filters.
+        log::set_max_level(log::LevelFilter::Trace);
+    }
 }
 
 /// Convenience function to log to the global buffer directly.
@@ -298,6 +327,26 @@ pub fn log_to_buffer(level: Level, target: &str, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    struct MockLogger {
+        records: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Log for MockLogger {
+        fn enabled(&self, _metadata: &Metadata) -> bool {
+            true
+        }
+
+        fn log(&self, record: &Record) {
+            self.records
+                .lock()
+                .unwrap()
+                .push(format!("{}", record.args()));
+        }
+
+        fn flush(&self) {}
+    }
 
     #[test]
     fn test_log_entry_creation() {
@@ -513,6 +562,33 @@ mod tests {
         log_to_buffer(Level::Info, "global_test", "Global message");
 
         assert!(buffer.len() > 0);
+    }
+
+    #[test]
+    fn test_combined_logger_forwards_to_primary_and_buffer() {
+        let primary_records = Arc::new(Mutex::new(Vec::new()));
+        let primary = MockLogger {
+            records: Arc::clone(&primary_records),
+        };
+        let buffer = Arc::new(LogRingBuffer::new(10, 4096));
+        let combined =
+            CombinedLogger::new(Box::new(primary), BufferLogger::new(Arc::clone(&buffer), Level::Info));
+
+        let record = Record::builder()
+            .args(format_args!("combined hello"))
+            .level(Level::Info)
+            .target("combined::test")
+            .build();
+        combined.log(&record);
+
+        assert_eq!(buffer.len(), 1);
+        assert!(
+            primary_records
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|message| message == "combined hello")
+        );
     }
 
     #[test]

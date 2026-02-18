@@ -37,10 +37,7 @@ pub struct IntegrationState(pub Arc<RwLock<IntegrationManager>>);
 /// Configure and run the Tauri application
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize logging
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-
-    // Initialize log buffer for diagnostics capture
+    // Initialize logging with diagnostics ring-buffer capture.
     log_buffer::init_buffer_logger(log::Level::Info);
 
     // Create shared state manager
