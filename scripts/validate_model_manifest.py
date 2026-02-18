@@ -43,6 +43,8 @@ REQUIRED_FILE_FIELDS = {
     "sha256",
 }
 
+SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+
 MANIFEST_MODEL_INCLUDE_SNIPPET = 'include_str!("../../shared/model/MODEL_MANIFEST.json")'
 DEFAULT_MODEL_CALL_SNIPPET = "model_defaults::default_model_id()"
 
@@ -78,6 +80,20 @@ def validate_manifest_schema(manifest: dict[str, Any]) -> list[str]:
                 for field in REQUIRED_FILE_FIELDS:
                     if field not in file_obj:
                         errors.append(f"files[{i}] missing required field: {field}")
+                sha256 = file_obj.get("sha256")
+                if not isinstance(sha256, str):
+                    errors.append(f"files[{i}].sha256 must be a string")
+                elif not SHA256_PATTERN.fullmatch(sha256):
+                    errors.append(
+                        f"files[{i}].sha256 must be a 64-character lowercase hex digest"
+                    )
+
+    if "verification" in manifest:
+        verification = manifest["verification"]
+        if not isinstance(verification, dict):
+            errors.append("verification must be an object")
+        elif verification.get("sha256_verified") is not True:
+            errors.append("verification.sha256_verified must be true")
 
     # Validate types
     if "schema_version" in manifest:

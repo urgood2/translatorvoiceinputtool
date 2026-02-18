@@ -13,6 +13,37 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ValidateModelManifestTests(unittest.TestCase):
+    @staticmethod
+    def _minimal_manifest() -> dict:
+        return {
+            "schema_version": "1",
+            "model_id": "parakeet-tdt-0.6b-v3",
+            "source": "nvidia/parakeet-tdt-0.6b-v3",
+            "revision": "6d590f77001d318fb17a0b5bf7ee329a91b52598",
+            "license": {"spdx_id": "CC-BY-4.0", "redistribution_allowed": True},
+            "files": [
+                {
+                    "path": "parakeet-tdt-0.6b-v3.nemo",
+                    "size_bytes": 2509332480,
+                    "sha256": "cf4679f1a52ce7400b7b394b2e008b95b7a9f6e209a02ecdde2b28ab9e1bb079",
+                }
+            ],
+            "total_size_bytes": 2509332480,
+            "verification": {"sha256_verified": True},
+        }
+
+    def test_validate_manifest_schema_rejects_non_digest_sha(self) -> None:
+        manifest = self._minimal_manifest()
+        manifest["files"][0]["sha256"] = "VERIFY_ON_FIRST_DOWNLOAD"
+        errors = MODULE.validate_manifest_schema(manifest)
+        self.assertTrue(any("64-character lowercase hex digest" in err for err in errors))
+
+    def test_validate_manifest_schema_requires_sha256_verified_true(self) -> None:
+        manifest = self._minimal_manifest()
+        manifest["verification"]["sha256_verified"] = False
+        errors = MODULE.validate_manifest_schema(manifest)
+        self.assertTrue(any("verification.sha256_verified must be true" in err for err in errors))
+
     def test_validate_ipc_model_ids_fails_on_mismatch(self) -> None:
         manifest = {"model_id": "parakeet-tdt-0.6b-v3"}
         with tempfile.TemporaryDirectory() as tmpdir:

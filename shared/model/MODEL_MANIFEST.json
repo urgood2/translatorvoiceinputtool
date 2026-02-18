@@ -35,18 +35,18 @@
   "files": [
     {
       "path": "parakeet-tdt-0.6b-v3.nemo",
-      "size_bytes": 2695000000,
-      "sha256": "VERIFY_ON_FIRST_DOWNLOAD",
+      "size_bytes": 2509332480,
+      "sha256": "cf4679f1a52ce7400b7b394b2e008b95b7a9f6e209a02ecdde2b28ab9e1bb079",
       "description": "NeMo model archive containing weights, config, and tokenizer"
     },
     {
       "path": "README.md",
-      "size_bytes": 39526,
-      "sha256": "VERIFY_ON_FIRST_DOWNLOAD",
+      "size_bytes": 38564,
+      "sha256": "4a67584b0bd1d37fc9997128f8654569d74cf4f79bd8657a6c253eeac9717fa1",
       "description": "Model documentation"
     }
   ],
-  "total_size_bytes": 2695039526,
+  "total_size_bytes": 2509371044,
   "mirrors": [
     {
       "provider": "huggingface",
@@ -55,12 +55,12 @@
     }
   ],
   "verification": {
-    "sha256_verified": false,
+    "sha256_verified": true,
     "license_verified": true,
     "license_verified_date": "2026-02-04",
     "redistribution_verified": true,
-    "notes": "CC-BY-4.0 permits redistribution with attribution. SHA256 hashes to be verified on first download and updated in manifest."
+    "notes": "CC-BY-4.0 permits redistribution with attribution. SHA256 digests verified from pinned revision 6d590f77001d318fb17a0b5bf7ee329a91b52598."
   },
   "attribution": "NVIDIA Corporation. Model available under CC-BY-4.0 license.",
-  "last_updated": "2026-02-04"
+  "last_updated": "2026-02-18"
 }
