@@ -356,17 +356,29 @@ fn check_wayland_portal() -> bool {
 
 /// Check macOS accessibility permission.
 ///
-/// This is a placeholder - actual implementation would use objc or swift.
+/// Uses AXIsProcessTrusted from ApplicationServices.
 #[cfg(target_os = "macos")]
 fn check_macos_accessibility() -> PermissionState {
-    // In a real implementation, we would call AXIsProcessTrusted()
-    // For now, return NotDetermined as we haven't implemented the check
-    PermissionState::NotDetermined
+    permission_from_accessibility_trust(unsafe { AXIsProcessTrusted() })
 }
 
 #[cfg(not(target_os = "macos"))]
 fn check_macos_accessibility() -> PermissionState {
     PermissionState::NotApplicable
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn AXIsProcessTrusted() -> bool;
+}
+
+fn permission_from_accessibility_trust(is_trusted: bool) -> PermissionState {
+    if is_trusted {
+        PermissionState::Granted
+    } else {
+        PermissionState::Denied
+    }
 }
 
 // === Mode Computation ===
@@ -582,6 +594,22 @@ mod tests {
     }
 
     #[test]
+    fn test_permission_from_accessibility_trust_granted() {
+        assert_eq!(
+            permission_from_accessibility_trust(true),
+            PermissionState::Granted
+        );
+    }
+
+    #[test]
+    fn test_permission_from_accessibility_trust_denied() {
+        assert_eq!(
+            permission_from_accessibility_trust(false),
+            PermissionState::Denied
+        );
+    }
+
+    #[test]
     fn test_issues_returns_list() {
         let caps = Capabilities::detect();
         let issues = caps.issues();
@@ -593,7 +621,8 @@ mod tests {
     #[test]
     fn test_display_server_wire_snapshot_parity() {
         let snapshot: Value =
-            serde_json::from_str(include_str!("../../shared/contracts/tauri_wire.v1.json")).unwrap();
+            serde_json::from_str(include_str!("../../shared/contracts/tauri_wire.v1.json"))
+                .unwrap();
         let expected = snapshot.get("display_server").unwrap();
 
         let actual = serde_json::json!([
