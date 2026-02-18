@@ -169,15 +169,14 @@ if [ "$PARALLEL" = true ]; then
 
     # Wait for all and collect results
     for name in "${!PIDS[@]}"; do
-        local pid=${PIDS[$name]}
-        local start_time
+        pid=${PIDS[$name]}
         start_time=$(date +%s)
 
         if wait "$pid"; then
             RESULTS[$name]="PASS"
             ((TESTS_PASSED++)) || true
         else
-            local exit_code=$?
+            exit_code=$?
             case $exit_code in
                 1) RESULTS[$name]="FAIL"; ((TESTS_FAILED++)) || true ;;
                 2) RESULTS[$name]="SKIP"; ((TESTS_SKIPPED++)) || true ;;
@@ -186,7 +185,6 @@ if [ "$PARALLEL" = true ]; then
             esac
         fi
 
-        local end_time
         end_time=$(date +%s)
         DURATIONS[$name]=$((end_time - start_time))
     done
