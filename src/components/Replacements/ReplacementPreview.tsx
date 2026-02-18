@@ -16,7 +16,7 @@ interface ReplacementPreviewProps {
 }
 
 /** Apply replacement rules to text (local mirror of sidecar logic). */
-function applyReplacements(text: string, rules: ReplacementRule[]): string {
+export function applyReplacements(text: string, rules: ReplacementRule[]): string {
   let result = text;
 
   for (const rule of rules) {
@@ -34,7 +34,10 @@ function applyReplacements(text: string, rules: ReplacementRule[]): string {
         // Regex match
         const flags = rule.case_sensitive ? 'g' : 'gi';
         const regex = new RegExp(rule.pattern, flags);
-        result = result.replace(regex, rule.replacement);
+        // Shared vectors and sidecar rules use Python-style backrefs (\1, \2).
+        // Convert to JavaScript replacement syntax ($1, $2).
+        const jsReplacement = rule.replacement.replace(/\\(\d+)/g, '$$$1');
+        result = result.replace(regex, jsReplacement);
       }
     } catch {
       // Skip invalid rules
@@ -44,17 +47,65 @@ function applyReplacements(text: string, rules: ReplacementRule[]): string {
   return result;
 }
 
+/** Normalize whitespace and common ASR punctuation artifacts. */
+export function normalizeText(text: string): string {
+  // Normalize unicode spaces to regular space.
+  let result = text.replace(/[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g, ' ');
+
+  // First pass: collapse spaces and trim.
+  result = result.replace(/ +/g, ' ').trim();
+
+  // Fix spacing around punctuation artifacts from ASR.
+  result = result.replace(/ ([,.!?;:])/g, '$1');
+  result = result.replace(/([.!?])([A-Z])/g, '$1 $2');
+
+  // Normalize repeated punctuation.
+  result = result.replace(/\.{4,}/g, '...');
+  result = result.replace(/!{2,}/g, '!');
+  result = result.replace(/\?{2,}/g, '?');
+
+  // Final cleanup.
+  result = result.replace(/ +/g, ' ').trim();
+  return result;
+}
+
+function formatIsoDate(now: Date): string {
+  const yyyy = String(now.getFullYear());
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function formatIsoTime(now: Date): string {
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
 /** Expand macros in text. */
-function expandMacros(text: string): string {
-  const now = new Date();
-  const date = now.toLocaleDateString();
-  const time = now.toLocaleTimeString();
+export function expandMacros(text: string, now: Date = new Date()): string {
+  const date = formatIsoDate(now);
+  const time = formatIsoTime(now);
   const datetime = `${date} ${time}`;
 
   return text
     .replace(/\{\{date\}\}/g, date)
     .replace(/\{\{time\}\}/g, time)
     .replace(/\{\{datetime\}\}/g, datetime);
+}
+
+/** Full preview pipeline mirroring sidecar replacements.process_text. */
+export function processPreviewText(
+  text: string,
+  rules: ReplacementRule[],
+  skipMacros = false,
+  now: Date = new Date()
+): string {
+  let result = normalizeText(text);
+  if (!skipMacros) {
+    result = expandMacros(result, now);
+  }
+  return applyReplacements(result, rules);
 }
 
 /** Highlight differences between original and result. */
@@ -123,13 +174,10 @@ export function ReplacementPreview({ rules }: ReplacementPreviewProps) {
 
   const enabledRules = useMemo(() => rules.filter((r) => r.enabled), [rules]);
 
-  const result = useMemo(() => {
-    let text = input;
-    if (expandMacrosEnabled) {
-      text = expandMacros(text);
-    }
-    return applyReplacements(text, enabledRules);
-  }, [input, enabledRules, expandMacrosEnabled]);
+  const result = useMemo(
+    () => processPreviewText(input, enabledRules, !expandMacrosEnabled),
+    [input, enabledRules, expandMacrosEnabled]
+  );
 
   const hasChanges = input !== result;
 

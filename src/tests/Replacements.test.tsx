@@ -6,9 +6,13 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ReplacementList } from '../components/Replacements/ReplacementList';
 import { ReplacementEditor } from '../components/Replacements/ReplacementEditor';
-import { ReplacementPreview } from '../components/Replacements/ReplacementPreview';
+import {
+  ReplacementPreview,
+  processPreviewText,
+} from '../components/Replacements/ReplacementPreview';
 import { PresetsPanel } from '../components/Replacements/PresetsPanel';
 import type { ReplacementRule, PresetInfo } from '../types';
+import sharedReplacementVectors from '../../shared/replacements/TEST_VECTORS.json';
 
 // Mock rules for testing
 const mockRules: ReplacementRule[] = [
@@ -59,6 +63,14 @@ const mockPresets: PresetInfo[] = [
     rule_count: 25,
   },
 ];
+
+interface SharedReplacementVector {
+  name: string;
+  input: string;
+  rules: ReplacementRule[];
+  expected?: string;
+  expected_pattern?: string;
+}
 
 describe('ReplacementList', () => {
   it('renders empty state when no rules', () => {
@@ -473,5 +485,25 @@ describe('PresetsPanel', () => {
     // Should show the rule pattern
     expect(screen.getByText('brb')).toBeDefined();
     expect(screen.getByText('Hide rules')).toBeDefined();
+  });
+});
+
+describe('Shared Replacement Vectors', () => {
+  it('consumes shared replacement vectors in UI replacement pipeline', () => {
+    const testCases = sharedReplacementVectors.test_cases as SharedReplacementVector[];
+    expect(testCases.length).toBeGreaterThan(0);
+
+    for (const testCase of testCases) {
+      const output = processPreviewText(testCase.input, testCase.rules);
+
+      if (testCase.expected !== undefined) {
+        expect(output, testCase.name).toBe(testCase.expected);
+        continue;
+      }
+
+      if (testCase.expected_pattern !== undefined) {
+        expect(output, testCase.name).toMatch(new RegExp(testCase.expected_pattern));
+      }
+    }
   });
 });
