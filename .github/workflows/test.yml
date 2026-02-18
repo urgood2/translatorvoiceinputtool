@@ -53,7 +53,7 @@ jobs:
         working-directory: src-tauri
         run: cargo test --all-features
         env:
-          CARGO_TARGET_DIR: /tmp/cargo-target
+          CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
 
   python-tests:
     name: Python Sidecar Tests

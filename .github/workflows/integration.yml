@@ -64,7 +64,7 @@ jobs:
         working-directory: src-tauri
         run: cargo build --release
         env:
-          CARGO_TARGET_DIR: /tmp/cargo-target
+          CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
 
       - name: Build sidecar
         working-directory: sidecar
