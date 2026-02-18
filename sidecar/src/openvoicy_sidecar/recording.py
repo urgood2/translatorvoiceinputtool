@@ -144,6 +144,7 @@ class AudioRecorder:
         self._level_buffer: deque = deque(maxlen=LEVEL_BUFFER_SIZE)
         self._level_thread: threading.Thread | None = None
         self._emit_levels = False
+        self._callback_error: str | None = None
 
     @property
     def state(self) -> RecordingState:
@@ -189,6 +190,7 @@ class AudioRecorder:
                 channels=capture_channels,
                 max_samples=max_samples,
             )
+            self._callback_error = None
 
             # Start audio stream
             try:
@@ -244,6 +246,7 @@ class AudioRecorder:
                 raise RuntimeError(f"Invalid session ID: {session_id}")
 
             self._state = RecordingState.STOPPING
+            callback_error = self._callback_error
 
         # Stop level emission without blocking stop path for long.
         self._stop_level_emission()
@@ -264,6 +267,10 @@ class AudioRecorder:
             # Reset state
             self._session = None
             self._state = RecordingState.IDLE
+            self._callback_error = None
+
+            if callback_error:
+                raise OSError(f"Audio I/O error during recording: {callback_error}")
 
             return audio_data, duration_ms
 
@@ -300,6 +307,7 @@ class AudioRecorder:
             # Discard audio
             self._session = None
             self._state = RecordingState.IDLE
+            self._callback_error = None
 
     def get_status(self) -> dict[str, Any]:
         """Get current recording status."""
@@ -324,7 +332,12 @@ class AudioRecorder:
     ) -> None:
         """sounddevice callback - runs in PortAudio thread."""
         if status:
-            log(f"Audio callback status: {status}")
+            callback_error = str(status)
+            log(f"Audio callback status error: {callback_error}")
+            with self._lock:
+                if self._callback_error is None:
+                    self._callback_error = callback_error
+            return
 
         # Check if we should accept data
         with self._lock:
@@ -586,6 +599,8 @@ def handle_recording_stop(request: Request) -> dict[str, Any]:
         if "invalid session" in error_msg or "session id" in error_msg:
             raise InvalidSessionError(str(e))
         raise RecordingError(str(e))
+    except OSError as e:
+        raise RecordingError(str(e), "E_AUDIO_IO")
 
 
 def handle_recording_cancel(request: Request) -> dict[str, Any]:

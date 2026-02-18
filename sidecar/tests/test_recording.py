@@ -20,6 +20,7 @@ from openvoicy_sidecar.recording import (
     AudioRecorder,
     InvalidSessionError,
     NotRecordingError,
+    RecordingError,
     RecordingSession,
     RecordingState,
     clear_pending_audio,
@@ -358,6 +359,23 @@ class TestAudioRecorder:
             assert recorder.state == RecordingState.IDLE
             assert recorder.session_id is None
 
+    def test_stop_propagates_audio_callback_error(self, recorder, mock_sounddevice):
+        """Stop should raise OSError when callback reported audio I/O failure."""
+        with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
+            session_id = recorder.start()
+            recorder._audio_callback(
+                np.zeros((64, recorder.channels), dtype=np.float32),
+                64,
+                None,
+                "Input overflowed / device disconnected",
+            )
+
+            with pytest.raises(OSError, match="Audio I/O error"):
+                recorder.stop(session_id)
+
+            assert recorder.state == RecordingState.IDLE
+            assert recorder.session_id is None
+
     def test_cancel_not_recording_raises_error(self, recorder):
         """Should raise error if not recording."""
         with pytest.raises(RuntimeError, match="Not recording"):
@@ -482,6 +500,34 @@ class TestRecordingHandlers:
             assert "audio_duration_ms" in result
             assert "sample_rate" in result
             assert result["session_id"] == session_id
+
+    def test_handle_recording_stop_reports_audio_io_from_callback(
+        self, mock_sounddevice, reset_global_recorder
+    ):
+        """Handler should map callback I/O failures to E_AUDIO_IO."""
+        with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
+            start_request = Request(method="recording.start", id=1)
+            start_result = handle_recording_start(start_request)
+            session_id = start_result["session_id"]
+
+            recorder = get_recorder()
+            recorder._audio_callback(
+                np.zeros((64, recorder.channels), dtype=np.float32),
+                64,
+                None,
+                "Device disconnected",
+            )
+
+            with pytest.raises(RecordingError) as exc_info:
+                handle_recording_stop(
+                    Request(
+                        method="recording.stop",
+                        id=2,
+                        params={"session_id": session_id},
+                    )
+                )
+
+            assert exc_info.value.code == "E_AUDIO_IO"
 
     def test_handle_recording_stop_not_recording(self, reset_global_recorder):
         """Should raise error if not recording."""
