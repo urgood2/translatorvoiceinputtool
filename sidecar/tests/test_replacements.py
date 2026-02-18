@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import sys
@@ -44,6 +45,8 @@ from openvoicy_sidecar.replacements import (
     set_active_rules,
     validate_rules,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # === Fixtures ===
@@ -363,14 +366,20 @@ class TestApplyReplacements:
     """Tests for apply_replacements function."""
 
     def test_multiple_rules_in_order(self):
-        """Should apply rules in order."""
+        """Rules should not chain into each other in a single pass."""
         rules = [
-            ReplacementRule(id="1", enabled=True, kind="literal", pattern="A", replacement="B"),
-            ReplacementRule(id="2", enabled=True, kind="literal", pattern="B", replacement="C"),
+            ReplacementRule(id="1", enabled=True, kind="literal", pattern="foo", replacement="bar"),
+            ReplacementRule(id="2", enabled=True, kind="literal", pattern="bar", replacement="baz"),
         ]
-        result, _ = apply_replacements("A", rules)
-        # A -> B (rule 1), then B -> C (rule 2)
-        assert result == "C"
+        input_text = "foo"
+        result, _ = apply_replacements(input_text, rules)
+        logger.info(
+            "input=%s rules=%s output=%s",
+            input_text,
+            json.dumps([rule.to_dict() for rule in rules]),
+            result,
+        )
+        assert result == "bar", f"rules chained unexpectedly: rules={rules!r}, result={result!r}"
 
     def test_disabled_rules_skipped(self):
         """Should skip disabled rules."""
@@ -450,6 +459,60 @@ class TestProcessText:
         result, _ = process_text("Date: {{date}}", skip_macros=True)
         assert result == "Date: {{date}}"
 
+    def test_replacements_applied_exactly_once(self):
+        """Replacement should apply once and not duplicate through chaining."""
+        rules = [
+            ReplacementRule(
+                id="btw",
+                enabled=True,
+                kind="literal",
+                pattern="BTW",
+                replacement="by the way",
+                word_boundary=True,
+                case_sensitive=False,
+            )
+        ]
+        input_text = "BTW"
+        result, _ = process_text(input_text, rules=rules, skip_normalize=True, skip_macros=True)
+        logger.info(
+            "input=%s rules=%s output=%s",
+            input_text,
+            json.dumps([rule.to_dict() for rule in rules]),
+            result,
+        )
+        assert result.count("by the way") == 1, (
+            f"expected exactly one replacement; rules={rules!r}, output={result!r}"
+        )
+
+    def test_no_rules_pass_through_unchanged(self):
+        """No replacement rules should leave text unchanged."""
+        input_text = "No rules here"
+        result, _ = process_text(input_text, rules=[], skip_normalize=True, skip_macros=True)
+        logger.info("input=%s rules=[] output=%s", input_text, result)
+        assert result == input_text
+
+    def test_process_text_returns_string_output(self):
+        """Tuple return bug guard: processed payload must be a string."""
+        rules = [
+            ReplacementRule(
+                id="foo",
+                enabled=True,
+                kind="literal",
+                pattern="foo",
+                replacement="bar",
+            )
+        ]
+        processed, truncated = process_text("foo", rules=rules, skip_normalize=True, skip_macros=True)
+        logger.info(
+            "input=%s rules=%s output=%s truncated=%s",
+            "foo",
+            json.dumps([rule.to_dict() for rule in rules]),
+            processed,
+            truncated,
+        )
+        assert isinstance(processed, str), f"processed output is not string: {type(processed).__name__}"
+        assert not isinstance(processed, tuple), "processed output must not be a tuple"
+
 
 # === Unit Tests: Preset Loading ===
 
@@ -502,6 +565,23 @@ class TestPresetLoading:
             assert len(presets) > 0
             # Check punctuation preset exists
             assert "punctuation" in presets
+
+    def test_preset_rules_apply_once_without_chaining(self, reset_presets):
+        """Preset-based rules should produce stable single-pass output."""
+        presets_path = Path(__file__).parent.parent.parent / "shared" / "replacements" / "PRESETS.json"
+        presets = load_presets_from_file(presets_path)
+        assert "common-abbreviations" in presets
+
+        rules = get_preset_rules(["common-abbreviations"])
+        input_text = "BTW"
+        result, _ = process_text(input_text, rules=rules, skip_normalize=True, skip_macros=True)
+        logger.info(
+            "input=%s rules=%s output=%s",
+            input_text,
+            json.dumps([rule.to_dict() for rule in rules]),
+            result,
+        )
+        assert result == "by the way", f"preset replacement mismatch: rules={rules!r}, output={result!r}"
 
 
 # === Unit Tests: JSON-RPC Handlers ===

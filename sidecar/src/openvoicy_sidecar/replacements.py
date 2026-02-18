@@ -262,7 +262,8 @@ def apply_replacements(
     """Apply all replacement rules to text.
 
     Single-pass: if a replacement produces text containing another pattern,
-    that pattern is NOT processed. This prevents infinite loops.
+    that pattern is NOT processed by subsequent rules. This prevents
+    recursive/chained transformations.
 
     Args:
         text: Input text.
@@ -271,12 +272,60 @@ def apply_replacements(
     Returns:
         Tuple of (result_text, was_truncated).
     """
-    result = text
+    # Each segment tracks whether it was already replaced by a prior rule.
+    # Later rules only run on untouched segments to avoid cross-rule chaining.
+    segments: list[tuple[str, bool]] = [(text, False)]
 
     for rule in rules:
         if not rule.enabled:
             continue
-        result = apply_single_rule(result, rule)
+
+        if rule.kind == "literal":
+            pattern = r"\b" + re.escape(rule.pattern) + r"\b" if rule.word_boundary else re.escape(rule.pattern)
+            flags = 0 if rule.case_sensitive else re.IGNORECASE
+        elif rule.kind == "regex":
+            pattern = rule.pattern
+            flags = 0 if rule.case_sensitive else re.IGNORECASE
+        else:
+            log(f"Unknown rule kind: {rule.kind}")
+            continue
+
+        try:
+            regex = re.compile(pattern, flags)
+        except re.error as e:
+            log(f"Regex error in rule {rule.id}: {e}")
+            continue
+
+        next_segments: list[tuple[str, bool]] = []
+        for segment_text, already_replaced in segments:
+            if already_replaced:
+                next_segments.append((segment_text, True))
+                continue
+
+            last = 0
+            matched = False
+            for match in regex.finditer(segment_text):
+                matched = True
+                start, end = match.span()
+                if start > last:
+                    next_segments.append((segment_text[last:start], False))
+
+                replacement = (
+                    rule.replacement if rule.kind == "literal" else match.expand(rule.replacement)
+                )
+                next_segments.append((replacement, True))
+                last = end
+
+            if not matched:
+                next_segments.append((segment_text, False))
+                continue
+
+            if last < len(segment_text):
+                next_segments.append((segment_text[last:], False))
+
+        segments = next_segments
+
+    result = "".join(segment for segment, _ in segments)
 
     # Check output length
     truncated = False

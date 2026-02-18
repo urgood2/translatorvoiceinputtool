@@ -68,8 +68,8 @@
         {"id": "1", "enabled": true, "kind": "literal", "pattern": "AAA", "replacement": "BBB", "word_boundary": false, "case_sensitive": true},
         {"id": "2", "enabled": true, "kind": "literal", "pattern": "BBB", "replacement": "CCC", "word_boundary": false, "case_sensitive": true}
       ],
-      "expected": "CCC",
-      "note": "Rule 1 replaces AAA with BBB, then Rule 2 replaces BBB with CCC. This is ORDER-based, not recursion."
+      "expected": "BBB",
+      "note": "Rule outputs are not re-processed by later rules in the same pass, so AAA becomes BBB (not CCC)."
     },
     {
       "name": "single pass - output from rule 1 not re-processed by rule 1",
