@@ -22,6 +22,7 @@ import {
   createMockModelStatus,
   createMockConfig,
 } from '../tests/setup';
+import type { DiagnosticsReport } from '../types';
 
 // ============================================================================
 // TEST SETUP
@@ -528,14 +529,37 @@ describe('Async Action Coverage', () => {
     expect(useAppStore.getState().selfCheckResult).toEqual(result);
   });
 
-  test('generateDiagnostics returns diagnostics output', async () => {
+  test('generateDiagnostics returns diagnostics report object', async () => {
+    const report: DiagnosticsReport = {
+      version: '0.1.0',
+      platform: 'linux',
+      capabilities: {
+        display_server: { type: 'x11' },
+        hotkey_press_available: true,
+        hotkey_release_available: true,
+        keystroke_injection_available: true,
+        clipboard_available: true,
+        hotkey_mode: { configured: 'hold', effective: 'hold' },
+        injection_method: { configured: 'clipboard_paste', effective: 'clipboard_paste' },
+        permissions: { microphone: 'granted' },
+      },
+      config: createMockConfig(),
+      self_check: {
+        hotkey: { status: 'ok', message: 'ok' },
+        injection: { status: 'ok', message: 'ok' },
+        microphone: { status: 'ok', message: 'ok' },
+        sidecar: { status: 'ok', message: 'ok' },
+        model: { status: 'ok', message: 'ok' },
+      },
+    };
+
     setMockInvokeHandler((cmd) => {
-      if (cmd === 'generate_diagnostics') return 'diagnostics-report';
+      if (cmd === 'generate_diagnostics') return report;
       return undefined;
     });
 
     const diagnostics = await useAppStore.getState().generateDiagnostics();
-    expect(diagnostics).toBe('diagnostics-report');
+    expect(diagnostics).toEqual(report);
   });
 
   test('getRecentLogs uses default count and returns logs', async () => {

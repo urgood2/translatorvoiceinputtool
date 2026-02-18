@@ -21,6 +21,7 @@ import type {
   PresetInfo,
   Progress,
   ReplacementRule,
+  DiagnosticsReport,
   SelfCheckResult,
   StateEvent,
   TranscriptEntry,
@@ -117,7 +118,7 @@ export interface AppStoreActions {
   runSelfCheck: () => Promise<void>;
 
   // Diagnostics
-  generateDiagnostics: () => Promise<string>;
+  generateDiagnostics: () => Promise<DiagnosticsReport>;
   getRecentLogs: (count?: number) => Promise<string[]>;
 
   // Toggle enabled
@@ -516,7 +517,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   generateDiagnostics: async () => {
     try {
-      const report = await invoke<string>('generate_diagnostics');
+      const report = await invoke<DiagnosticsReport>('generate_diagnostics');
       return report;
     } catch (error) {
       console.error('Failed to generate diagnostics:', error);
