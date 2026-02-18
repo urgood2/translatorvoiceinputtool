@@ -1872,6 +1872,93 @@ mod tests {
     }
 
     #[test]
+    fn test_effective_model_device_pref_precedence_matrix() {
+        #[derive(Debug)]
+        struct Case {
+            name: &'static str,
+            device: Option<&'static str>,
+            preferred_device: Option<&'static str>,
+            expected: String,
+        }
+
+        let gpu_backend = preferred_gpu_backend().to_string();
+        let cases = vec![
+            Case {
+                name: "device_cuda_wins_over_preferred_cpu",
+                device: Some("cuda"),
+                preferred_device: Some("cpu"),
+                expected: "cuda".to_string(),
+            },
+            Case {
+                name: "device_mps_wins_over_preferred_auto",
+                device: Some("mps"),
+                preferred_device: Some("auto"),
+                expected: "mps".to_string(),
+            },
+            Case {
+                name: "device_auto_maps_preferred_gpu",
+                device: Some("auto"),
+                preferred_device: Some("gpu"),
+                expected: gpu_backend.clone(),
+            },
+            Case {
+                name: "device_auto_maps_preferred_cpu",
+                device: Some("auto"),
+                preferred_device: Some("cpu"),
+                expected: "cpu".to_string(),
+            },
+            Case {
+                name: "device_absent_preferred_gpu_uses_best_gpu_backend",
+                device: None,
+                preferred_device: Some("gpu"),
+                expected: gpu_backend.clone(),
+            },
+            Case {
+                name: "device_absent_preferred_absent_defaults_to_auto",
+                device: None,
+                preferred_device: None,
+                expected: "auto".to_string(),
+            },
+            Case {
+                name: "device_cpu_maps_preferred_gpu_to_best_gpu_backend",
+                device: Some("cpu"),
+                preferred_device: Some("gpu"),
+                expected: gpu_backend.clone(),
+            },
+            Case {
+                name: "model_absent_defaults_to_auto",
+                device: None,
+                preferred_device: None,
+                expected: "auto".to_string(),
+            },
+        ];
+
+        for case in cases {
+            let mut config = AppConfig::default();
+
+            if case.name != "model_absent_defaults_to_auto" {
+                config.model = Some(ModelConfig {
+                    model_id: None,
+                    device: case.device.map(std::string::ToString::to_string),
+                    preferred_device: case.preferred_device.unwrap_or("auto").to_string(),
+                    language: None,
+                });
+            }
+
+            let actual = config.effective_model_device_pref();
+            println!(
+                "case={} device={:?} preferred_device={:?} expected={} actual={}",
+                case.name, case.device, case.preferred_device, case.expected, actual
+            );
+            assert_eq!(
+                actual, case.expected,
+                "case={} config={:?}",
+                case.name, config
+            );
+        }
+    }
+
+    #[test]
     fn test_invalid_model_preferred_device_gets_reset_to_auto() {
         let mut config = AppConfig::default();
         config.model = Some(ModelConfig {
