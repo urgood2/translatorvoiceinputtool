@@ -231,7 +231,7 @@ impl RecordingController {
 
     /// Update configuration.
     pub async fn set_config(&self, config: RecordingConfig) {
-        *self.config.write().await = config;
+        *self.config.write().await = sanitize_recording_config(config);
     }
 
     /// Get current configuration.
@@ -610,6 +610,11 @@ impl RecordingController {
     }
 }
 
+fn sanitize_recording_config(mut config: RecordingConfig) -> RecordingConfig {
+    config.max_duration = config.max_duration.min(defaults::MAX_RECORDING_HARD_LIMIT);
+    config
+}
+
 /// Result of hotkey action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "action")]
@@ -938,5 +943,30 @@ mod tests {
             auto_stopped_result,
             Some(StopResult::Transcribing { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn test_set_config_clamps_max_duration_to_hard_limit() {
+        let (_, controller) = setup();
+        controller
+            .set_config(RecordingConfig {
+                max_duration: defaults::MAX_RECORDING_HARD_LIMIT + Duration::from_secs(1),
+                ..Default::default()
+            })
+            .await;
+
+        let config = controller.get_config().await;
+        assert_eq!(config.max_duration, defaults::MAX_RECORDING_HARD_LIMIT);
+    }
+
+    #[test]
+    fn test_sanitize_recording_config_keeps_valid_max_duration() {
+        let config = RecordingConfig {
+            max_duration: Duration::from_secs(42),
+            ..Default::default()
+        };
+
+        let sanitized = sanitize_recording_config(config.clone());
+        assert_eq!(sanitized.max_duration, config.max_duration);
     }
 }
