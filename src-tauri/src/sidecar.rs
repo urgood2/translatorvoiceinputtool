@@ -213,6 +213,8 @@ impl SidecarManager {
             inner.restart_count = 0;
         }
 
+        self.clear_shutdown_flag_for_start();
+
         self.emit_status(SidecarStatus {
             state: SidecarState::Starting,
             restart_count: 0,
@@ -221,6 +223,10 @@ impl SidecarManager {
         });
 
         self.spawn_process()
+    }
+
+    fn clear_shutdown_flag_for_start(&self) {
+        self.shutdown_flag.store(false, Ordering::SeqCst);
     }
 
     /// Spawn the sidecar process.
@@ -980,5 +986,13 @@ mod tests {
         let resp: PingResponse = serde_json::from_str(json).unwrap();
         assert!(resp.error.is_some());
         assert!(resp.result.is_none());
+    }
+
+    #[test]
+    fn test_clear_shutdown_flag_for_start_resets_stop_state() {
+        let manager = SidecarManager::new();
+        manager.shutdown_flag.store(true, Ordering::SeqCst);
+        manager.clear_shutdown_flag_for_start();
+        assert!(!manager.shutdown_flag.load(Ordering::SeqCst));
     }
 }
