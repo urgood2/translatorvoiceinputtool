@@ -295,8 +295,23 @@ def run_server() -> None:
         for line in sys.stdin:
             # Check line length limit
             if len(line) > MAX_LINE_LENGTH:
-                log(f"Line exceeds maximum length ({len(line)} > {MAX_LINE_LENGTH}), fatal")
-                sys.exit(1)
+                log(
+                    f"Line exceeds maximum length ({len(line)} > {MAX_LINE_LENGTH}); "
+                    "returning invalid request and continuing"
+                )
+                response = make_error(
+                    None,
+                    ERROR_INVALID_REQUEST,
+                    f"Request line exceeds maximum length ({MAX_LINE_LENGTH})",
+                    "E_INVALID_PARAMS",
+                    {
+                        "reason": "line_too_long",
+                        "max_line_length": MAX_LINE_LENGTH,
+                        "line_length": len(line),
+                    },
+                )
+                write_response(response)
+                continue
 
             # Parse the request
             try:

@@ -262,6 +262,26 @@ class TestServerIntegration:
         assert len(responses) == 1
         assert responses[0]["error"]["code"] == ERROR_INVALID_REQUEST
 
+    def test_oversized_line_returns_error_and_continues(self, run_sidecar):
+        """Oversized line should return an error response and keep serving."""
+        oversized = (
+            '{"jsonrpc":"2.0","method":"test","params":{"data":"'
+            + ("x" * (MAX_LINE_LENGTH + 100))
+            + '"}}'
+        )
+        responses, _ = run_sidecar(
+            [
+                oversized,
+                '{"jsonrpc":"2.0","id":2,"method":"system.ping"}',
+            ]
+        )
+        assert len(responses) == 2
+        assert responses[0]["id"] is None
+        assert responses[0]["error"]["code"] == ERROR_INVALID_REQUEST
+        assert responses[0]["error"]["data"]["details"]["reason"] == "line_too_long"
+        assert responses[1]["id"] == 2
+        assert "result" in responses[1]
+
     def test_multiple_requests(self, run_sidecar):
         """Multiple requests should all be processed."""
         responses, _ = run_sidecar([
