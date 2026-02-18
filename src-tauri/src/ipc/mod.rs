@@ -170,10 +170,15 @@ impl RpcClient {
         }
 
         // Send request
-        self.writer_tx
+        if self
+            .writer_tx
             .send(WriterCommand::Send(request_json))
             .await
-            .map_err(|_| RpcError::Disconnected)?;
+            .is_err()
+        {
+            self.cleanup_pending(id).await;
+            return Err(RpcError::Disconnected);
+        }
 
         // Wait for response with timeout
         let method_timeout = TimeoutConfig::get(method);
@@ -484,5 +489,27 @@ mod tests {
         // Unknown ID should return None
         let unknown_method = pending.remove(&999);
         assert!(unknown_method.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_call_cleans_pending_when_writer_channel_is_closed() {
+        use std::collections::HashMap;
+
+        let (writer_tx, writer_rx) = mpsc::channel::<WriterCommand>(1);
+        drop(writer_rx);
+
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let (notification_tx, _) = broadcast::channel::<NotificationEvent>(1);
+        let client = RpcClient {
+            next_id: AtomicU64::new(1),
+            writer_tx,
+            pending: Arc::clone(&pending),
+            notification_tx,
+            connected: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+
+        let result: Result<Value, RpcError> = client.call("system.ping", None).await;
+        assert!(matches!(result, Err(RpcError::Disconnected)));
+        assert!(pending.lock().await.is_empty());
     }
 }
