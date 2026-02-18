@@ -170,6 +170,42 @@ describe('Device Actions', () => {
 
     expect(useAppStore.getState().selectedDeviceUid).toBeNull();
   });
+
+  test('startMicTest enables meter and resets audio level', async () => {
+    useAppStore.setState({
+      isMeterRunning: false,
+      audioLevel: { rms: -12, peak: -6, source: 'meter' },
+    });
+
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'start_mic_test') return undefined;
+      return undefined;
+    });
+
+    await useAppStore.getState().startMicTest();
+
+    expect(invoke).toHaveBeenCalledWith('start_mic_test');
+    expect(useAppStore.getState().isMeterRunning).toBe(true);
+    expect(useAppStore.getState().audioLevel).toBeNull();
+  });
+
+  test('stopMicTest disables meter and resets audio level', async () => {
+    useAppStore.setState({
+      isMeterRunning: true,
+      audioLevel: { rms: -15, peak: -8, source: 'meter' },
+    });
+
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'stop_mic_test') return undefined;
+      return undefined;
+    });
+
+    await useAppStore.getState().stopMicTest();
+
+    expect(invoke).toHaveBeenCalledWith('stop_mic_test');
+    expect(useAppStore.getState().isMeterRunning).toBe(false);
+    expect(useAppStore.getState().audioLevel).toBeNull();
+  });
 });
 
 // ============================================================================
@@ -224,6 +260,64 @@ describe('Config Actions', () => {
 
     expect(invoke).toHaveBeenCalledWith('reset_config_to_defaults');
     expect(useAppStore.getState().config).toEqual(freshConfig);
+  });
+
+  test('updateHotkeyConfig merges config and refreshes hotkey status', async () => {
+    const config = createMockConfig();
+    const hotkeyStatus = { registered: true, error: null };
+    useAppStore.setState({ config });
+
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'update_config') return undefined;
+      if (cmd === 'get_hotkey_status') return hotkeyStatus;
+      return undefined;
+    });
+
+    await useAppStore.getState().updateHotkeyConfig({ primary: 'Alt+Space' });
+
+    expect(useAppStore.getState().config?.hotkeys.primary).toBe('Alt+Space');
+    expect(useAppStore.getState().hotkeyStatus).toEqual(hotkeyStatus);
+  });
+
+  test('updateInjectionConfig merges injection settings', async () => {
+    const config = createMockConfig();
+    useAppStore.setState({ config });
+
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'update_config') return undefined;
+      return undefined;
+    });
+
+    await useAppStore.getState().updateInjectionConfig({ auto_paste: false });
+
+    expect(useAppStore.getState().config?.injection.auto_paste).toBe(false);
+    expect(invoke).toHaveBeenCalledWith('update_config', expect.anything());
+  });
+
+  test('setReplacementRules updates config replacements', async () => {
+    const config = createMockConfig();
+    useAppStore.setState({ config });
+    const rules = [
+      {
+        id: 'rule-1',
+        enabled: true,
+        kind: 'literal',
+        pattern: 'btw',
+        replacement: 'by the way',
+        word_boundary: true,
+        case_sensitive: false,
+      },
+    ];
+
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'set_replacement_rules') return undefined;
+      return undefined;
+    });
+
+    await useAppStore.getState().setReplacementRules(rules);
+
+    expect(invoke).toHaveBeenCalledWith('set_replacement_rules', { rules });
+    expect(useAppStore.getState().config?.replacements).toEqual(rules);
   });
 });
 
@@ -352,6 +446,110 @@ describe('Enabled Toggle', () => {
 
     expect(invoke).toHaveBeenCalledWith('set_enabled', { enabled: false });
     expect(useAppStore.getState().enabled).toBe(false);
+  });
+});
+
+// ============================================================================
+// ASYNC ACTION COVERAGE
+// ============================================================================
+
+describe('Async Action Coverage', () => {
+  test('refreshHotkeyStatus fetches and stores hotkey status', async () => {
+    const status = { registered: false, error: 'not registered' };
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'get_hotkey_status') return status;
+      return undefined;
+    });
+
+    await useAppStore.getState().refreshHotkeyStatus();
+    expect(useAppStore.getState().hotkeyStatus).toEqual(status);
+  });
+
+  test('setHotkey invokes backend and refreshes hotkey status', async () => {
+    const status = { registered: true, error: null };
+    setMockInvokeHandler((cmd, args) => {
+      if (cmd === 'set_hotkey') {
+        expect(args).toEqual({ primary: 'Ctrl+Alt+Space', copyLast: 'Ctrl+Alt+C' });
+        return undefined;
+      }
+      if (cmd === 'get_hotkey_status') return status;
+      return undefined;
+    });
+
+    await useAppStore.getState().setHotkey('Ctrl+Alt+Space', 'Ctrl+Alt+C');
+
+    expect(useAppStore.getState().hotkeyStatus).toEqual(status);
+  });
+
+  test('loadPresets fetches available presets', async () => {
+    const presets = [{ id: 'default', name: 'Default' }];
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'get_available_presets') return presets;
+      return undefined;
+    });
+
+    await useAppStore.getState().loadPresets();
+    expect(useAppStore.getState().presets).toEqual(presets);
+  });
+
+  test('loadPreset returns preset rules', async () => {
+    const rules = [{ id: 'r1', enabled: true, kind: 'literal', pattern: 'x', replacement: 'y', word_boundary: false, case_sensitive: false }];
+    setMockInvokeHandler((cmd, args) => {
+      if (cmd === 'load_preset') {
+        expect(args).toEqual({ presetId: 'default' });
+        return rules;
+      }
+      return undefined;
+    });
+
+    const result = await useAppStore.getState().loadPreset('default');
+    expect(result).toEqual(rules);
+  });
+
+  test('refreshCapabilities fetches and stores capabilities', async () => {
+    const capabilities = { has_microphone: true };
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'get_capabilities') return capabilities;
+      return undefined;
+    });
+
+    await useAppStore.getState().refreshCapabilities();
+    expect(useAppStore.getState().capabilities).toEqual(capabilities);
+  });
+
+  test('runSelfCheck stores backend self-check result', async () => {
+    const result = { ok: true };
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'run_self_check') return result;
+      return undefined;
+    });
+
+    await useAppStore.getState().runSelfCheck();
+    expect(useAppStore.getState().selfCheckResult).toEqual(result);
+  });
+
+  test('generateDiagnostics returns diagnostics output', async () => {
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'generate_diagnostics') return 'diagnostics-report';
+      return undefined;
+    });
+
+    const diagnostics = await useAppStore.getState().generateDiagnostics();
+    expect(diagnostics).toBe('diagnostics-report');
+  });
+
+  test('getRecentLogs uses default count and returns logs', async () => {
+    const logs = ['line1', 'line2'];
+    setMockInvokeHandler((cmd, args) => {
+      if (cmd === 'get_recent_logs') {
+        expect(args).toEqual({ count: 100 });
+        return logs;
+      }
+      return undefined;
+    });
+
+    const result = await useAppStore.getState().getRecentLogs();
+    expect(result).toEqual(logs);
   });
 });
 
