@@ -174,27 +174,20 @@ class AudioRecorder:
             if self._state != RecordingState.IDLE:
                 raise RuntimeError("Recording already in progress")
 
-            # Resolve device
-            if device_uid is None:
-                # Use active device, or default if none set
-                device_uid = get_active_device_uid()
-
-            device_index = None
-            if device_uid is not None:
-                device = find_device_by_uid(device_uid)
-                if device is None:
-                    raise ValueError(f"Device not found: {device_uid}")
-                # We need to find the sounddevice index
-                device_index = self._get_device_index(device_uid)
+            # Resolve device and capture format from selected/default input.
+            device_index, capture_sample_rate, capture_channels = (
+                self._resolve_capture_parameters(device_uid)
+            )
 
             # Create new session
             session_id = session_id or str(uuid.uuid4())
+            max_samples = int(capture_sample_rate * self.max_duration_sec)
             self._session = RecordingSession(
                 session_id=session_id,
                 started_at=time.monotonic(),
-                sample_rate=self.sample_rate,
-                channels=self.channels,
-                max_samples=self.max_samples,
+                sample_rate=capture_sample_rate,
+                channels=capture_channels,
+                max_samples=max_samples,
             )
 
             # Start audio stream
@@ -202,14 +195,17 @@ class AudioRecorder:
                 import sounddevice as sd
 
                 self._stream = sd.InputStream(
-                    samplerate=self.sample_rate,
-                    channels=self.channels,
+                    samplerate=capture_sample_rate,
+                    channels=capture_channels,
                     dtype=np.float32,
                     blocksize=CHUNK_SIZE,
                     device=device_index,
                     callback=self._audio_callback,
                 )
                 self._stream.start()
+                self.sample_rate = capture_sample_rate
+                self.channels = capture_channels
+                self.max_samples = max_samples
                 self._state = RecordingState.RECORDING
 
                 # Start level emission thread
@@ -336,14 +332,15 @@ class AudioRecorder:
                 return
             session = self._session
 
-        # Extract mono data
-        mono = indata[:, 0] if indata.ndim > 1 else indata.flatten()
+        # Preserve captured channel layout for preprocessing.
+        chunk = indata.copy() if indata.ndim > 1 else indata.flatten().copy()
 
         # Add data outside main lock (session has its own lock)
-        session.add_chunk(mono)
+        session.add_chunk(chunk)
 
         # Also add to level buffer for emission
-        self._level_buffer.extend(mono)
+        mono_levels = chunk[:, 0] if chunk.ndim > 1 else chunk
+        self._level_buffer.extend(mono_levels)
 
     def _level_emit_loop(self) -> None:
         """Background loop that emits audio level events during recording."""
@@ -425,6 +422,32 @@ class AudioRecorder:
         except Exception as e:
             log(f"Error getting device index: {e}")
             return None
+
+    def _resolve_capture_parameters(self, device_uid: str | None) -> tuple[int | None, int, int]:
+        """Resolve device index and native capture format."""
+        selected_uid = device_uid or get_active_device_uid()
+        device = None
+
+        if selected_uid is not None:
+            device = find_device_by_uid(selected_uid)
+            if device is None:
+                raise ValueError(f"Device not found: {selected_uid}")
+        else:
+            device = get_default_device()
+
+        device_index = None
+        if device is not None:
+            device_index = self._get_device_index(device.uid)
+            sample_rate = int(device.default_sample_rate or self.sample_rate)
+            channels = int(device.channels or self.channels)
+        else:
+            sample_rate = int(self.sample_rate)
+            channels = int(self.channels)
+
+        # Ensure sane non-zero values.
+        sample_rate = max(sample_rate, 1)
+        channels = max(channels, 1)
+        return device_index, sample_rate, channels
 
 
 # === Global Recorder Instance ===

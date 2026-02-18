@@ -44,6 +44,7 @@ def mock_sounddevice():
         """Mock InputStream that simulates audio capture."""
 
         def __init__(self, **kwargs):
+            self.kwargs = kwargs
             self.callback = kwargs.get("callback")
             self.running = False
 
@@ -288,7 +289,20 @@ class TestAudioRecorder:
             assert recorder.state == RecordingState.IDLE
             assert recorder.session_id is None
             assert len(audio) == 1600
-            assert duration_ms == 100  # 1600 samples at 16kHz = 100ms
+            assert duration_ms == int(1600 * 1000 / recorder.sample_rate)
+
+    def test_start_uses_native_device_sample_rate_and_channels(
+        self, recorder, mock_sounddevice
+    ):
+        """Recorder should capture at selected/default device native format."""
+        with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
+            recorder.start()
+
+            assert recorder.sample_rate == 48000
+            assert recorder.channels == 2
+            assert recorder._stream is not None
+            assert recorder._stream.kwargs["samplerate"] == 48000
+            assert recorder._stream.kwargs["channels"] == 2
 
     def test_stop_not_recording_raises_error(self, recorder):
         """Should raise error if not recording."""
