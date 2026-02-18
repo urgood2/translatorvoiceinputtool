@@ -183,9 +183,11 @@ export interface AudioDevice {
 export type ModelState =
   | 'missing'
   | 'downloading'
+  | 'loading'
   | 'verifying'
   | 'ready'
-  | 'error';
+  | 'error'
+  | 'unknown';
 
 /** Download/verification progress. */
 export interface Progress {
@@ -196,8 +198,11 @@ export interface Progress {
 
 /** Model status information. */
 export interface ModelStatus {
+  seq?: number;
   model_id: string;
   status: ModelState;
+  revision?: string;
+  cache_path?: string;
   progress?: Progress;
   error?: string;
 }

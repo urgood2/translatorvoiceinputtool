@@ -75,6 +75,29 @@ pub struct ModelProgress {
     pub stage: String,
 }
 
+/// Canonical progress payload for model status events.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelStatusProgress {
+    pub current: u64,
+    pub total: Option<u64>,
+    pub unit: String,
+}
+
+/// Canonical model status event payload.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelStatusPayload {
+    pub model_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<ModelStatusProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// Status changed event name (mirrors sidecar event).
 const EVENT_STATUS_CHANGED: &str = "status:changed";
 
@@ -83,6 +106,58 @@ const EVENT_TRANSCRIPTION_COMPLETE: &str = "transcription:complete";
 
 /// Transcription error event name.
 const EVENT_TRANSCRIPTION_ERROR: &str = "transcription:error";
+
+fn status_progress_from_parts(
+    current: u64,
+    total: Option<u64>,
+    unit: Option<String>,
+    stage: Option<String>,
+) -> ModelStatusProgress {
+    ModelStatusProgress {
+        current,
+        total,
+        unit: unit.or(stage).unwrap_or_else(|| "processing".to_string()),
+    }
+}
+
+fn configured_model_id() -> String {
+    config::load_config()
+        .model
+        .and_then(|m| m.model_id)
+        .and_then(|id| {
+            let trimmed = id.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string())
+}
+
+fn resolve_model_id(model_id: Option<String>) -> String {
+    model_id
+        .and_then(|id| {
+            let trimmed = id.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .unwrap_or_else(configured_model_id)
+}
+
+fn model_status_to_event_fields(status: ModelStatus) -> (String, Option<String>) {
+    match status {
+        ModelStatus::Unknown => ("unknown".to_string(), None),
+        ModelStatus::Missing => ("missing".to_string(), None),
+        ModelStatus::Downloading => ("downloading".to_string(), None),
+        ModelStatus::Loading => ("loading".to_string(), None),
+        ModelStatus::Ready => ("ready".to_string(), None),
+        ModelStatus::Error(message) => ("error".to_string(), Some(message)),
+    }
+}
 
 fn add_seq_to_payload(payload: Value, seq: u64) -> Value {
     match payload {
@@ -410,17 +485,50 @@ impl IntegrationManager {
                 status: String,
                 #[serde(default)]
                 model_id: Option<String>,
+                #[serde(default)]
+                revision: Option<String>,
+                #[serde(default)]
+                cache_path: Option<String>,
+                #[serde(default)]
+                progress: Option<ProgressResult>,
+            }
+
+            #[derive(Deserialize, Debug)]
+            struct ProgressResult {
+                current: u64,
+                #[serde(default)]
+                total: Option<u64>,
+                #[serde(default)]
+                unit: Option<String>,
+                #[serde(default)]
+                stage: Option<String>,
             }
 
             match client.call::<StatusResult>("model.get_status", None).await {
                 Ok(result) => {
                     log::info!("Model status: {:?}", result);
+                    let status_progress = result.progress.as_ref().map(|progress| {
+                        status_progress_from_parts(
+                            progress.current,
+                            progress.total,
+                            progress.unit.clone(),
+                            progress.stage.clone(),
+                        )
+                    });
 
                     match result.status.as_str() {
                         "ready" => {
                             *model_status.write().await = ModelStatus::Ready;
                             recording_controller.set_model_ready(true).await;
-                            Self::emit_model_status(&app_handle, ModelStatus::Ready, &event_seq);
+                            Self::emit_model_status_with_details(
+                                &app_handle,
+                                ModelStatus::Ready,
+                                &event_seq,
+                                result.model_id.clone(),
+                                result.revision.clone(),
+                                result.cache_path.clone(),
+                                status_progress.clone(),
+                            );
                             log::info!("Model ready for transcription");
                         }
                         "missing" | "not_found" | "error" => {
@@ -429,7 +537,15 @@ impl IntegrationManager {
                                 result.status
                             );
                             *model_status.write().await = ModelStatus::Missing;
-                            Self::emit_model_status(&app_handle, ModelStatus::Missing, &event_seq);
+                            Self::emit_model_status_with_details(
+                                &app_handle,
+                                ModelStatus::Missing,
+                                &event_seq,
+                                result.model_id.clone(),
+                                result.revision.clone(),
+                                result.cache_path.clone(),
+                                status_progress.clone(),
+                            );
 
                             // Trigger model initialization
                             Self::trigger_model_init(
@@ -450,12 +566,29 @@ impl IntegrationManager {
                                 ModelStatus::Loading
                             };
                             *model_status.write().await = status.clone();
-                            Self::emit_model_status(&app_handle, status, &event_seq);
+                            Self::emit_model_status_with_details(
+                                &app_handle,
+                                status,
+                                &event_seq,
+                                result.model_id.clone(),
+                                result.revision.clone(),
+                                result.cache_path.clone(),
+                                status_progress.clone(),
+                            );
                             log::info!("Model {} in progress", result.status);
                         }
                         _ => {
                             log::warn!("Unknown model status: {}", result.status);
                             *model_status.write().await = ModelStatus::Unknown;
+                            Self::emit_model_status_with_details(
+                                &app_handle,
+                                ModelStatus::Unknown,
+                                &event_seq,
+                                result.model_id.clone(),
+                                result.revision.clone(),
+                                result.cache_path.clone(),
+                                status_progress.clone(),
+                            );
                         }
                     }
                 }
@@ -538,13 +671,39 @@ impl IntegrationManager {
         status: ModelStatus,
         seq_counter: &Arc<AtomicU64>,
     ) {
+        Self::emit_model_status_with_details(
+            app_handle,
+            status,
+            seq_counter,
+            None,
+            None,
+            None,
+            None,
+        );
+    }
+
+    /// Emit canonical model status event with optional metadata.
+    fn emit_model_status_with_details(
+        app_handle: &Option<AppHandle>,
+        status: ModelStatus,
+        seq_counter: &Arc<AtomicU64>,
+        model_id: Option<String>,
+        revision: Option<String>,
+        cache_path: Option<String>,
+        progress: Option<ModelStatusProgress>,
+    ) {
         if let Some(ref handle) = app_handle {
-            emit_with_shared_seq(
-                handle,
-                &[EVENT_MODEL_STATUS],
-                json!({ "status": status }),
-                seq_counter,
-            );
+            let (status_name, error) = model_status_to_event_fields(status);
+            let payload = ModelStatusPayload {
+                model_id: resolve_model_id(model_id),
+                status: status_name,
+                revision,
+                cache_path,
+                progress,
+                error,
+            };
+
+            emit_with_shared_seq(handle, &[EVENT_MODEL_STATUS], json!(payload), seq_counter);
         }
     }
 
@@ -1142,6 +1301,10 @@ impl IntegrationManager {
                             #[serde(default)]
                             model_id: Option<String>,
                             status: String,
+                            #[serde(default)]
+                            revision: Option<String>,
+                            #[serde(default)]
+                            cache_path: Option<String>,
                         }
 
                         #[derive(Deserialize)]
@@ -1158,12 +1321,28 @@ impl IntegrationManager {
                         if let Ok(params) =
                             serde_json::from_value::<StatusParams>(event.params.clone())
                         {
+                            let parsed_model = params.model.as_ref().and_then(|model| {
+                                serde_json::from_value::<ModelParams>(model.clone()).ok()
+                            });
+
                             // Support both spec-compliant model object and legacy string model state.
-                            let model_state = params.model.as_ref().and_then(|model| {
-                                serde_json::from_value::<ModelParams>(model.clone())
-                                    .map(|parsed| parsed.status)
-                                    .ok()
-                                    .or_else(|| model.as_str().map(ToOwned::to_owned))
+                            let model_state = parsed_model
+                                .as_ref()
+                                .map(|parsed| parsed.status.clone())
+                                .or_else(|| {
+                                    params
+                                        .model
+                                        .as_ref()
+                                        .and_then(|model| model.as_str().map(ToOwned::to_owned))
+                                });
+
+                            let status_progress = params.progress.as_ref().map(|progress| {
+                                status_progress_from_parts(
+                                    progress.current,
+                                    progress.total,
+                                    progress.unit.clone(),
+                                    progress.stage.clone(),
+                                )
                             });
 
                             // Update model status if provided
@@ -1173,7 +1352,12 @@ impl IntegrationManager {
                                     "loading" => ModelStatus::Loading,
                                     "ready" => ModelStatus::Ready,
                                     "missing" => ModelStatus::Missing,
-                                    "error" => ModelStatus::Error("model status error".to_string()),
+                                    "error" => ModelStatus::Error(
+                                        params
+                                            .detail
+                                            .clone()
+                                            .unwrap_or_else(|| "model status error".to_string()),
+                                    ),
                                     _ => ModelStatus::Unknown,
                                 };
                                 *model_status.write().await = new_status.clone();
@@ -1183,6 +1367,16 @@ impl IntegrationManager {
                                 } else {
                                     recording_controller.set_model_ready(false).await;
                                 }
+
+                                Self::emit_model_status_with_details(
+                                    &app_handle,
+                                    new_status,
+                                    &event_seq,
+                                    parsed_model.as_ref().and_then(|m| m.model_id.clone()),
+                                    parsed_model.as_ref().and_then(|m| m.revision.clone()),
+                                    parsed_model.as_ref().and_then(|m| m.cache_path.clone()),
+                                    status_progress.clone(),
+                                );
                             }
 
                             // Update and emit progress if provided
@@ -1229,7 +1423,8 @@ impl IntegrationManager {
                             session_id: Option<String>,
                         }
 
-                        if let Ok(params) = serde_json::from_value::<AudioLevelParams>(event.params) {
+                        if let Ok(params) = serde_json::from_value::<AudioLevelParams>(event.params)
+                        {
                             // recording source is session-scoped and should include session_id.
                             if params.source == "recording" && params.session_id.is_none() {
                                 log::warn!("Ignoring invalid audio_level event: missing session_id for recording source");
@@ -1402,6 +1597,45 @@ mod tests {
         assert_eq!(config.python_path, "python3");
         assert_eq!(config.sidecar_module, "openvoicy_sidecar");
         assert!(config.auto_start_sidecar);
+    }
+
+    #[test]
+    fn test_status_progress_from_parts_prefers_unit() {
+        let progress = status_progress_from_parts(
+            10,
+            Some(100),
+            Some("bytes".to_string()),
+            Some("downloading".to_string()),
+        );
+
+        assert_eq!(progress.current, 10);
+        assert_eq!(progress.total, Some(100));
+        assert_eq!(progress.unit, "bytes");
+    }
+
+    #[test]
+    fn test_status_progress_from_parts_uses_stage_fallback() {
+        let progress =
+            status_progress_from_parts(20, Some(200), None, Some("verifying".to_string()));
+
+        assert_eq!(progress.current, 20);
+        assert_eq!(progress.total, Some(200));
+        assert_eq!(progress.unit, "verifying");
+    }
+
+    #[test]
+    fn test_model_status_to_event_fields_maps_error() {
+        let (status, error) = model_status_to_event_fields(ModelStatus::Error("boom".to_string()));
+        assert_eq!(status, "error");
+        assert_eq!(error, Some("boom".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_model_id_prefers_explicit_value() {
+        assert_eq!(
+            resolve_model_id(Some("custom/model".to_string())),
+            "custom/model"
+        );
     }
 
     #[tokio::test]
