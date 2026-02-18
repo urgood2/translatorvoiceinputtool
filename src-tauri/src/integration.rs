@@ -1124,6 +1124,20 @@ impl IntegrationManager {
                             restore_clipboard: config.injection.restore_clipboard,
                             suffix: config.injection.suffix.clone(),
                             focus_guard_enabled: config.injection.focus_guard_enabled,
+                            app_overrides: config
+                                .injection
+                                .app_overrides
+                                .iter()
+                                .map(|(app_id, ov)| {
+                                    (
+                                        app_id.clone(),
+                                        crate::injection::AppOverride {
+                                            paste_delay_ms: ov.paste_delay_ms,
+                                            use_clipboard_only: ov.use_clipboard_only,
+                                        },
+                                    )
+                                })
+                                .collect(),
                         };
 
                         // Inject text

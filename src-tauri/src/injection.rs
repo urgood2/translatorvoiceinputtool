@@ -15,12 +15,15 @@
 use chrono::{DateTime, Utc};
 use once_cell::sync::Lazy;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
-use crate::focus::{capture_focus, validate_focus, FocusSignature};
+use crate::focus::{
+    app_override_candidates, capture_focus, normalize_app_id, validate_focus, FocusSignature,
+};
 
 /// Global injection mutex to serialize injections.
 static INJECTION_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -37,6 +40,25 @@ pub struct InjectionConfig {
     pub suffix: String,
     /// Whether Focus Guard is enabled.
     pub focus_guard_enabled: bool,
+    /// Per-application behavior overrides.
+    pub app_overrides: HashMap<String, AppOverride>,
+}
+
+/// Per-app injection override.
+#[derive(Debug, Clone)]
+pub struct AppOverride {
+    pub paste_delay_ms: Option<u32>,
+    pub use_clipboard_only: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct EffectiveInjectionConfig {
+    paste_delay_ms: u32,
+    restore_clipboard: bool,
+    suffix: String,
+    focus_guard_enabled: bool,
+    use_clipboard_only: bool,
+    matched_override: Option<String>,
 }
 
 impl Default for InjectionConfig {
@@ -46,6 +68,7 @@ impl Default for InjectionConfig {
             restore_clipboard: true,
             suffix: " ".to_string(),
             focus_guard_enabled: true,
+            app_overrides: HashMap::new(),
         }
     }
 }
@@ -53,6 +76,58 @@ impl Default for InjectionConfig {
 impl InjectionConfig {
     /// Clamp paste delay to valid range.
     pub fn clamped_delay(&self) -> Duration {
+        let ms = self.paste_delay_ms.clamp(10, 500);
+        Duration::from_millis(ms as u64)
+    }
+
+    fn resolve_override(&self, focus: &FocusSignature) -> Option<(String, &AppOverride)> {
+        if self.app_overrides.is_empty() {
+            return None;
+        }
+
+        let candidates = app_override_candidates(focus);
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // Prefer exact candidate ordering from focus detection.
+        for candidate in candidates {
+            for (key, override_cfg) in &self.app_overrides {
+                let normalized_key = normalize_app_id(key).unwrap_or_else(|| key.to_lowercase());
+                if normalized_key == candidate {
+                    return Some((key.clone(), override_cfg));
+                }
+            }
+        }
+        None
+    }
+
+    fn effective_for_focus(&self, focus: &FocusSignature) -> EffectiveInjectionConfig {
+        let mut effective = EffectiveInjectionConfig {
+            paste_delay_ms: self.paste_delay_ms,
+            restore_clipboard: self.restore_clipboard,
+            suffix: self.suffix.clone(),
+            focus_guard_enabled: self.focus_guard_enabled,
+            use_clipboard_only: false,
+            matched_override: None,
+        };
+
+        if let Some((matched_key, app_override)) = self.resolve_override(focus) {
+            if let Some(delay) = app_override.paste_delay_ms {
+                effective.paste_delay_ms = delay;
+            }
+            if let Some(clipboard_only) = app_override.use_clipboard_only {
+                effective.use_clipboard_only = clipboard_only;
+            }
+            effective.matched_override = Some(matched_key);
+        }
+
+        effective
+    }
+}
+
+impl EffectiveInjectionConfig {
+    fn clamped_delay(&self) -> Duration {
         let ms = self.paste_delay_ms.clamp(10, 500);
         Duration::from_millis(ms as u64)
     }
@@ -118,8 +193,34 @@ pub async fn inject_text(
     expected_focus: Option<&FocusSignature>,
     config: &InjectionConfig,
 ) -> InjectionResult {
+    // Use the currently focused app to resolve per-app overrides.
+    let current_focus = capture_focus();
+    let effective = config.effective_for_focus(&current_focus);
+
+    if effective.use_clipboard_only {
+        let text_with_suffix = format!("{}{}", text, effective.suffix);
+        if let Err(e) = set_clipboard(&text_with_suffix) {
+            return InjectionResult::Failed {
+                error: format!("Clipboard error: {}", e),
+                timestamp: Utc::now(),
+            };
+        }
+
+        let reason = if let Some(app_id) = &effective.matched_override {
+            format!("App override clipboard-only mode ({})", app_id)
+        } else {
+            "App override clipboard-only mode".to_string()
+        };
+
+        return InjectionResult::ClipboardOnly {
+            reason,
+            text_length: text.len(),
+            timestamp: Utc::now(),
+        };
+    }
+
     // Validate focus if Focus Guard is enabled and we have an expected signature
-    if config.focus_guard_enabled {
+    if effective.focus_guard_enabled {
         if let Some(expected) = expected_focus {
             let validation = validate_focus(expected);
             if !validation.should_inject() {
@@ -129,7 +230,7 @@ pub async fn inject_text(
                     .unwrap_or_else(|| "Focus validation failed".to_string());
 
                 // Still set clipboard for user to paste manually
-                let text_with_suffix = format!("{}{}", text, config.suffix);
+                let text_with_suffix = format!("{}{}", text, effective.suffix);
                 if let Err(e) = set_clipboard(&text_with_suffix) {
                     return InjectionResult::Failed {
                         error: format!("Clipboard error: {}", e),
@@ -148,9 +249,8 @@ pub async fn inject_text(
     }
 
     // Check for self-injection even without expected focus
-    let current_focus = capture_focus();
     if crate::focus::is_self_focused(&current_focus) {
-        let text_with_suffix = format!("{}{}", text, config.suffix);
+        let text_with_suffix = format!("{}{}", text, effective.suffix);
         if let Err(e) = set_clipboard(&text_with_suffix) {
             return InjectionResult::Failed {
                 error: format!("Clipboard error: {}", e),
@@ -166,11 +266,11 @@ pub async fn inject_text(
     }
 
     // Perform injection (serialized)
-    perform_injection(text, config).await
+    perform_injection(text, &effective).await
 }
 
 /// Perform the actual injection (clipboard + paste).
-async fn perform_injection(text: &str, config: &InjectionConfig) -> InjectionResult {
+async fn perform_injection(text: &str, config: &EffectiveInjectionConfig) -> InjectionResult {
     // Serialize injections
     let _guard = INJECTION_MUTEX.lock().await;
 
@@ -490,6 +590,7 @@ fn synthesize_paste_windows() -> Result<(), InjectionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn test_config_default() {
@@ -498,6 +599,7 @@ mod tests {
         assert!(config.restore_clipboard);
         assert_eq!(config.suffix, " ");
         assert!(config.focus_guard_enabled);
+        assert!(config.app_overrides.is_empty());
     }
 
     #[test]
@@ -598,6 +700,59 @@ mod tests {
         };
         let text_with_suffix = format!("{}{}", "hello", config.suffix);
         assert_eq!(text_with_suffix, "hello\n");
+    }
+
+    #[test]
+    fn test_resolve_override_matches_process_name() {
+        let mut config = InjectionConfig::default();
+        config.app_overrides.insert(
+            "Slack".to_string(),
+            AppOverride {
+                paste_delay_ms: Some(120),
+                use_clipboard_only: Some(true),
+            },
+        );
+
+        let focus = FocusSignature {
+            window_id: "1".to_string(),
+            process_name: "slack".to_string(),
+            app_name: "general - Slack".to_string(),
+            captured_at: Instant::now(),
+            timestamp: Utc::now(),
+        };
+
+        let resolved = config.resolve_override(&focus);
+        assert!(resolved.is_some());
+        let (key, ov) = resolved.unwrap();
+        assert_eq!(key, "Slack");
+        assert_eq!(ov.paste_delay_ms, Some(120));
+        assert_eq!(ov.use_clipboard_only, Some(true));
+    }
+
+    #[test]
+    fn test_effective_for_focus_applies_override_values() {
+        let mut config = InjectionConfig::default();
+        config.paste_delay_ms = 40;
+        config.app_overrides.insert(
+            "discord".to_string(),
+            AppOverride {
+                paste_delay_ms: Some(200),
+                use_clipboard_only: Some(true),
+            },
+        );
+
+        let focus = FocusSignature {
+            window_id: "2".to_string(),
+            process_name: "Discord.exe".to_string(),
+            app_name: "Discord".to_string(),
+            captured_at: Instant::now(),
+            timestamp: Utc::now(),
+        };
+
+        let effective = config.effective_for_focus(&focus);
+        assert_eq!(effective.paste_delay_ms, 200);
+        assert!(effective.use_clipboard_only);
+        assert_eq!(effective.matched_override.as_deref(), Some("discord"));
     }
 
     #[cfg(target_os = "linux")]

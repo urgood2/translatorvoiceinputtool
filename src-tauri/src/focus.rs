@@ -126,6 +126,80 @@ pub fn is_self_focused(sig: &FocusSignature) -> bool {
         || process_lower.contains("voiceinputtool")
 }
 
+/// Normalize an app identifier for config matching.
+///
+/// This allows case-insensitive matching and tolerates minor formatting
+/// differences (spaces/underscores/hyphens).
+pub fn normalize_app_id(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().to_lowercase();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Windows process names commonly include .exe; treat it as equivalent.
+    let without_ext = trimmed.strip_suffix(".exe").unwrap_or(&trimmed);
+    let normalized: String = without_ext
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch
+            } else if ch == ' ' || ch == '_' || ch == '-' {
+                '-'
+            } else {
+                '\0'
+            }
+        })
+        .filter(|ch| *ch != '\0')
+        .collect();
+
+    let mut compact = String::with_capacity(normalized.len());
+    let mut last_dash = false;
+    for ch in normalized.trim_matches('-').chars() {
+        if ch == '-' {
+            if !last_dash {
+                compact.push(ch);
+                last_dash = true;
+            }
+        } else {
+            compact.push(ch);
+            last_dash = false;
+        }
+    }
+    if compact.is_empty() {
+        None
+    } else {
+        Some(compact)
+    }
+}
+
+/// Candidate app identifiers for per-app override matching.
+///
+/// Returns normalized keys derived from both process name and app/window title.
+pub fn app_override_candidates(sig: &FocusSignature) -> Vec<String> {
+    let mut out = Vec::new();
+
+    if let Some(process) = normalize_app_id(&sig.process_name) {
+        out.push(process);
+    }
+
+    if let Some(app) = normalize_app_id(&sig.app_name) {
+        if !out.contains(&app) {
+            out.push(app);
+        }
+    }
+
+    // Add token-level matches for window titles like "channel - Slack".
+    for token in sig.app_name.split_whitespace() {
+        if let Some(candidate) = normalize_app_id(token) {
+            if !out.contains(&candidate) {
+                out.push(candidate);
+            }
+        }
+    }
+
+    out
+}
+
 // === Linux Implementation ===
 
 #[cfg(target_os = "linux")]
@@ -297,6 +371,32 @@ mod tests {
             captured_at: Instant::now(),
             timestamp: Utc::now(),
         }));
+    }
+
+    #[test]
+    fn test_normalize_app_id() {
+        assert_eq!(normalize_app_id(" Slack "), Some("slack".to_string()));
+        assert_eq!(normalize_app_id("Code.exe"), Some("code".to_string()));
+        assert_eq!(
+            normalize_app_id("Visual Studio Code"),
+            Some("visual-studio-code".to_string())
+        );
+        assert_eq!(normalize_app_id(""), None);
+    }
+
+    #[test]
+    fn test_app_override_candidates() {
+        let sig = FocusSignature {
+            window_id: "1".to_string(),
+            process_name: "slack".to_string(),
+            app_name: "general - Slack".to_string(),
+            captured_at: Instant::now(),
+            timestamp: Utc::now(),
+        };
+
+        let candidates = app_override_candidates(&sig);
+        assert!(candidates.contains(&"slack".to_string()));
+        assert!(candidates.contains(&"general-slack".to_string()));
     }
 
     #[test]
