@@ -551,6 +551,14 @@ describe('Async Action Coverage', () => {
         sidecar: { status: 'ok', message: 'ok' },
         model: { status: 'ok', message: 'ok' },
       },
+      recent_logs: [
+        {
+          timestamp: '2026-02-18T00:00:00Z',
+          level: 'INFO',
+          target: 'app::test',
+          message: 'diagnostics test log',
+        },
+      ],
     };
 
     setMockInvokeHandler((cmd) => {

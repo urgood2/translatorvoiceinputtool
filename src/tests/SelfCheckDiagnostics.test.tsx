@@ -111,6 +111,14 @@ const mockDiagnosticsReport: DiagnosticsReport = {
   capabilities: mockCapabilities,
   config: mockConfig,
   self_check: mockSelfCheckResult,
+  recent_logs: [
+    {
+      timestamp: '2026-02-18T00:00:00Z',
+      level: 'INFO',
+      target: 'diagnostics::test',
+      message: 'sample diagnostics log',
+    },
+  ],
 };
 
 describe('SelfCheck', () => {
@@ -293,6 +301,15 @@ describe('Diagnostics', () => {
     );
 
     expect(screen.getByText(/Hotkey: \[OK\]/)).toBeDefined();
+  });
+
+  it('shows recent logs in output', () => {
+    render(
+      <Diagnostics report={mockDiagnosticsReport} onRefresh={vi.fn()} />
+    );
+
+    expect(screen.getByText(/Recent Logs/)).toBeDefined();
+    expect(screen.getByText(/sample diagnostics log/)).toBeDefined();
   });
 
   it('shows stats', () => {

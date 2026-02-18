@@ -312,6 +312,7 @@ export interface SelfCheckResult {
 export interface LogEntry {
   timestamp: string;
   level: string;
+  target: string;
   message: string;
 }
 
@@ -322,6 +323,7 @@ export interface DiagnosticsReport {
   capabilities: Capabilities;
   config: AppConfig;
   self_check: SelfCheckResult;
+  recent_logs: LogEntry[];
 }
 
 // ============================================================================

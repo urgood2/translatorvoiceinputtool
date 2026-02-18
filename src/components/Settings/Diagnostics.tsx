@@ -10,7 +10,7 @@
  */
 
 import { useState, useMemo, useCallback } from 'react';
-import type { DiagnosticsReport, Capabilities, AppConfig, SelfCheckResult } from '../../types';
+import type { DiagnosticsReport, Capabilities, AppConfig, SelfCheckResult, LogEntry } from '../../types';
 
 interface DiagnosticsProps {
   report: DiagnosticsReport | null;
@@ -107,6 +107,17 @@ function formatSelfCheck(check: SelfCheckResult): string {
 }
 
 /** Generate full diagnostics text. */
+function formatRecentLogs(logs: LogEntry[]): string {
+  if (logs.length === 0) {
+    return 'No recent log entries available.';
+  }
+
+  return logs
+    .map((entry) => `${entry.timestamp} [${entry.level}] ${entry.target}: ${entry.message}`)
+    .join('\n');
+}
+
+/** Generate full diagnostics text. */
 function generateDiagnosticsText(report: DiagnosticsReport): string {
   const sections: string[] = [];
 
@@ -138,6 +149,11 @@ function generateDiagnosticsText(report: DiagnosticsReport): string {
     sections.push(redactPaths(report.capabilities.diagnostics));
     sections.push('');
   }
+
+  // Recent logs (already redacted by backend logger)
+  sections.push('--- Recent Logs ---');
+  sections.push(redactPaths(formatRecentLogs(report.recent_logs)));
+  sections.push('');
 
   // Footer
   sections.push('=== End of Report ===');

@@ -574,6 +574,7 @@ pub struct DiagnosticsReport {
     pub capabilities: Capabilities,
     pub config: AppConfig,
     pub self_check: SelfCheckResult,
+    pub recent_logs: Vec<LogEntry>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, String>,
 }
@@ -590,6 +591,7 @@ pub fn generate_diagnostics() -> DiagnosticsReport {
         capabilities: Capabilities::detect(),
         config: config::load_config(),
         self_check: run_self_check(),
+        recent_logs: get_recent_logs(100),
         environment: diagnostics_environment(),
     }
 }
@@ -774,6 +776,22 @@ mod tests {
         assert!(json.contains("version"));
         assert!(json.contains("platform"));
         assert!(json.contains("capabilities"));
+        assert!(json.contains("recent_logs"));
+    }
+
+    #[test]
+    fn test_generate_diagnostics_includes_recent_logs() {
+        let buffer = crate::log_buffer::global_buffer();
+        buffer.clear();
+        crate::log_buffer::log_to_buffer(log::Level::Info, "commands::tests", "diagnostics-log");
+
+        let report = generate_diagnostics();
+        assert!(
+            report
+                .recent_logs
+                .iter()
+                .any(|entry| entry.target == "commands::tests" && entry.message.contains("diagnostics-log"))
+        );
     }
 
     #[test]
