@@ -544,7 +544,8 @@ mod tests {
     #[test]
     fn test_cannot_record_reason_wire_snapshot_parity() {
         let snapshot: Value =
-            serde_json::from_str(include_str!("../../shared/contracts/tauri_wire.v1.json")).unwrap();
+            serde_json::from_str(include_str!("../../shared/contracts/tauri_wire.v1.json"))
+                .unwrap();
         let expected = snapshot.get("cannot_record_reason").unwrap();
 
         let actual = serde_json::json!([

@@ -350,7 +350,8 @@ fn query_wayland_global_shortcuts_portal() -> Result<bool, String> {
     use zbus::blocking::Connection;
     use zbus::names::BusName;
 
-    let connection = Connection::session().map_err(|e| format!("session bus connection failed: {e}"))?;
+    let connection =
+        Connection::session().map_err(|e| format!("session bus connection failed: {e}"))?;
 
     let dbus =
         DBusProxy::new(&connection).map_err(|e| format!("dbus proxy creation failed: {e}"))?;
@@ -680,8 +681,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_wayland_portal_support_true_when_interface_present() {
-        let xml =
-            r#"<node><interface name="org.freedesktop.portal.GlobalShortcuts"/></node>"#;
+        let xml = r#"<node><interface name="org.freedesktop.portal.GlobalShortcuts"/></node>"#;
         assert!(wayland_portal_support_from_probe(true, Some(xml)));
     }
 
