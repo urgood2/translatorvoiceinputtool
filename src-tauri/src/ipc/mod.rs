@@ -64,6 +64,15 @@ pub struct NotificationEvent {
     pub params: Value,
 }
 
+fn parse_notification_event(line: &str) -> Option<NotificationEvent> {
+    serde_json::from_str::<Notification>(line)
+        .ok()
+        .map(|notif| NotificationEvent {
+            method: notif.method,
+            params: notif.params,
+        })
+}
+
 /// Internal command for the writer task.
 enum WriterCommand {
     Send(String),
@@ -305,6 +314,10 @@ impl RpcClient {
                         } else {
                             log::warn!("Received response for unknown request id: {}", id);
                         }
+                    } else if let Some(event) = parse_notification_event(&line) {
+                        // Untagged enum parsing may classify notifications as Response(id=None).
+                        // Recover by parsing notification shape directly and broadcasting it.
+                        let _ = notification_tx.send(event);
                     }
                 }
                 IncomingMessage::Notification(notif) => {
@@ -489,6 +502,20 @@ mod tests {
         // Unknown ID should return None
         let unknown_method = pending.remove(&999);
         assert!(unknown_method.is_none());
+    }
+
+    #[test]
+    fn test_parse_notification_event_from_notification_line() {
+        let line = r#"{"jsonrpc":"2.0","method":"audio:level","params":{"rms":-30.5}}"#;
+        let event = parse_notification_event(line).expect("notification event should parse");
+        assert_eq!(event.method, "audio:level");
+        assert_eq!(event.params["rms"], -30.5);
+    }
+
+    #[test]
+    fn test_parse_notification_event_returns_none_for_response_line() {
+        let line = r#"{"jsonrpc":"2.0","id":42,"result":{"status":"ok"}}"#;
+        assert!(parse_notification_event(line).is_none());
     }
 
     #[tokio::test]
