@@ -372,9 +372,7 @@ def download_file(
         # Check for existing partial download
         existing_size = dest_path.stat().st_size if dest_path.exists() else 0
 
-        headers = {}
-        if existing_size > 0:
-            headers["Range"] = f"bytes={existing_size}-"
+        headers = build_download_headers(existing_size)
 
         request = urllib.request.Request(url, headers=headers)
 
@@ -420,6 +418,23 @@ def download_file(
     except ImportError:
         # Fallback if urllib not available (shouldn't happen)
         raise NetworkError("urllib not available", url)
+
+
+def build_download_headers(existing_size: int = 0) -> dict[str, str]:
+    """Build download request headers.
+
+    HuggingFace auth token is sourced from HF_TOKEN env var only.
+    It is never persisted in config.
+    """
+    headers: dict[str, str] = {}
+    if existing_size > 0:
+        headers["Range"] = f"bytes={existing_size}-"
+
+    hf_token = os.environ.get("HF_TOKEN", "").strip()
+    if hf_token:
+        headers["Authorization"] = f"Bearer {hf_token}"
+
+    return headers
 
 
 def download_with_mirrors(

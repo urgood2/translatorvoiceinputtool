@@ -24,6 +24,69 @@ const CONFIG_DIR_NAME: &str = "OpenVoicy";
 
 /// Config file name.
 const CONFIG_FILE_NAME: &str = "config.json";
+const SENSITIVE_FIELD_KEYWORDS: [&str; 4] = ["token", "key", "secret", "password"];
+
+const ROOT_CONFIG_FIELDS: [&str; 9] = [
+    "schema_version",
+    "audio",
+    "hotkeys",
+    "injection",
+    "model",
+    "replacements",
+    "ui",
+    "history",
+    "presets",
+];
+
+const AUDIO_CONFIG_FIELDS: [&str; 6] = [
+    "device_uid",
+    "audio_cues_enabled",
+    "trim_silence",
+    "vad_enabled",
+    "vad_silence_ms",
+    "vad_min_speech_ms",
+];
+
+const HOTKEY_CONFIG_FIELDS: [&str; 3] = ["primary", "copy_last", "mode"];
+
+const INJECTION_CONFIG_FIELDS: [&str; 5] = [
+    "paste_delay_ms",
+    "restore_clipboard",
+    "suffix",
+    "focus_guard_enabled",
+    "app_overrides",
+];
+
+const APP_OVERRIDE_FIELDS: [&str; 2] = ["paste_delay_ms", "use_clipboard_only"];
+
+const MODEL_CONFIG_FIELDS: [&str; 4] = ["model_id", "device", "preferred_device", "language"];
+
+const REPLACEMENT_RULE_FIELDS: [&str; 9] = [
+    "id",
+    "kind",
+    "pattern",
+    "replacement",
+    "enabled",
+    "word_boundary",
+    "case_sensitive",
+    "description",
+    "origin",
+];
+
+const UI_CONFIG_FIELDS: [&str; 8] = [
+    "show_on_startup",
+    "window_width",
+    "window_height",
+    "theme",
+    "onboarding_completed",
+    "overlay_enabled",
+    "locale",
+    "reduce_motion",
+];
+
+const HISTORY_CONFIG_FIELDS: [&str; 3] = ["persistence_mode", "max_entries", "encrypt_at_rest"];
+
+const PRESETS_CONFIG_FIELDS: [&str; 1] = ["enabled_presets"];
 
 /// Root application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -660,6 +723,7 @@ pub fn load_config_from_path(path: &PathBuf) -> AppConfig {
     match fs::read_to_string(path) {
         Ok(content) => match serde_json::from_str::<Value>(&content) {
             Ok(value) => {
+                warn_on_sensitive_unknown_fields(&value);
                 let mut config = migrate_config(value);
                 config.validate_and_clamp();
                 config
@@ -784,6 +848,111 @@ fn ensure_replacement_rule_ids(config: &mut Value) {
             "Migrated {} replacement rules to include generated IDs",
             migrated
         );
+    }
+}
+
+fn warn_on_sensitive_unknown_fields(config: &Value) {
+    for path in sensitive_unknown_config_fields(config) {
+        log::warn!(
+            "Ignoring unknown sensitive config field '{}'; tokens and secrets must not be stored in config",
+            path
+        );
+    }
+}
+
+fn sensitive_unknown_config_fields(config: &Value) -> Vec<String> {
+    let mut fields = Vec::new();
+
+    let Some(root) = config.as_object() else {
+        return fields;
+    };
+
+    collect_sensitive_unknown_keys(root, "", &ROOT_CONFIG_FIELDS, &mut fields);
+
+    if let Some(audio) = root.get("audio").and_then(Value::as_object) {
+        collect_sensitive_unknown_keys(audio, "audio", &AUDIO_CONFIG_FIELDS, &mut fields);
+    }
+    if let Some(hotkeys) = root.get("hotkeys").and_then(Value::as_object) {
+        collect_sensitive_unknown_keys(hotkeys, "hotkeys", &HOTKEY_CONFIG_FIELDS, &mut fields);
+    }
+    if let Some(injection) = root.get("injection").and_then(Value::as_object) {
+        collect_sensitive_unknown_keys(
+            injection,
+            "injection",
+            &INJECTION_CONFIG_FIELDS,
+            &mut fields,
+        );
+        if let Some(app_overrides) = injection.get("app_overrides").and_then(Value::as_object) {
+            for (app_id, override_cfg) in app_overrides {
+                if let Some(override_obj) = override_cfg.as_object() {
+                    let path_prefix = format!("injection.app_overrides.{}", app_id);
+                    collect_sensitive_unknown_keys(
+                        override_obj,
+                        &path_prefix,
+                        &APP_OVERRIDE_FIELDS,
+                        &mut fields,
+                    );
+                }
+            }
+        }
+    }
+    if let Some(model) = root.get("model").and_then(Value::as_object) {
+        collect_sensitive_unknown_keys(model, "model", &MODEL_CONFIG_FIELDS, &mut fields);
+    }
+    if let Some(replacements) = root.get("replacements").and_then(Value::as_array) {
+        for (idx, replacement) in replacements.iter().enumerate() {
+            if let Some(rule_obj) = replacement.as_object() {
+                let path_prefix = format!("replacements[{}]", idx);
+                collect_sensitive_unknown_keys(
+                    rule_obj,
+                    &path_prefix,
+                    &REPLACEMENT_RULE_FIELDS,
+                    &mut fields,
+                );
+            }
+        }
+    }
+    if let Some(ui) = root.get("ui").and_then(Value::as_object) {
+        collect_sensitive_unknown_keys(ui, "ui", &UI_CONFIG_FIELDS, &mut fields);
+    }
+    if let Some(history) = root.get("history").and_then(Value::as_object) {
+        collect_sensitive_unknown_keys(history, "history", &HISTORY_CONFIG_FIELDS, &mut fields);
+    }
+    if let Some(presets) = root.get("presets").and_then(Value::as_object) {
+        collect_sensitive_unknown_keys(presets, "presets", &PRESETS_CONFIG_FIELDS, &mut fields);
+    }
+
+    fields.sort();
+    fields.dedup();
+    fields
+}
+
+fn collect_sensitive_unknown_keys(
+    object: &serde_json::Map<String, Value>,
+    prefix: &str,
+    known_keys: &[&str],
+    fields: &mut Vec<String>,
+) {
+    for key in object.keys() {
+        let is_known = known_keys.contains(&key.as_str());
+        if !is_known && contains_sensitive_field_keyword(key) {
+            fields.push(path_with_key(prefix, key));
+        }
+    }
+}
+
+fn contains_sensitive_field_keyword(key: &str) -> bool {
+    let key_lower = key.to_ascii_lowercase();
+    SENSITIVE_FIELD_KEYWORDS
+        .iter()
+        .any(|keyword| key_lower.contains(keyword))
+}
+
+fn path_with_key(prefix: &str, key: &str) -> String {
+    if prefix.is_empty() {
+        key.to_string()
+    } else {
+        format!("{}.{}", prefix, key)
     }
 }
 
@@ -1804,5 +1973,58 @@ mod tests {
 
         config.validate_and_clamp();
         assert_eq!(config.replacements[0].origin, None);
+    }
+
+    #[test]
+    fn test_sensitive_unknown_config_fields_detected_for_nested_objects() {
+        let config = serde_json::json!({
+            "schema_version": 1,
+            "auth_token": "dont-store-me",
+            "audio": {
+                "device_uid": "mic-1",
+                "api_key": "also-bad"
+            },
+            "injection": {
+                "app_overrides": {
+                    "slack": {
+                        "paste_delay_ms": 40,
+                        "session_secret": "bad"
+                    }
+                }
+            },
+            "replacements": [
+                {
+                    "pattern": "foo",
+                    "replacement": "bar",
+                    "enabled": true,
+                    "token_value": "bad"
+                }
+            ],
+            "ui": {
+                "password_hint": "bad"
+            }
+        });
+
+        let unknown = sensitive_unknown_config_fields(&config);
+        assert!(unknown.contains(&"auth_token".to_string()));
+        assert!(unknown.contains(&"audio.api_key".to_string()));
+        assert!(unknown.contains(&"injection.app_overrides.slack.session_secret".to_string()));
+        assert!(unknown.contains(&"replacements[0].token_value".to_string()));
+        assert!(unknown.contains(&"ui.password_hint".to_string()));
+    }
+
+    #[test]
+    fn test_sensitive_unknown_config_fields_ignore_known_sensitive_named_fields() {
+        let config = serde_json::json!({
+            "schema_version": 1,
+            "hotkeys": {
+                "primary": "Ctrl+Shift+Space",
+                "copy_last": "Ctrl+Shift+V",
+                "mode": "hold"
+            }
+        });
+
+        let unknown = sensitive_unknown_config_fields(&config);
+        assert!(unknown.is_empty());
     }
 }

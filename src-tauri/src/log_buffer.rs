@@ -85,10 +85,23 @@ static REDACTION_PATTERNS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
             Regex::new(r"C:\\Users\\[^\\\s]+").unwrap(),
             "C:\\Users\\[REDACTED]",
         ),
+        // Authorization bearer tokens
+        (
+            Regex::new(r#"(?i)(authorization\s*[:=]\s*bearer\s+)[A-Za-z0-9\-._~+/]+=*"#).unwrap(),
+            "$1[REDACTED]",
+        ),
+        // Env-like credentials (HF_TOKEN=..., SERVICE_SECRET: ..., etc.)
+        (
+            Regex::new(
+                r#"(?i)\b([A-Z0-9_]*(TOKEN|SECRET|PASSWORD|API_KEY|KEY)[A-Z0-9_]*)\b\s*[:=]\s*['"]?[^'"\s]+['"]?"#,
+            )
+            .unwrap(),
+            "$1=[REDACTED]",
+        ),
         // API keys and tokens (common patterns)
         (
             Regex::new(
-                r#"(api[_-]?key|token|secret|password|credential)[=:]\s*['"]?[\w\-\.]+['"]?"#,
+                r#"(?i)\b(api[_-]?key|token|secret|password|credential)\b\s*[:=]\s*['"]?[^'"\s]+['"]?"#,
             )
             .unwrap(),
             "$1=[REDACTED]",
@@ -339,6 +352,24 @@ mod tests {
 
         assert!(entry.message.contains("[REDACTED]"));
         assert!(!entry.message.contains("abc123"));
+    }
+
+    #[test]
+    fn test_hf_token_redaction() {
+        let message = "HF_TOKEN=hf_very_secret_token";
+        let entry = LogEntry::new(Level::Info, "test", message);
+
+        assert!(entry.message.contains("HF_TOKEN=[REDACTED]"));
+        assert!(!entry.message.contains("hf_very_secret_token"));
+    }
+
+    #[test]
+    fn test_authorization_bearer_redaction() {
+        let message = "Authorization: Bearer hf_super_secret_bearer_token";
+        let entry = LogEntry::new(Level::Info, "test", message);
+
+        assert!(entry.message.contains("Authorization: Bearer [REDACTED]"));
+        assert!(!entry.message.contains("hf_super_secret_bearer_token"));
     }
 
     #[test]

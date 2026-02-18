@@ -30,6 +30,7 @@ from openvoicy_sidecar.model_cache import (
     check_disk_space,
     compute_sha256,
     download_file,
+    build_download_headers,
     download_with_mirrors,
     format_bytes,
     get_cache_directory,
@@ -290,6 +291,37 @@ class TestDownload:
 
         assert dest.exists()
         assert dest.read_bytes() == content
+
+    def test_build_download_headers_uses_hf_token_from_env_only(self):
+        """Should include Authorization header when HF_TOKEN is set."""
+        with patch.dict(os.environ, {"HF_TOKEN": "hf_test_token"}, clear=False):
+            headers = build_download_headers(existing_size=128)
+
+        assert headers["Range"] == "bytes=128-"
+        assert headers["Authorization"] == "Bearer hf_test_token"
+
+    def test_download_file_adds_authorization_header_from_hf_token(self, tmp_path):
+        """Should attach HF auth header to download requests."""
+        dest = tmp_path / "downloaded.bin"
+        content = b"test file content"
+
+        with patch.dict(os.environ, {"HF_TOKEN": "hf_header_token"}, clear=False):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                mock_response = MagicMock()
+                mock_response.status = 200
+                mock_response.headers = {"Content-Length": str(len(content))}
+                mock_response.read.side_effect = [content, b""]
+                mock_response.__enter__ = lambda s: s
+                mock_response.__exit__ = MagicMock(return_value=False)
+                mock_urlopen.return_value = mock_response
+
+                download_file("http://example.com/file.bin", dest, len(content))
+
+                request = mock_urlopen.call_args.args[0]
+                auth_header = request.headers.get("Authorization")
+                if auth_header is None:
+                    auth_header = request.headers.get("authorization")
+                assert auth_header == "Bearer hf_header_token"
 
     def test_download_with_mirrors_fallback(self, tmp_path):
         """Should try mirrors on primary failure."""

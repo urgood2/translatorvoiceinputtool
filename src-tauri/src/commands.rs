@@ -8,6 +8,7 @@ use serde::Serialize;
 use thiserror::Error;
 use uuid::Uuid;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::capabilities::{Capabilities, CapabilityIssue};
@@ -572,6 +573,8 @@ pub struct DiagnosticsReport {
     pub capabilities: Capabilities,
     pub config: AppConfig,
     pub self_check: SelfCheckResult,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, String>,
 }
 
 // Re-export LogEntry from log_buffer for IPC
@@ -586,7 +589,49 @@ pub fn generate_diagnostics() -> DiagnosticsReport {
         capabilities: Capabilities::detect(),
         config: config::load_config(),
         self_check: run_self_check(),
+        environment: diagnostics_environment(),
     }
+}
+
+fn diagnostics_environment() -> BTreeMap<String, String> {
+    diagnostics_environment_from_iter(std::env::vars())
+}
+
+fn diagnostics_environment_from_iter<I>(vars: I) -> BTreeMap<String, String>
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    let mut env = BTreeMap::new();
+    for (key, value) in vars {
+        if should_include_diagnostics_env_var(&key) {
+            env.insert(key.clone(), redact_diagnostics_env_value(&key, &value));
+        }
+    }
+    env
+}
+
+fn should_include_diagnostics_env_var(key: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+    upper.starts_with("OPENVOICY_")
+        || upper.starts_with("HF_")
+        || upper.starts_with("TRANSLATORVOICEINPUTTOOL_")
+        || is_sensitive_env_key(&upper)
+}
+
+fn redact_diagnostics_env_value(key: &str, value: &str) -> String {
+    if is_sensitive_env_key(&key.to_ascii_uppercase()) {
+        "[REDACTED]".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn is_sensitive_env_key(upper_key: &str) -> bool {
+    upper_key.contains("TOKEN")
+        || upper_key.contains("SECRET")
+        || upper_key.contains("PASSWORD")
+        || upper_key.contains("API_KEY")
+        || upper_key.ends_with("_KEY")
 }
 
 /// Get recent log entries from the ring buffer.
@@ -728,5 +773,26 @@ mod tests {
         assert!(json.contains("version"));
         assert!(json.contains("platform"));
         assert!(json.contains("capabilities"));
+    }
+
+    #[test]
+    fn test_diagnostics_environment_redacts_sensitive_values() {
+        let env = diagnostics_environment_from_iter(vec![
+            ("HF_TOKEN".to_string(), "hf_secret_token".to_string()),
+            ("SERVICE_API_KEY".to_string(), "api_secret".to_string()),
+            ("OPENVOICY_LOG_LEVEL".to_string(), "debug".to_string()),
+            ("PATH".to_string(), "/usr/bin".to_string()),
+        ]);
+
+        assert_eq!(env.get("HF_TOKEN").map(String::as_str), Some("[REDACTED]"));
+        assert_eq!(
+            env.get("SERVICE_API_KEY").map(String::as_str),
+            Some("[REDACTED]")
+        );
+        assert_eq!(
+            env.get("OPENVOICY_LOG_LEVEL").map(String::as_str),
+            Some("debug")
+        );
+        assert!(!env.contains_key("PATH"));
     }
 }
