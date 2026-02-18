@@ -100,6 +100,73 @@ class ValidateIPCExamplesTests(unittest.TestCase):
             errors = MODULE.validate_contract_required_result_fields(examples_file, contract_file)
             self.assertEqual(errors, [])
 
+    def test_status_get_idle_fixture_variants_requires_no_model_example(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            examples_file = Path(tmpdir) / "examples.jsonl"
+            self._write_jsonl(
+                examples_file,
+                [
+                    {
+                        "type": "request",
+                        "data": {"jsonrpc": "2.0", "id": 20, "method": "status.get"},
+                    },
+                    {
+                        "type": "response",
+                        "data": {
+                            "jsonrpc": "2.0",
+                            "id": 20,
+                            "result": {
+                                "state": "idle",
+                                "model": {"model_id": "parakeet-tdt-0.6b-v3", "status": "ready"},
+                            },
+                        },
+                    },
+                ],
+            )
+
+            errors = MODULE.validate_status_get_idle_fixture_variants(examples_file)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("without model object", errors[0])
+
+    def test_status_get_idle_fixture_variants_passes_with_both_examples(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            examples_file = Path(tmpdir) / "examples.jsonl"
+            self._write_jsonl(
+                examples_file,
+                [
+                    {
+                        "type": "request",
+                        "data": {"jsonrpc": "2.0", "id": 20, "method": "status.get"},
+                    },
+                    {
+                        "type": "response",
+                        "data": {
+                            "jsonrpc": "2.0",
+                            "id": 20,
+                            "result": {
+                                "state": "idle",
+                                "model": {"model_id": "parakeet-tdt-0.6b-v3", "status": "ready"},
+                            },
+                        },
+                    },
+                    {
+                        "type": "request",
+                        "data": {"jsonrpc": "2.0", "id": 34, "method": "status.get"},
+                    },
+                    {
+                        "type": "response",
+                        "data": {
+                            "jsonrpc": "2.0",
+                            "id": 34,
+                            "result": {"state": "idle"},
+                        },
+                    },
+                ],
+            )
+
+            errors = MODULE.validate_status_get_idle_fixture_variants(examples_file)
+            self.assertEqual(errors, [])
+
 
 if __name__ == "__main__":
     unittest.main()

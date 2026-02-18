@@ -34,6 +34,8 @@
 {"_comment": "replacements.set_rules response", "type": "response", "data": {"jsonrpc": "2.0", "id": 19, "result": {"count": 2}}}
 {"_comment": "status.get request", "type": "request", "data": {"jsonrpc": "2.0", "id": 20, "method": "status.get"}}
 {"_comment": "status.get response (idle)", "type": "response", "data": {"jsonrpc": "2.0", "id": 20, "result": {"state": "idle", "model": {"model_id": "parakeet-tdt-0.6b-v3", "status": "ready"}}}}
+{"_comment": "status.get request (idle without model loaded)", "type": "request", "data": {"jsonrpc": "2.0", "id": 34, "method": "status.get"}}
+{"_comment": "status.get response (idle without model loaded)", "type": "response", "data": {"jsonrpc": "2.0", "id": 34, "result": {"state": "idle"}}}
 {"_comment": "status.get response (recording)", "type": "response", "data": {"jsonrpc": "2.0", "id": 21, "result": {"state": "recording", "detail": "Recording session 550e8400-e29b-41d4-a716-446655440000", "model": {"model_id": "parakeet-tdt-0.6b-v3", "status": "ready"}}}}
 {"_comment": "status.get response (transcribing)", "type": "response", "data": {"jsonrpc": "2.0", "id": 22, "result": {"state": "transcribing", "detail": "Transcribing audio...", "model": {"model_id": "parakeet-tdt-0.6b-v3", "status": "ready"}}}}
 {"_comment": "status.get response (loading_model)", "type": "response", "data": {"jsonrpc": "2.0", "id": 23, "result": {"state": "loading_model", "detail": "Downloading model...", "model": {"model_id": "parakeet-tdt-0.6b-v3", "status": "downloading"}}}}

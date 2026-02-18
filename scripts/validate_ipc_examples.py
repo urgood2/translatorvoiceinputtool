@@ -9,6 +9,7 @@ This script:
 4. Validates all error.data.kind values are from the allowed set
 5. Validates message types (request, response, notification, error)
 6. Validates response examples include required result fields from sidecar.rpc.v1
+7. Validates status.get fixtures include idle behavior with and without a model object
 
 Exit codes:
   0 - All validations passed
@@ -160,6 +161,60 @@ def validate_contract_required_result_fields(examples_file: Path, contract_file:
                 f"Line {line_num}: Response result for '{method_name}' missing required "
                 f"contract field(s): {', '.join(missing_fields)}"
             )
+
+    return errors
+
+
+def validate_status_get_idle_fixture_variants(examples_file: Path) -> list[str]:
+    """Validate status.get fixture coverage for idle state with and without model data."""
+    errors: list[str] = []
+    request_method_by_id: dict[Any, str] = {}
+    response_entries: list[dict[str, Any]] = []
+
+    for line in examples_file.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        data = obj.get("data", {})
+        msg_type = obj.get("type")
+        msg_id = data.get("id")
+        if msg_type == "request" and msg_id is not None and "method" in data:
+            request_method_by_id[msg_id] = data["method"]
+        elif msg_type == "response":
+            response_entries.append(obj)
+
+    has_idle_with_model = False
+    has_idle_without_model = False
+
+    for obj in response_entries:
+        data = obj.get("data", {})
+        msg_id = data.get("id")
+        result = data.get("result")
+        if not isinstance(result, dict):
+            continue
+
+        if result.get("state") != "idle":
+            continue
+
+        method_name = request_method_by_id.get(msg_id)
+        comment = str(obj.get("_comment", ""))
+        if method_name != "status.get" and "status.get" not in comment:
+            continue
+
+        if "model" in result:
+            has_idle_with_model = True
+        else:
+            has_idle_without_model = True
+
+    if not has_idle_with_model:
+        errors.append("Missing status.get idle response fixture with model object")
+    if not has_idle_without_model:
+        errors.append("Missing status.get idle response fixture without model object")
 
     return errors
 
@@ -353,6 +408,7 @@ def main() -> int:
                 stats[obj["type"]] += 1
 
     all_errors.extend(validate_contract_required_result_fields(examples_file, contract_file))
+    all_errors.extend(validate_status_get_idle_fixture_variants(examples_file))
 
     # Print results
     if all_errors:

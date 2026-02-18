@@ -1257,6 +1257,17 @@ Get current sidecar status.
 - `detail`: Human-readable status message
 - `model`: Current model status object
 
+`idle` may also be reported before any model is loaded:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "state": "idle"
+  }
+}
+```
+
 **Timeout:** 2 seconds
 
 ---
