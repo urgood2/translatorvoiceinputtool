@@ -22,8 +22,8 @@ from openvoicy_sidecar.server import handle_status_get
 
 logger = logging.getLogger(__name__)
 
-VALID_STATES = {"idle", "recording", "transcribing", "error"}
-VALID_MODEL_STATES = {"ready", "loading", "error"}
+VALID_STATES = {"idle", "loading_model", "recording", "transcribing", "error"}
+VALID_MODEL_STATES = {"missing", "downloading", "verifying", "ready", "error"}
 
 
 @pytest.fixture
@@ -104,3 +104,39 @@ def test_status_get_shape_with_mock_model_loaded():
     logger.info("status.get response: %s", json.dumps(result))
     _assert_status_shape(result)
     assert "model" in result, f"expected model field when model is loaded; got {result}"
+
+
+def test_status_get_loading_model_state_and_status_mapping():
+    """ASR loading/downloading should map to status.get loading_model with protocol model status."""
+    fake_recorder = SimpleNamespace(state=SimpleNamespace(value="idle"))
+    fake_tracker = SimpleNamespace(has_pending=lambda: False)
+
+    with (
+        patch(
+            "openvoicy_sidecar.server.get_engine",
+            return_value=SimpleNamespace(
+                get_status=lambda: {"state": "downloading", "model_id": "mock-model"}
+            ),
+        ),
+        patch("openvoicy_sidecar.server.get_recorder", return_value=fake_recorder),
+        patch("openvoicy_sidecar.server.get_session_tracker", return_value=fake_tracker),
+    ):
+        downloading = handle_status_get(Request(method="status.get", id=12))
+
+    _assert_status_shape(downloading)
+    assert downloading["state"] == "loading_model"
+    assert downloading["model"]["status"] == "downloading"
+
+    with (
+        patch(
+            "openvoicy_sidecar.server.get_engine",
+            return_value=SimpleNamespace(get_status=lambda: {"state": "loading", "model_id": "mock-model"}),
+        ),
+        patch("openvoicy_sidecar.server.get_recorder", return_value=fake_recorder),
+        patch("openvoicy_sidecar.server.get_session_tracker", return_value=fake_tracker),
+    ):
+        loading = handle_status_get(Request(method="status.get", id=13))
+
+    _assert_status_shape(loading)
+    assert loading["state"] == "loading_model"
+    assert loading["model"]["status"] == "verifying"

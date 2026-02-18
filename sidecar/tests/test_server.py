@@ -229,11 +229,17 @@ class TestServerIntegration:
         assert "error" not in responses[0]
 
         result = responses[0]["result"]
-        assert result["state"] in {"idle", "recording", "transcribing", "error"}
+        assert result["state"] in {"idle", "loading_model", "recording", "transcribing", "error"}
         if "detail" in result:
             assert isinstance(result["detail"], str)
         if "model" in result:
-            assert result["model"]["status"] in {"ready", "loading", "error"}
+            assert result["model"]["status"] in {
+                "missing",
+                "downloading",
+                "verifying",
+                "ready",
+                "error",
+            }
             assert isinstance(result["model"]["model_id"], str)
 
     def test_unknown_method(self, run_sidecar):

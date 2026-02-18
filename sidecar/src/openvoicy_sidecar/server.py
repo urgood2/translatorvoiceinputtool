@@ -212,6 +212,9 @@ def handle_status_get(request: Request) -> dict[str, Any]:
     if asr_state == "error":
         result["state"] = "error"
         result["detail"] = "ASR engine error"
+    elif asr_state in {"downloading", "loading"}:
+        result["state"] = "loading_model"
+        result["detail"] = "Downloading model..." if asr_state == "downloading" else "Loading model..."
     else:
         recording_state = get_recorder().state.value
         if recording_state in ("recording", "stopping"):
@@ -221,9 +224,10 @@ def handle_status_get(request: Request) -> dict[str, Any]:
 
     model_id = asr_status.get("model_id")
     model_status = {
+        "uninitialized": "missing",
         "ready": "ready",
-        "loading": "loading",
-        "downloading": "loading",
+        "loading": "verifying",
+        "downloading": "downloading",
         "error": "error",
     }.get(asr_state)
     if model_id is not None and model_status is not None:
