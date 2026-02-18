@@ -5,12 +5,20 @@ on:
     paths:
       - 'shared/ipc/**'
       - 'shared/model/**'
+      - 'shared/contracts/**'
       - 'scripts/validate_*.py'
+      - 'scripts/check_contract_aliases.py'
+      - 'src-tauri/src/integration.rs'
+      - 'src/hooks/useTauriEvents.ts'
   pull_request:
     paths:
       - 'shared/ipc/**'
       - 'shared/model/**'
+      - 'shared/contracts/**'
       - 'scripts/validate_*.py'
+      - 'scripts/check_contract_aliases.py'
+      - 'src-tauri/src/integration.rs'
+      - 'src/hooks/useTauriEvents.ts'
 
 jobs:
   validate:
@@ -40,6 +48,9 @@ jobs:
                       sys.exit(1)
           print(f'✓ All {i} lines are valid JSON')
           "
+
+      - name: Validate compatibility window aliases
+        run: python3 scripts/check_contract_aliases.py
 
       - name: Validate examples match protocol spec
         run: python3 scripts/validate_ipc_examples.py
