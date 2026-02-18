@@ -307,7 +307,7 @@ Start audio level metering.
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "result": { "status": "started" }
+  "result": { "running": true, "interval_ms": 80 }
 }
 ```
 
@@ -331,7 +331,7 @@ Stop audio level metering.
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "result": { "status": "stopped" }
+  "result": { "stopped": true }
 }
 ```
 
@@ -754,7 +754,12 @@ Stop recording and begin transcription.
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "result": { "audio_duration_ms": 3250 }
+  "result": {
+    "audio_duration_ms": 3250,
+    "sample_rate": 16000,
+    "channels": 1,
+    "session_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
 }
 ```
 

@@ -55,6 +55,9 @@ jobs:
       - name: Validate examples match protocol spec
         run: python3 scripts/validate_ipc_examples.py
 
+      - name: Validate IPC examples validator regression tests
+        run: python3 -m unittest scripts/tests/test_validate_ipc_examples.py
+
       - name: Validate model manifest validator regression tests
         run: python3 -m unittest scripts/tests/test_validate_model_manifest.py
 

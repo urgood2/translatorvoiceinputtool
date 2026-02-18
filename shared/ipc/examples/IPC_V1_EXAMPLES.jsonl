@@ -11,9 +11,9 @@
 {"_comment": "audio.set_device with null (system default)", "type": "request", "data": {"jsonrpc": "2.0", "id": 6, "method": "audio.set_device", "params": {"device_uid": null}}}
 {"_comment": "audio.set_device null response", "type": "response", "data": {"jsonrpc": "2.0", "id": 6, "result": {"active_device_uid": "device-uuid-1"}}}
 {"_comment": "audio.meter_start request", "type": "request", "data": {"jsonrpc": "2.0", "id": 7, "method": "audio.meter_start", "params": {"device_uid": null, "interval_ms": 80}}}
-{"_comment": "audio.meter_start response", "type": "response", "data": {"jsonrpc": "2.0", "id": 7, "result": {"status": "started"}}}
+{"_comment": "audio.meter_start response", "type": "response", "data": {"jsonrpc": "2.0", "id": 7, "result": {"running": true, "interval_ms": 80}}}
 {"_comment": "audio.meter_stop request", "type": "request", "data": {"jsonrpc": "2.0", "id": 8, "method": "audio.meter_stop"}}
-{"_comment": "audio.meter_stop response", "type": "response", "data": {"jsonrpc": "2.0", "id": 8, "result": {"status": "stopped"}}}
+{"_comment": "audio.meter_stop response", "type": "response", "data": {"jsonrpc": "2.0", "id": 8, "result": {"stopped": true}}}
 {"_comment": "model.get_status request", "type": "request", "data": {"jsonrpc": "2.0", "id": 9, "method": "model.get_status"}}
 {"_comment": "model.get_status response (ready)", "type": "response", "data": {"jsonrpc": "2.0", "id": 9, "result": {"model_id": "parakeet-tdt-0.6b-v3", "revision": "main", "status": "ready", "cache_path": "/home/user/.cache/huggingface/hub/models--openai--parakeet-tdt-0.6b-v3"}}}
 {"_comment": "model.get_status response (downloading)", "type": "response", "data": {"jsonrpc": "2.0", "id": 10, "result": {"model_id": "parakeet-tdt-0.6b-v3", "revision": "main", "status": "downloading", "progress": {"current": 1073741824, "total": 3221225472, "unit": "bytes"}}}}
@@ -27,7 +27,7 @@
 {"_comment": "recording.start request", "type": "request", "data": {"jsonrpc": "2.0", "id": 16, "method": "recording.start", "params": {"session_id": "550e8400-e29b-41d4-a716-446655440000", "device_uid": null}}}
 {"_comment": "recording.start response", "type": "response", "data": {"jsonrpc": "2.0", "id": 16, "result": {"session_id": "550e8400-e29b-41d4-a716-446655440000"}}}
 {"_comment": "recording.stop request", "type": "request", "data": {"jsonrpc": "2.0", "id": 17, "method": "recording.stop", "params": {"session_id": "550e8400-e29b-41d4-a716-446655440000"}}}
-{"_comment": "recording.stop response", "type": "response", "data": {"jsonrpc": "2.0", "id": 17, "result": {"audio_duration_ms": 3250}}}
+{"_comment": "recording.stop response", "type": "response", "data": {"jsonrpc": "2.0", "id": 17, "result": {"audio_duration_ms": 3250, "sample_rate": 16000, "channels": 1, "session_id": "550e8400-e29b-41d4-a716-446655440000"}}}
 {"_comment": "recording.cancel request", "type": "request", "data": {"jsonrpc": "2.0", "id": 18, "method": "recording.cancel", "params": {"session_id": "550e8400-e29b-41d4-a716-446655440000"}}}
 {"_comment": "recording.cancel response", "type": "response", "data": {"jsonrpc": "2.0", "id": 18, "result": {"cancelled": true, "session_id": "550e8400-e29b-41d4-a716-446655440000"}}}
 {"_comment": "replacements.set_rules request", "type": "request", "data": {"jsonrpc": "2.0", "id": 19, "method": "replacements.set_rules", "params": {"rules": [{"id": "123e4567-e89b-12d3-a456-426614174000", "enabled": true, "kind": "literal", "pattern": "gonna", "replacement": "going to", "word_boundary": true, "case_sensitive": false, "description": "Expand informal contractions", "origin": "preset"}, {"id": "987fcdeb-51a2-3bc4-d567-890123456789", "enabled": true, "kind": "regex", "pattern": "\\buh+\\b", "replacement": "", "word_boundary": false, "case_sensitive": false, "description": "Remove filler words", "origin": "user"}]}}}

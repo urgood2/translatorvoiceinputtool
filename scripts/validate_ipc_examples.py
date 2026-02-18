@@ -8,6 +8,7 @@ This script:
 3. Validates error codes are in valid ranges
 4. Validates all error.data.kind values are from the allowed set
 5. Validates message types (request, response, notification, error)
+6. Validates response examples include required result fields from sidecar.rpc.v1
 
 Exit codes:
   0 - All validations passed
@@ -80,6 +81,87 @@ VALID_REQUEST_METHODS = {
     "replacements.preview",
     "status.get",
 }
+
+
+def load_contract_required_result_fields(contract_file: Path) -> dict[str, set[str]]:
+    """Load method -> required result fields from sidecar.rpc.v1 contract."""
+    contract_data = json.loads(contract_file.read_text())
+    result: dict[str, set[str]] = {}
+
+    for item in contract_data.get("items", []):
+        if item.get("type") != "method":
+            continue
+        method_name = item.get("name")
+        required = item.get("result_schema", {}).get("required", [])
+        if method_name and isinstance(required, list) and required:
+            result[method_name] = {field for field in required if isinstance(field, str)}
+
+    return result
+
+
+def validate_contract_required_result_fields(examples_file: Path, contract_file: Path) -> list[str]:
+    """Validate that response examples include all required result fields for each method."""
+    errors: list[str] = []
+
+    try:
+        required_by_method = load_contract_required_result_fields(contract_file)
+    except Exception as e:
+        return [f"Contract parse error: {e}"]
+
+    request_method_by_id: dict[Any, str] = {}
+    response_entries: list[tuple[int, dict[str, Any]]] = []
+
+    for line_num, line in enumerate(examples_file.read_text().splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            # Base JSON parse validation reports this already.
+            continue
+
+        data = obj.get("data", {})
+        msg_type = obj.get("type")
+        msg_id = data.get("id")
+
+        if msg_type == "request" and msg_id is not None and "method" in data:
+            request_method_by_id[msg_id] = data["method"]
+        elif msg_type == "response":
+            response_entries.append((line_num, obj))
+
+    for line_num, obj in response_entries:
+        data = obj.get("data", {})
+        if "result" not in data:
+            continue
+
+        msg_id = data.get("id")
+        if msg_id is None:
+            continue
+
+        method_name = request_method_by_id.get(msg_id)
+        if not method_name:
+            continue
+
+        required_fields = required_by_method.get(method_name)
+        if not required_fields:
+            continue
+
+        result = data["result"]
+        if not isinstance(result, dict):
+            errors.append(
+                f"Line {line_num}: Response result for '{method_name}' must be an object to validate required fields"
+            )
+            continue
+
+        missing_fields = sorted(field for field in required_fields if field not in result)
+        if missing_fields:
+            errors.append(
+                f"Line {line_num}: Response result for '{method_name}' missing required "
+                f"contract field(s): {', '.join(missing_fields)}"
+            )
+
+    return errors
 
 
 def validate_error_code(code: int) -> str | None:
@@ -226,9 +308,14 @@ def main() -> int:
     script_dir = Path(__file__).parent
     repo_root = script_dir.parent
     examples_file = repo_root / "shared" / "ipc" / "examples" / "IPC_V1_EXAMPLES.jsonl"
+    contract_file = repo_root / "shared" / "contracts" / "sidecar.rpc.v1.json"
 
     if not examples_file.exists():
         print(f"ERROR: Examples file not found: {examples_file}", file=sys.stderr)
+        return 1
+
+    if not contract_file.exists():
+        print(f"ERROR: Contract file not found: {contract_file}", file=sys.stderr)
         return 1
 
     all_errors: list[str] = []
@@ -264,6 +351,8 @@ def main() -> int:
             # Update stats
             if "type" in obj and obj["type"] in stats:
                 stats[obj["type"]] += 1
+
+    all_errors.extend(validate_contract_required_result_fields(examples_file, contract_file))
 
     # Print results
     if all_errors:
