@@ -382,6 +382,25 @@ class TestRecordingHandlers:
             if recorder.state == RecordingState.RECORDING:
                 recorder.cancel(recorder.session_id)
 
+    def test_handle_recording_start_emits_recording_status_changed(
+        self, mock_sounddevice, reset_global_recorder
+    ):
+        """Should emit recording status when start succeeds."""
+        with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
+            with patch("openvoicy_sidecar.notifications.emit_status_changed") as mock_status_changed:
+                result = handle_recording_start(Request(method="recording.start", id=1))
+
+            assert "session_id" in result
+            mock_status_changed.assert_called_once_with(
+                "recording",
+                "Recording in progress...",
+            )
+
+            # Cleanup
+            recorder = get_recorder()
+            if recorder.state == RecordingState.RECORDING:
+                recorder.cancel(recorder.session_id)
+
     def test_handle_recording_start_already_recording(
         self, mock_sounddevice, reset_global_recorder
     ):
@@ -504,7 +523,7 @@ class TestRecordingHandlers:
     def test_handle_recording_cancel_does_not_trigger_transcription(
         self, mock_sounddevice, reset_global_recorder
     ):
-        """Cancel should not call transcribe_session_async or emit status change."""
+        """Cancel should not transcribe and should emit idle status change."""
         with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
             start_request = Request(method="recording.start", id=1)
             start_result = handle_recording_start(start_request)
@@ -526,7 +545,7 @@ class TestRecordingHandlers:
             assert result["session_id"] == session_id
             assert get_pending_audio(session_id) is None
             mock_transcribe.assert_not_called()
-            mock_status_changed.assert_not_called()
+            mock_status_changed.assert_called_once_with("idle", "Ready")
 
     def test_handle_recording_status(self, mock_sounddevice, reset_global_recorder):
         """Should return current status."""

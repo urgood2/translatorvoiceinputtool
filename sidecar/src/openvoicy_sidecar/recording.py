@@ -482,6 +482,11 @@ def handle_recording_start(request: Request) -> dict[str, Any]:
             started_session_id = recorder.start(device_uid, session_id=session_id)
         else:
             started_session_id = recorder.start(device_uid)
+
+        # Emit status change once recording has started successfully.
+        from .notifications import emit_status_changed
+
+        emit_status_changed("recording", "Recording in progress...")
         return {"session_id": started_session_id}
     except RuntimeError as e:
         if "already" in str(e).lower():
@@ -577,6 +582,11 @@ def handle_recording_cancel(request: Request) -> dict[str, Any]:
             f"Recording cancel cleanup: session={session_id}, "
             f"pending_audio_cleared={cleared_pending_audio}"
         )
+
+        # Emit status change after a successful cancel transition.
+        from .notifications import emit_status_changed
+
+        emit_status_changed("idle", "Ready")
 
         return {"cancelled": True, "session_id": session_id}
     except RuntimeError as e:
