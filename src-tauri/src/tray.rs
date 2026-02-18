@@ -317,6 +317,15 @@ pub fn start_tray_loop(
 mod tests {
     use super::*;
 
+    fn png_dimensions(bytes: &[u8]) -> (u32, u32) {
+        assert!(bytes.len() >= 24, "PNG data too short");
+        assert_eq!(&bytes[0..8], b"\x89PNG\r\n\x1a\n", "Invalid PNG signature");
+
+        let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        (width, height)
+    }
+
     #[test]
     fn test_get_icon_for_state_disabled() {
         let icon = get_icon_for_state(AppState::Idle, false);
@@ -429,6 +438,15 @@ mod tests {
         assert_eq!(&ico[0..4], &[0x00, 0x00, 0x01, 0x00]);
         // ICNS signature: file magic
         assert_eq!(&icns[0..4], b"icns");
+    }
+
+    #[test]
+    fn test_bundle_app_png_icon_dimensions() {
+        let icon_128 = include_bytes!("../icons/128x128.png");
+        let icon_128_2x = include_bytes!("../icons/128x128@2x.png");
+
+        assert_eq!(png_dimensions(icon_128), (128, 128));
+        assert_eq!(png_dimensions(icon_128_2x), (256, 256));
     }
 
     #[test]
