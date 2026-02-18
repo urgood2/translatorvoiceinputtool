@@ -221,7 +221,18 @@ fn map_transcription_complete_durations(
 }
 
 fn startup_model_status_requires_loading_state(status: &str) -> bool {
-    matches!(status, "downloading" | "loading")
+    matches!(status, "downloading" | "loading" | "verifying")
+}
+
+fn map_status_event_model_state(model_state: &str, detail: Option<String>) -> ModelStatus {
+    match model_state {
+        "downloading" => ModelStatus::Downloading,
+        "loading" | "verifying" => ModelStatus::Loading,
+        "ready" => ModelStatus::Ready,
+        "missing" => ModelStatus::Missing,
+        "error" => ModelStatus::Error(detail.unwrap_or_else(|| "model status error".to_string())),
+        _ => ModelStatus::Unknown,
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -547,12 +558,23 @@ impl IntegrationManager {
                             match c.call::<StatusResult>("model.get_status", None).await {
                                 Ok(result) => {
                                     log::info!("Model status after resume: {}", result.status);
-                                    if result.status == "ready" {
-                                        recording_controller.set_model_ready(true).await;
-                                        *model_status.write().await = ModelStatus::Ready;
-                                    } else {
-                                        recording_controller.set_model_ready(false).await;
-                                        *model_status.write().await = ModelStatus::Missing;
+                                    match result.status.as_str() {
+                                        "ready" => {
+                                            recording_controller.set_model_ready(true).await;
+                                            *model_status.write().await = ModelStatus::Ready;
+                                        }
+                                        "downloading" => {
+                                            recording_controller.set_model_ready(false).await;
+                                            *model_status.write().await = ModelStatus::Downloading;
+                                        }
+                                        "loading" | "verifying" => {
+                                            recording_controller.set_model_ready(false).await;
+                                            *model_status.write().await = ModelStatus::Loading;
+                                        }
+                                        _ => {
+                                            recording_controller.set_model_ready(false).await;
+                                            *model_status.write().await = ModelStatus::Missing;
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -711,7 +733,7 @@ impl IntegrationManager {
                             )
                             .await;
                         }
-                        "downloading" | "loading" => {
+                        "downloading" | "loading" | "verifying" => {
                             // Already in progress (maybe from another session)
                             debug_assert!(startup_model_status_requires_loading_state(
                                 result.status.as_str()
@@ -1626,19 +1648,10 @@ impl IntegrationManager {
 
                             // Update model status if provided
                             if let Some(model_state) = model_state {
-                                let new_status = match model_state.as_str() {
-                                    "downloading" => ModelStatus::Downloading,
-                                    "loading" => ModelStatus::Loading,
-                                    "ready" => ModelStatus::Ready,
-                                    "missing" => ModelStatus::Missing,
-                                    "error" => ModelStatus::Error(
-                                        params
-                                            .detail
-                                            .clone()
-                                            .unwrap_or_else(|| "model status error".to_string()),
-                                    ),
-                                    _ => ModelStatus::Unknown,
-                                };
+                                let new_status = map_status_event_model_state(
+                                    model_state.as_str(),
+                                    params.detail.clone(),
+                                );
                                 *model_status.write().await = new_status.clone();
 
                                 if new_status == ModelStatus::Ready {
@@ -1963,8 +1976,17 @@ mod tests {
     fn test_startup_model_status_requires_loading_state_for_downloading_and_loading() {
         assert!(startup_model_status_requires_loading_state("downloading"));
         assert!(startup_model_status_requires_loading_state("loading"));
+        assert!(startup_model_status_requires_loading_state("verifying"));
         assert!(!startup_model_status_requires_loading_state("ready"));
         assert!(!startup_model_status_requires_loading_state("missing"));
+    }
+
+    #[test]
+    fn test_map_status_event_model_state_maps_verifying_to_loading() {
+        assert_eq!(
+            map_status_event_model_state("verifying", None),
+            ModelStatus::Loading
+        );
     }
 
     #[test]
