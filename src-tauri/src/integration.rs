@@ -220,6 +220,10 @@ fn map_transcription_complete_durations(
     (audio_duration_ms, processing_duration_ms)
 }
 
+fn startup_model_status_requires_loading_state(status: &str) -> bool {
+    matches!(status, "downloading" | "loading")
+}
+
 #[derive(Debug, Clone, Default)]
 struct PipelineTimingMarks {
     t0_stop_called: Option<Instant>,
@@ -668,6 +672,7 @@ impl IntegrationManager {
                         "ready" => {
                             *model_status.write().await = ModelStatus::Ready;
                             recording_controller.set_model_ready(true).await;
+                            let _ = state_manager.transition(AppState::Idle);
                             Self::emit_model_status_with_details(
                                 &app_handle,
                                 ModelStatus::Ready,
@@ -708,6 +713,11 @@ impl IntegrationManager {
                         }
                         "downloading" | "loading" => {
                             // Already in progress (maybe from another session)
+                            debug_assert!(startup_model_status_requires_loading_state(
+                                result.status.as_str()
+                            ));
+                            let _ = state_manager.transition(AppState::LoadingModel);
+                            recording_controller.set_model_ready(false).await;
                             let status = if result.status == "downloading" {
                                 ModelStatus::Downloading
                             } else {
@@ -723,7 +733,10 @@ impl IntegrationManager {
                                 result.cache_path.clone(),
                                 status_progress.clone(),
                             );
-                            log::info!("Model {} in progress", result.status);
+                            log::info!(
+                                "Model {} in progress; app state set to loading_model",
+                                result.status
+                            );
                         }
                         _ => {
                             log::warn!("Unknown model status: {}", result.status);
@@ -1944,6 +1957,14 @@ mod tests {
             map_transcription_complete_durations(420, None);
         assert_eq!(audio_duration_ms, 0);
         assert_eq!(processing_duration_ms, 420);
+    }
+
+    #[test]
+    fn test_startup_model_status_requires_loading_state_for_downloading_and_loading() {
+        assert!(startup_model_status_requires_loading_state("downloading"));
+        assert!(startup_model_status_requires_loading_state("loading"));
+        assert!(!startup_model_status_requires_loading_state("ready"));
+        assert!(!startup_model_status_requires_loading_state("missing"));
     }
 
     #[test]
