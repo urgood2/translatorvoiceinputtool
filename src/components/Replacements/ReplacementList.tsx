@@ -20,6 +20,75 @@ interface ReplacementListProps {
   isLoading?: boolean;
 }
 
+type ImportedRule = Omit<ReplacementRule, 'id' | 'origin'>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function parseImportedRule(value: unknown, index: number): ImportedRule {
+  if (!isRecord(value)) {
+    throw new Error(`Invalid rule at index ${index}: expected object`);
+  }
+
+  const kind = value.kind;
+  if (kind !== 'literal' && kind !== 'regex') {
+    throw new Error(`Invalid rule at index ${index}: kind must be 'literal' or 'regex'`);
+  }
+
+  const pattern = value.pattern;
+  if (typeof pattern !== 'string') {
+    throw new Error(`Invalid rule at index ${index}: pattern must be a string`);
+  }
+
+  const replacement = value.replacement;
+  if (typeof replacement !== 'string') {
+    throw new Error(`Invalid rule at index ${index}: replacement must be a string`);
+  }
+
+  const enabled = value.enabled;
+  if (typeof enabled !== 'boolean') {
+    throw new Error(`Invalid rule at index ${index}: enabled must be a boolean`);
+  }
+
+  const wordBoundary = value.word_boundary;
+  if (typeof wordBoundary !== 'boolean') {
+    throw new Error(`Invalid rule at index ${index}: word_boundary must be a boolean`);
+  }
+
+  const caseSensitive = value.case_sensitive;
+  if (typeof caseSensitive !== 'boolean') {
+    throw new Error(`Invalid rule at index ${index}: case_sensitive must be a boolean`);
+  }
+
+  const descriptionValue = value.description;
+  if (
+    descriptionValue !== undefined &&
+    descriptionValue !== null &&
+    typeof descriptionValue !== 'string'
+  ) {
+    throw new Error(`Invalid rule at index ${index}: description must be a string if provided`);
+  }
+
+  return {
+    kind,
+    pattern,
+    replacement,
+    enabled,
+    word_boundary: wordBoundary,
+    case_sensitive: caseSensitive,
+    description: typeof descriptionValue === 'string' ? descriptionValue : undefined,
+  };
+}
+
+export function parseImportedReplacementRules(raw: unknown): ImportedRule[] {
+  if (!Array.isArray(raw)) {
+    throw new Error('Invalid format: expected an array');
+  }
+
+  return raw.map((rule, index) => parseImportedRule(rule, index));
+}
+
 /** Single rule row component. */
 function RuleRow({
   rule,
@@ -250,12 +319,7 @@ export function ReplacementList({
 
       try {
         const text = await file.text();
-        const imported = JSON.parse(text) as ReplacementRule[];
-
-        // Validate imported rules
-        if (!Array.isArray(imported)) {
-          throw new Error('Invalid format: expected an array');
-        }
+        const imported = parseImportedReplacementRules(JSON.parse(text));
 
         // Assign new IDs to avoid conflicts
         const newRules = imported.map((r) => ({

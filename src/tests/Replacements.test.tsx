@@ -4,7 +4,10 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { ReplacementList } from '../components/Replacements/ReplacementList';
+import {
+  ReplacementList,
+  parseImportedReplacementRules,
+} from '../components/Replacements/ReplacementList';
 import { ReplacementEditor } from '../components/Replacements/ReplacementEditor';
 import {
   ReplacementPreview,
@@ -73,6 +76,67 @@ interface SharedReplacementVector {
 }
 
 describe('ReplacementList', () => {
+  it('parseImportedReplacementRules validates valid payload', () => {
+    const parsed = parseImportedReplacementRules([
+      {
+        kind: 'literal',
+        pattern: 'abc',
+        replacement: 'def',
+        enabled: true,
+        word_boundary: true,
+        case_sensitive: false,
+      },
+    ]);
+
+    expect(parsed).toEqual([
+      {
+        kind: 'literal',
+        pattern: 'abc',
+        replacement: 'def',
+        enabled: true,
+        word_boundary: true,
+        case_sensitive: false,
+        description: undefined,
+      },
+    ]);
+  });
+
+  it('parseImportedReplacementRules rejects non-array payloads', () => {
+    expect(() => parseImportedReplacementRules({})).toThrow(
+      'Invalid format: expected an array'
+    );
+  });
+
+  it('parseImportedReplacementRules rejects malformed rule objects', () => {
+    expect(() =>
+      parseImportedReplacementRules([
+        {
+          kind: 'literal',
+          pattern: 'abc',
+          replacement: 'def',
+          enabled: 'yes',
+          word_boundary: true,
+          case_sensitive: false,
+        },
+      ])
+    ).toThrow('enabled must be a boolean');
+  });
+
+  it('parseImportedReplacementRules rejects invalid rule kinds', () => {
+    expect(() =>
+      parseImportedReplacementRules([
+        {
+          kind: 'script',
+          pattern: 'abc',
+          replacement: 'def',
+          enabled: true,
+          word_boundary: true,
+          case_sensitive: false,
+        },
+      ])
+    ).toThrow("kind must be 'literal' or 'regex'");
+  });
+
   it('renders empty state when no rules', () => {
     render(<ReplacementList rules={[]} onChange={vi.fn()} />);
     expect(screen.getByText('No custom replacement rules yet')).toBeDefined();
