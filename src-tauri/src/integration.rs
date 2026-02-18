@@ -211,6 +211,15 @@ fn is_stale_session(
     }
 }
 
+fn map_transcription_complete_durations(
+    notification_duration_ms: u64,
+    stop_audio_duration_ms: Option<u64>,
+) -> (u64, u64) {
+    let audio_duration_ms = stop_audio_duration_ms.unwrap_or(0);
+    let processing_duration_ms = notification_duration_ms;
+    (audio_duration_ms, processing_duration_ms)
+}
+
 #[derive(Debug, Clone, Default)]
 struct PipelineTimingMarks {
     t0_stop_called: Option<Instant>,
@@ -312,6 +321,8 @@ struct RecordingContext {
     focus_before: FocusSignature,
     /// Session ID for correlation.
     session_id: String,
+    /// Audio duration returned by recording.stop, if available.
+    audio_duration_ms: Option<u64>,
     /// Pipeline timing marks for stop -> injection latency tracking.
     timing_marks: PipelineTimingMarks,
 }
@@ -1074,6 +1085,7 @@ impl IntegrationManager {
                                     *recording_context.write().await = Some(RecordingContext {
                                         focus_before: focus,
                                         session_id: session_id.clone(),
+                                        audio_duration_ms: None,
                                         timing_marks: PipelineTimingMarks::default(),
                                     });
                                     *current_session_id.write().await = Some(session_id.clone());
@@ -1167,10 +1179,15 @@ impl IntegrationManager {
                     };
 
                     if let Some(session_id) = session_id {
+                        #[derive(Deserialize)]
+                        struct StopResultPayload {
+                            audio_duration_ms: u64,
+                        }
+
                         let params = json!({
                             "session_id": session_id
                         });
-                        let stop_result: Result<Value, _> =
+                        let stop_result: Result<StopResultPayload, _> =
                             client.call("recording.stop", Some(params)).await;
 
                         let stop_rpc_returned_at = Instant::now();
@@ -1178,6 +1195,9 @@ impl IntegrationManager {
                         if let Some(ctx) = ctx.as_mut() {
                             if ctx.session_id == session_id {
                                 ctx.timing_marks.t1_stop_rpc_returned = Some(stop_rpc_returned_at);
+                                if let Ok(stop_payload) = &stop_result {
+                                    ctx.audio_duration_ms = Some(stop_payload.audio_duration_ms);
+                                }
                             }
                         }
 
@@ -1481,22 +1501,27 @@ impl IntegrationManager {
                         if let Ok(params) =
                             serde_json::from_value::<TranscriptionParams>(event.params)
                         {
-                            {
-                                let transcription_received_at = Instant::now();
+                            let (audio_duration_ms, processing_duration_ms) = {
+                                let mut stop_audio_duration_ms = None;
                                 let mut ctx = recording_context.write().await;
                                 if let Some(ctx) = ctx.as_mut() {
                                     if ctx.session_id == params.session_id {
                                         ctx.timing_marks.t2_transcription_received =
-                                            Some(transcription_received_at);
+                                            Some(Instant::now());
+                                        stop_audio_duration_ms = ctx.audio_duration_ms;
                                     }
                                 }
-                            }
+                                map_transcription_complete_durations(
+                                    params.duration_ms,
+                                    stop_audio_duration_ms,
+                                )
+                            };
 
                             let result = TranscriptionResult {
                                 session_id: params.session_id,
                                 text: params.text,
-                                audio_duration_ms: params.duration_ms,
-                                processing_duration_ms: 0, // Not provided by sidecar
+                                audio_duration_ms,
+                                processing_duration_ms,
                             };
 
                             // Deliver to recording controller (validates session ID)
@@ -1903,6 +1928,22 @@ mod tests {
             resolve_model_id(Some("custom/model".to_string())),
             "custom/model"
         );
+    }
+
+    #[test]
+    fn test_transcription_complete_duration_mapping_prefers_stop_audio_duration() {
+        let (audio_duration_ms, processing_duration_ms) =
+            map_transcription_complete_durations(420, Some(1337));
+        assert_eq!(audio_duration_ms, 1337);
+        assert_eq!(processing_duration_ms, 420);
+    }
+
+    #[test]
+    fn test_transcription_complete_duration_mapping_defaults_audio_duration_to_zero() {
+        let (audio_duration_ms, processing_duration_ms) =
+            map_transcription_complete_durations(420, None);
+        assert_eq!(audio_duration_ms, 0);
+        assert_eq!(processing_duration_ms, 420);
     }
 
     #[test]
