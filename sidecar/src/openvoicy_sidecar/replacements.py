@@ -461,6 +461,32 @@ def get_current_rules() -> list[ReplacementRule]:
     return get_active_rules()
 
 
+def merge_preset_and_user_rules(
+    preset_rules: list[ReplacementRule], user_rules: list[ReplacementRule]
+) -> list[ReplacementRule]:
+    """Merge preset and user rules with stable ordering and no duplicate IDs.
+
+    Behavior:
+    - Preset order is preserved
+    - User rules are applied in order
+    - If a user rule ID matches a preset rule ID, the user rule overrides in place
+    - New user rule IDs are appended
+    """
+    merged = list(preset_rules)
+    index_by_id = {rule.id: idx for idx, rule in enumerate(merged)}
+
+    for user_rule in user_rules:
+        existing_index = index_by_id.get(user_rule.id)
+        if existing_index is not None:
+            merged[existing_index] = user_rule
+            continue
+
+        index_by_id[user_rule.id] = len(merged)
+        merged.append(user_rule)
+
+    return merged
+
+
 def set_active_rules(rules: list[ReplacementRule]) -> None:
     """Set the active replacement rules.
 

@@ -139,8 +139,11 @@ def get_startup_preset_candidates() -> list[Path]:
 
 def load_startup_presets() -> None:
     """Load replacement presets on startup without crashing on missing/invalid files."""
-    for preset_path in get_startup_preset_candidates():
+    candidates = get_startup_preset_candidates()
+    for preset_path in candidates:
+        log(f"Checking preset path: {preset_path}")
         if not preset_path.exists():
+            log(f"Preset path missing: {preset_path}")
             continue
 
         presets = load_presets_from_file(preset_path)
@@ -150,7 +153,10 @@ def load_startup_presets() -> None:
             log(f"Preset file found at {preset_path}, but no presets were loaded")
         return
 
-    log("Preset file not found on startup; continuing with empty presets")
+    log(
+        "Preset file not found on startup; continuing with empty presets. "
+        f"Checked {len(candidates)} path(s)."
+    )
 
 
 def handle_system_ping(request: Request) -> dict[str, Any]:
