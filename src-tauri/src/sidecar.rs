@@ -9,7 +9,7 @@
 #![allow(dead_code)] // Methods will be used in future RPC client implementation
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::env;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -302,6 +302,7 @@ impl SidecarManager {
 
         let pid = child.id();
         let stdout_reader = child.stdout.take().map(BufReader::new);
+        let stderr_reader = child.stderr.take();
         log::info!("Sidecar spawned with PID {}", pid);
 
         {
@@ -321,12 +322,25 @@ impl SidecarManager {
 
         // Start monitoring thread
         self.start_monitor_thread();
+        if let Some(stderr) = stderr_reader {
+            self.start_stderr_thread(stderr);
+        }
 
         Ok(())
     }
 
     fn simulation_mode_from_env() -> SidecarSimulationMode {
-        if let Ok(raw_mode) = env::var("OPENVOICY_SIDECAR_SIMULATION_MODE") {
+        Self::simulation_mode_from_values(
+            env::var("OPENVOICY_SIDECAR_SIMULATION_MODE").ok().as_deref(),
+            env::var("OPENVOICY_SIDECAR_SIMULATE_CRASH").ok().as_deref(),
+        )
+    }
+
+    fn simulation_mode_from_values(
+        mode: Option<&str>,
+        crash_flag: Option<&str>,
+    ) -> SidecarSimulationMode {
+        if let Some(raw_mode) = mode {
             let normalized = raw_mode.trim().to_ascii_lowercase();
             if normalized == "crash" || normalized == "crash_on_start" {
                 return SidecarSimulationMode::CrashOnStart;
@@ -339,8 +353,8 @@ impl SidecarManager {
             }
         }
 
-        if let Ok(flag) = env::var("OPENVOICY_SIDECAR_SIMULATE_CRASH") {
-            if Self::is_truthy_env_flag(&flag) {
+        if let Some(flag) = crash_flag {
+            if Self::is_truthy_env_flag(flag) {
                 return SidecarSimulationMode::CrashOnStart;
             }
         }
@@ -590,6 +604,79 @@ impl SidecarManager {
                 thread::sleep(Duration::from_millis(100));
             }
         });
+    }
+
+    /// Start a thread that continuously consumes sidecar stderr.
+    /// Fatal stderr patterns request process termination so monitor thread
+    /// can apply the normal crash/restart path.
+    fn start_stderr_thread(&self, stderr: ChildStderr) {
+        let inner = Arc::clone(&self.inner);
+        let shutdown_flag = Arc::clone(&self.shutdown_flag);
+
+        thread::spawn(move || {
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let text = line.trim();
+                        if text.is_empty() {
+                            continue;
+                        }
+
+                        log::warn!("Sidecar stderr: {}", text);
+
+                        if shutdown_flag.load(Ordering::SeqCst) {
+                            continue;
+                        }
+
+                        if SidecarManager::is_fatal_stderr_line(text) {
+                            log::error!("Fatal sidecar stderr detected: {}", text);
+                            let mut inner_guard = inner.lock().unwrap();
+                            inner_guard.last_error = Some(format!("Fatal stderr: {}", text));
+
+                            if let Some(ref mut child) = inner_guard.child {
+                                match child.try_wait() {
+                                    Ok(Some(_)) => {}
+                                    Ok(None) => {
+                                        if let Err(e) = child.kill() {
+                                            log::error!(
+                                                "Failed to terminate sidecar after fatal stderr: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to inspect sidecar state after fatal stderr: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Failed reading sidecar stderr: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    fn is_fatal_stderr_line(text: &str) -> bool {
+        let normalized = text.to_ascii_lowercase();
+        normalized.contains("traceback (most recent call last)")
+            || normalized.contains("panic")
+            || normalized.contains("fatal")
+            || normalized.contains("segmentation fault")
+            || normalized.contains("aborted (core dumped)")
     }
 
     /// Handle a sidecar crash.
@@ -1084,44 +1171,26 @@ mod tests {
 
     #[test]
     fn test_simulation_mode_defaults_to_none() {
-        unsafe {
-            std::env::remove_var("OPENVOICY_SIDECAR_SIMULATION_MODE");
-            std::env::remove_var("OPENVOICY_SIDECAR_SIMULATE_CRASH");
-        }
         assert_eq!(
-            SidecarManager::simulation_mode_from_env(),
+            SidecarManager::simulation_mode_from_values(None, None),
             SidecarSimulationMode::None
         );
     }
 
     #[test]
     fn test_simulation_mode_accepts_explicit_crash_mode() {
-        unsafe {
-            std::env::set_var("OPENVOICY_SIDECAR_SIMULATION_MODE", "crash");
-            std::env::remove_var("OPENVOICY_SIDECAR_SIMULATE_CRASH");
-        }
         assert_eq!(
-            SidecarManager::simulation_mode_from_env(),
+            SidecarManager::simulation_mode_from_values(Some("crash"), None),
             SidecarSimulationMode::CrashOnStart
         );
-        unsafe {
-            std::env::remove_var("OPENVOICY_SIDECAR_SIMULATION_MODE");
-        }
     }
 
     #[test]
     fn test_simulation_mode_accepts_legacy_crash_flag() {
-        unsafe {
-            std::env::remove_var("OPENVOICY_SIDECAR_SIMULATION_MODE");
-            std::env::set_var("OPENVOICY_SIDECAR_SIMULATE_CRASH", "true");
-        }
         assert_eq!(
-            SidecarManager::simulation_mode_from_env(),
+            SidecarManager::simulation_mode_from_values(None, Some("true")),
             SidecarSimulationMode::CrashOnStart
         );
-        unsafe {
-            std::env::remove_var("OPENVOICY_SIDECAR_SIMULATE_CRASH");
-        }
     }
 
     #[test]
@@ -1152,6 +1221,21 @@ mod tests {
                 Err(e) => panic!("failed to wait on simulated crash process: {}", e),
             }
         }
+    }
+
+    #[test]
+    fn test_is_fatal_stderr_line_detects_known_fatal_patterns() {
+        assert!(SidecarManager::is_fatal_stderr_line(
+            "Traceback (most recent call last):"
+        ));
+        assert!(SidecarManager::is_fatal_stderr_line("FATAL: unrecoverable"));
+        assert!(SidecarManager::is_fatal_stderr_line("thread panicked at foo"));
+    }
+
+    #[test]
+    fn test_is_fatal_stderr_line_ignores_nonfatal_output() {
+        assert!(!SidecarManager::is_fatal_stderr_line("warning: model warmup"));
+        assert!(!SidecarManager::is_fatal_stderr_line("info: ready"));
     }
 
     #[cfg(unix)]
