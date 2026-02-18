@@ -583,8 +583,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   _addHistoryEntry: (entry) => {
+    const fallbackHistoryLimit = 100;
     set((state) => ({
-      history: [entry, ...state.history].slice(0, 100), // Keep last 100
+      // Keep frontend list aligned with backend-configured history capacity.
+      history: [entry, ...state.history].slice(
+        0,
+        Math.max(1, state.config?.history.max_entries ?? fallbackHistoryLimit)
+      ),
     }));
   },
 

@@ -428,9 +428,19 @@ describe('Internal Actions', () => {
     expect(history[1].id).toBe('old');
   });
 
-  test('_addHistoryEntry limits to 100 entries', () => {
-    // Create 100 existing entries
-    const existingHistory = Array.from({ length: 100 }, (_, i) =>
+  test('_addHistoryEntry limits to configured max entries', () => {
+    const config = {
+      ...createMockConfig(),
+      history: {
+        persistence_mode: 'memory' as const,
+        max_entries: 20,
+        encrypt_at_rest: true,
+      },
+    };
+    useAppStore.setState({ config });
+
+    // Create 20 existing entries
+    const existingHistory = Array.from({ length: 20 }, (_, i) =>
       createMockTranscript({ id: `entry-${i}` })
     );
     useAppStore.setState({ history: existingHistory });
@@ -440,9 +450,26 @@ describe('Internal Actions', () => {
     useAppStore.getState()._addHistoryEntry(newEntry);
 
     const history = useAppStore.getState().history;
+    expect(history.length).toBe(20);
+    expect(history[0].id).toBe('newest');
+    expect(history[19].id).toBe('entry-18'); // entry-19 was dropped
+  });
+
+  test('_addHistoryEntry falls back to 100 entries when config is unavailable', () => {
+    // Create 100 existing entries
+    const existingHistory = Array.from({ length: 100 }, (_, i) =>
+      createMockTranscript({ id: `entry-${i}` })
+    );
+    useAppStore.setState({ history: existingHistory, config: null });
+
+    // Add one more
+    const newEntry = createMockTranscript({ id: 'newest' });
+    useAppStore.getState()._addHistoryEntry(newEntry);
+
+    const history = useAppStore.getState().history;
     expect(history.length).toBe(100);
     expect(history[0].id).toBe('newest');
-    expect(history[99].id).toBe('entry-98'); // entry-99 was dropped
+    expect(history[99].id).toBe('entry-98');
   });
 
   test('_setError updates error detail', () => {
