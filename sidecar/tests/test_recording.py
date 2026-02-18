@@ -363,6 +363,25 @@ class TestRecordingHandlers:
             if recorder.state == RecordingState.RECORDING:
                 recorder.cancel(recorder.session_id)
 
+    def test_handle_recording_start_with_provided_session_id(
+        self, mock_sounddevice, reset_global_recorder
+    ):
+        """Should honor externally provided session ID."""
+        with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
+            request = Request(
+                method="recording.start",
+                id=1,
+                params={"session_id": "rust-session-123"},
+            )
+            result = handle_recording_start(request)
+
+            assert result["session_id"] == "rust-session-123"
+
+            # Cleanup
+            recorder = get_recorder()
+            if recorder.state == RecordingState.RECORDING:
+                recorder.cancel(recorder.session_id)
+
     def test_handle_recording_start_already_recording(
         self, mock_sounddevice, reset_global_recorder
     ):

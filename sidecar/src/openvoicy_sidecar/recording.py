@@ -153,11 +153,12 @@ class AudioRecorder:
         """Get current session ID, or None if not recording."""
         return self._session.session_id if self._session else None
 
-    def start(self, device_uid: str | None = None) -> str:
+    def start(self, device_uid: str | None = None, session_id: str | None = None) -> str:
         """Start a new recording session.
 
         Args:
             device_uid: Device to record from, or None for active/default device.
+            session_id: Optional externally provided session ID.
 
         Returns:
             Session ID for this recording.
@@ -185,7 +186,7 @@ class AudioRecorder:
                 device_index = self._get_device_index(device_uid)
 
             # Create new session
-            session_id = str(uuid.uuid4())
+            session_id = session_id or str(uuid.uuid4())
             self._session = RecordingSession(
                 session_id=session_id,
                 started_at=time.monotonic(),
@@ -461,6 +462,7 @@ def handle_recording_start(request: Request) -> dict[str, Any]:
 
     Params:
         device_uid: Optional device UID to record from.
+        session_id: Optional externally provided session identifier.
 
     Returns:
         session_id: Unique session identifier.
@@ -471,12 +473,16 @@ def handle_recording_start(request: Request) -> dict[str, Any]:
         E_AUDIO_IO: Failed to open audio device.
     """
     device_uid = request.params.get("device_uid")
+    session_id = request.params.get("session_id")
 
     recorder = get_recorder()
 
     try:
-        session_id = recorder.start(device_uid)
-        return {"session_id": session_id}
+        if session_id:
+            started_session_id = recorder.start(device_uid, session_id=session_id)
+        else:
+            started_session_id = recorder.start(device_uid)
+        return {"session_id": started_session_id}
     except RuntimeError as e:
         if "already" in str(e).lower():
             raise AlreadyRecordingError(str(e))

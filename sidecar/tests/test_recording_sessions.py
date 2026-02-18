@@ -30,7 +30,11 @@ class _RecorderStub:
     sample_rate: int = 16000
     channels: int = 1
 
-    def start(self, device_uid: str | None = None) -> str:
+    def start(
+        self,
+        device_uid: str | None = None,
+        session_id: str | None = None,
+    ) -> str:
         if self.fail_next_start:
             self.fail_next_start = False
             raise OSError("simulated start failure")
@@ -40,8 +44,9 @@ class _RecorderStub:
                 f"Recording already in progress for session {self.active_session_id}"
             )
 
-        session_id = f"session-{self.next_session_idx}"
-        self.next_session_idx += 1
+        session_id = session_id or f"session-{self.next_session_idx}"
+        if session_id.startswith("session-"):
+            self.next_session_idx += 1
         self.active_session_id = session_id
         return session_id
 
@@ -156,6 +161,17 @@ def test_same_session_id_start_twice_is_rejected(recorder_stub: _RecorderStub) -
         handle_recording_start(_request("recording.start", 2))
 
     assert exc_info.value.code == "E_ALREADY_RECORDING"
+
+
+def test_start_honors_provided_session_id(recorder_stub: _RecorderStub) -> None:
+    provided_session_id = "rust-session-authoritative"
+    first = handle_recording_start(
+        _request("recording.start", 1, {"session_id": provided_session_id})
+    )
+    assert first["session_id"] == provided_session_id
+
+    status = handle_recording_status(_request("recording.status", 2))
+    assert status["session_id"] == provided_session_id
 
 
 def test_stop_wrong_session_rejected(recorder_stub: _RecorderStub) -> None:
