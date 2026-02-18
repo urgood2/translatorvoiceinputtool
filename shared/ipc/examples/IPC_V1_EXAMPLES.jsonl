@@ -29,7 +29,7 @@
 {"_comment": "recording.stop request", "type": "request", "data": {"jsonrpc": "2.0", "id": 17, "method": "recording.stop", "params": {"session_id": "550e8400-e29b-41d4-a716-446655440000"}}}
 {"_comment": "recording.stop response", "type": "response", "data": {"jsonrpc": "2.0", "id": 17, "result": {"audio_duration_ms": 3250}}}
 {"_comment": "recording.cancel request", "type": "request", "data": {"jsonrpc": "2.0", "id": 18, "method": "recording.cancel", "params": {"session_id": "550e8400-e29b-41d4-a716-446655440000"}}}
-{"_comment": "recording.cancel response", "type": "response", "data": {"jsonrpc": "2.0", "id": 18, "result": {"status": "cancelled"}}}
+{"_comment": "recording.cancel response", "type": "response", "data": {"jsonrpc": "2.0", "id": 18, "result": {"cancelled": true, "session_id": "550e8400-e29b-41d4-a716-446655440000"}}}
 {"_comment": "replacements.set_rules request", "type": "request", "data": {"jsonrpc": "2.0", "id": 19, "method": "replacements.set_rules", "params": {"rules": [{"id": "123e4567-e89b-12d3-a456-426614174000", "enabled": true, "kind": "literal", "pattern": "gonna", "replacement": "going to", "word_boundary": true, "case_sensitive": false, "description": "Expand informal contractions", "origin": "preset"}, {"id": "987fcdeb-51a2-3bc4-d567-890123456789", "enabled": true, "kind": "regex", "pattern": "\\buh+\\b", "replacement": "", "word_boundary": false, "case_sensitive": false, "description": "Remove filler words", "origin": "user"}]}}}
 {"_comment": "replacements.set_rules response", "type": "response", "data": {"jsonrpc": "2.0", "id": 19, "result": {"count": 2}}}
 {"_comment": "status.get request", "type": "request", "data": {"jsonrpc": "2.0", "id": 20, "method": "status.get"}}
@@ -38,6 +38,24 @@
 {"_comment": "status.get response (transcribing)", "type": "response", "data": {"jsonrpc": "2.0", "id": 22, "result": {"state": "transcribing", "detail": "Transcribing audio...", "model": {"model_id": "parakeet-tdt-0.6b-v3", "status": "ready"}}}}
 {"_comment": "status.get response (loading_model)", "type": "response", "data": {"jsonrpc": "2.0", "id": 23, "result": {"state": "loading_model", "detail": "Downloading model...", "model": {"model_id": "parakeet-tdt-0.6b-v3", "status": "downloading"}}}}
 {"_comment": "status.get response (error)", "type": "response", "data": {"jsonrpc": "2.0", "id": 24, "result": {"state": "error", "detail": "Model load failed: CUDA out of memory"}}}
+{"_comment": "audio.meter_status request", "type": "request", "data": {"jsonrpc": "2.0", "id": 25, "method": "audio.meter_status"}}
+{"_comment": "audio.meter_status response", "type": "response", "data": {"jsonrpc": "2.0", "id": 25, "result": {"running": true, "interval_ms": 80}}}
+{"_comment": "model.download request", "type": "request", "data": {"jsonrpc": "2.0", "id": 26, "method": "model.download", "params": {"model_id": "parakeet-tdt-0.6b-v3"}}}
+{"_comment": "model.download response", "type": "response", "data": {"jsonrpc": "2.0", "id": 26, "result": {"model_id": "parakeet-tdt-0.6b-v3", "revision": "main", "status": "downloading", "progress": {"current": 0, "total": 3221225472, "unit": "bytes"}}}}
+{"_comment": "asr.status request", "type": "request", "data": {"jsonrpc": "2.0", "id": 27, "method": "asr.status"}}
+{"_comment": "asr.status response", "type": "response", "data": {"jsonrpc": "2.0", "id": 27, "result": {"state": "ready", "model_id": "parakeet-tdt-0.6b-v3", "device": "cuda", "ready": true}}}
+{"_comment": "asr.transcribe request", "type": "request", "data": {"jsonrpc": "2.0", "id": 28, "method": "asr.transcribe", "params": {"audio_path": "/tmp/input.wav", "session_id": "550e8400-e29b-41d4-a716-446655440000", "language": "en-US"}}}
+{"_comment": "asr.transcribe response", "type": "response", "data": {"jsonrpc": "2.0", "id": 28, "result": {"text": "hello world", "duration_ms": 1234}}}
+{"_comment": "recording.status request", "type": "request", "data": {"jsonrpc": "2.0", "id": 29, "method": "recording.status"}}
+{"_comment": "recording.status response", "type": "response", "data": {"jsonrpc": "2.0", "id": 29, "result": {"state": "idle", "session_id": null}}}
+{"_comment": "replacements.get_rules request", "type": "request", "data": {"jsonrpc": "2.0", "id": 30, "method": "replacements.get_rules"}}
+{"_comment": "replacements.get_rules response", "type": "response", "data": {"jsonrpc": "2.0", "id": 30, "result": {"rules": [{"id": "user:1", "enabled": true, "kind": "literal", "pattern": "btw", "replacement": "by the way", "word_boundary": true, "case_sensitive": false}]}}}
+{"_comment": "replacements.get_presets request", "type": "request", "data": {"jsonrpc": "2.0", "id": 31, "method": "replacements.get_presets"}}
+{"_comment": "replacements.get_presets response", "type": "response", "data": {"jsonrpc": "2.0", "id": 31, "result": {"presets": [{"id": "punctuation", "name": "Punctuation", "description": "Restore punctuation", "rule_count": 12}]}}}
+{"_comment": "replacements.get_preset_rules request", "type": "request", "data": {"jsonrpc": "2.0", "id": 32, "method": "replacements.get_preset_rules", "params": {"preset_id": "punctuation"}}}
+{"_comment": "replacements.get_preset_rules response", "type": "response", "data": {"jsonrpc": "2.0", "id": 32, "result": {"preset": {"id": "punctuation", "name": "Punctuation", "description": "Restore punctuation", "rule_count": 12}, "rules": [{"id": "punctuation:r1", "enabled": true, "kind": "literal", "pattern": "period", "replacement": ".", "word_boundary": true, "case_sensitive": false, "origin": "preset"}]}}}
+{"_comment": "replacements.preview request", "type": "request", "data": {"jsonrpc": "2.0", "id": 33, "method": "replacements.preview", "params": {"text": "insert date {{date}}", "rules": [], "skip_normalize": false, "skip_macros": false}}}
+{"_comment": "replacements.preview response", "type": "response", "data": {"jsonrpc": "2.0", "id": 33, "result": {"result": "insert date 2026-02-18", "truncated": false}}}
 {"_comment": "event.status_changed notification (idle)", "type": "notification", "data": {"jsonrpc": "2.0", "method": "event.status_changed", "params": {"state": "idle"}}}
 {"_comment": "event.status_changed notification (loading with progress)", "type": "notification", "data": {"jsonrpc": "2.0", "method": "event.status_changed", "params": {"state": "loading_model", "detail": "Downloading model...", "progress": {"current": 1073741824, "total": 3221225472, "unit": "bytes"}, "model": {"model_id": "parakeet-tdt-0.6b-v3", "status": "downloading"}}}}
 {"_comment": "event.status_changed notification (recording)", "type": "notification", "data": {"jsonrpc": "2.0", "method": "event.status_changed", "params": {"state": "recording", "detail": "Recording in progress"}}}

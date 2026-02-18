@@ -1,0 +1,1060 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "id": "sidecar.rpc.v1",
+  "version": 1,
+  "protocol": "v1",
+  "items": [
+    {
+      "type": "method",
+      "name": "system.ping",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "version",
+          "protocol"
+        ],
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "system.info",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "version",
+          "protocol",
+          "capabilities",
+          "runtime"
+        ],
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "runtime": {
+            "type": "object",
+            "required": [
+              "python_version",
+              "platform",
+              "cuda_available"
+            ],
+            "properties": {
+              "python_version": {
+                "type": "string"
+              },
+              "platform": {
+                "type": "string"
+              },
+              "cuda_available": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "system.shutdown",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "status.get",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "recording",
+              "transcribing",
+              "error"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "model": {
+            "type": "object",
+            "required": [
+              "model_id",
+              "status"
+            ],
+            "properties": {
+              "model_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "loading",
+                  "error"
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "audio.list_devices",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "devices"
+        ],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "audio.set_device",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "device_uid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "active_device_uid"
+        ],
+        "properties": {
+          "active_device_uid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "audio.meter_start",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "device_uid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "interval_ms": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "running",
+          "interval_ms"
+        ],
+        "properties": {
+          "running": {
+            "type": "boolean"
+          },
+          "interval_ms": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "audio.meter_stop",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "stopped"
+        ],
+        "properties": {
+          "stopped": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "audio.meter_status",
+      "required": false,
+      "params_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "running"
+        ],
+        "properties": {
+          "running": {
+            "type": "boolean"
+          },
+          "interval_ms": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "model.get_status",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "model_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "missing",
+              "downloading",
+              "verifying",
+              "ready",
+              "error"
+            ]
+          },
+          "cache_path": {
+            "type": "string"
+          },
+          "progress": {
+            "type": "object"
+          },
+          "error_message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "model.download",
+      "required": false,
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "model_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "model_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "missing",
+              "downloading",
+              "verifying",
+              "ready",
+              "error"
+            ]
+          },
+          "cache_path": {
+            "type": "string"
+          },
+          "progress": {
+            "type": "object"
+          },
+          "error_message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "model.purge_cache",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "model_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "purged"
+        ],
+        "properties": {
+          "purged": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "asr.initialize",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "model_id": {
+            "type": "string"
+          },
+          "device_pref": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "cuda",
+              "cpu"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "status",
+          "model_id",
+          "device"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "model_id": {
+            "type": "string"
+          },
+          "device": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "asr.status",
+      "required": false,
+      "params_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "state",
+          "ready"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "uninitialized",
+              "downloading",
+              "loading",
+              "ready",
+              "error"
+            ]
+          },
+          "model_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "device": {
+            "type": "string"
+          },
+          "ready": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "asr.transcribe",
+      "required": false,
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "audio_path"
+        ],
+        "properties": {
+          "audio_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number"
+          },
+          "duration_ms": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "recording.start",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "device_uid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "recording.stop",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "audio_duration_ms",
+          "sample_rate",
+          "channels",
+          "session_id"
+        ],
+        "properties": {
+          "audio_duration_ms": {
+            "type": "integer"
+          },
+          "sample_rate": {
+            "type": "integer"
+          },
+          "channels": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "recording.cancel",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "cancelled",
+          "session_id"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "recording.status",
+      "required": false,
+      "params_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "state",
+          "session_id"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "recording",
+              "stopping"
+            ]
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "type": "integer"
+          },
+          "elapsed_sec": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "replacements.set_rules",
+      "required": true,
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/ReplacementRule"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "replacements.get_rules",
+      "required": false,
+      "params_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "rules"
+        ],
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/ReplacementRule"
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "replacements.get_presets",
+      "required": false,
+      "params_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "presets"
+        ],
+        "properties": {
+          "presets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "description",
+                "rule_count"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "rule_count": {
+                  "type": "integer"
+                }
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "replacements.get_preset_rules",
+      "required": false,
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "preset_id"
+        ],
+        "properties": {
+          "preset_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "preset",
+          "rules"
+        ],
+        "properties": {
+          "preset": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "description",
+              "rule_count"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "rule_count": {
+                "type": "integer"
+              }
+            },
+            "additionalProperties": true
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/ReplacementRule"
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "method",
+      "name": "replacements.preview",
+      "required": false,
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/ReplacementRule"
+            }
+          },
+          "skip_normalize": {
+            "type": "boolean"
+          },
+          "skip_macros": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "result",
+          "truncated"
+        ],
+        "properties": {
+          "result": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "notification",
+      "name": "event.status_changed",
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "progress": {
+            "type": "object"
+          },
+          "model": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "notification",
+      "name": "event.audio_level",
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "source",
+          "rms",
+          "peak"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "meter",
+              "recording"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "rms": {
+            "type": "number"
+          },
+          "peak": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "notification",
+      "name": "event.transcription_complete",
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "text",
+          "duration_ms"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number"
+          },
+          "duration_ms": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    {
+      "type": "notification",
+      "name": "event.transcription_error",
+      "params_schema": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "kind",
+          "message"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  ],
+  "definitions": {
+    "ReplacementRule": {
+      "type": "object",
+      "required": [
+        "id",
+        "enabled",
+        "kind",
+        "pattern",
+        "replacement",
+        "word_boundary",
+        "case_sensitive"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "literal",
+            "regex"
+          ]
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "replacement": {
+          "type": "string"
+        },
+        "word_boundary": {
+          "type": "boolean"
+        },
+        "case_sensitive": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "user",
+            "preset"
+          ]
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

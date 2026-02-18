@@ -339,6 +339,55 @@ Stop audio level metering.
 
 ---
 
+#### `audio.meter_status`
+
+Get current audio meter status.
+
+**Availability:** Optional (feature-detect via `system.info.capabilities` and tolerate `E_METHOD_NOT_FOUND`)
+
+**Request:**
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "audio.meter_status" }
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "running": true,
+    "interval_ms": 80
+  }
+}
+```
+
+**Parameters Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+}
+```
+
+**Result Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "required": ["running"],
+  "properties": {
+    "running": { "type": "boolean" },
+    "interval_ms": { "type": "integer", "minimum": 1 }
+  },
+  "additionalProperties": true
+}
+```
+
+**Timeout:** 2 seconds
+
+---
+
 ### Model Methods
 
 #### `model.get_status`
@@ -376,6 +425,74 @@ Get current model status.
 - `error`: includes `error_message`
 
 **Timeout:** 2 seconds
+
+---
+
+#### `model.download`
+
+Download model artifacts and return current model status.
+
+**Availability:** Optional (host MUST handle `E_METHOD_NOT_FOUND`)
+
+**Request:**
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "model.download", "params": { "model_id": "parakeet-tdt-0.6b-v3" } }
+```
+
+`model_id` is currently accepted for forward compatibility; current sidecar implementation resolves the model from manifest defaults.
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "model_id": "parakeet-tdt-0.6b-v3",
+    "revision": "main",
+    "status": "ready",
+    "cache_path": "/home/user/.cache/huggingface/hub/models--nvidia--parakeet-tdt-0.6b-v3"
+  }
+}
+```
+
+**Parameters Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "properties": {
+    "model_id": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": true
+}
+```
+
+**Result Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "model_id": { "type": "string" },
+    "revision": { "type": "string" },
+    "status": { "type": "string", "enum": ["missing", "downloading", "verifying", "ready", "error"] },
+    "cache_path": { "type": "string" },
+    "progress": {
+      "type": "object",
+      "properties": {
+        "current": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "unit": { "type": "string" }
+      },
+      "required": ["current", "total", "unit"],
+      "additionalProperties": true
+    },
+    "error_message": { "type": "string" }
+  },
+  "additionalProperties": true
+}
+```
+
+**Timeout:** 20 minutes
 
 ---
 
@@ -454,6 +571,126 @@ Initialize ASR engine with specified model.
 **Timeout handling:**
 - Timeout is **fatal**: sidecar enters error state
 - **Remediation:** Restart sidecar
+
+---
+
+#### `asr.status`
+
+Get current ASR engine status.
+
+**Availability:** Optional diagnostic method (host MUST handle `E_METHOD_NOT_FOUND`)
+
+**Request:**
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "asr.status" }
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "state": "ready",
+    "model_id": "parakeet-tdt-0.6b-v3",
+    "device": "cuda",
+    "ready": true
+  }
+}
+```
+
+**Parameters Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+}
+```
+
+**Result Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "required": ["state", "ready"],
+  "properties": {
+    "state": { "type": "string", "enum": ["uninitialized", "downloading", "loading", "ready", "error"] },
+    "model_id": { "type": ["string", "null"] },
+    "device": { "type": "string" },
+    "ready": { "type": "boolean" }
+  },
+  "additionalProperties": true
+}
+```
+
+**Timeout:** 2 seconds
+
+---
+
+#### `asr.transcribe`
+
+Transcribe a single audio file path.
+
+**Availability:** Optional utility method (host MUST handle `E_METHOD_NOT_FOUND`)
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "asr.transcribe",
+  "params": {
+    "audio_path": "/tmp/input.wav",
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "language": "en-US"
+  }
+}
+```
+
+`session_id` and `language` are additive optional fields for compatibility; current sidecar implementation requires `audio_path` and ignores unknown extra params.
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "text": "hello world",
+    "duration_ms": 1234
+  }
+}
+```
+
+**Parameters Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "required": ["audio_path"],
+  "properties": {
+    "audio_path": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string" },
+    "language": { "type": "string" }
+  },
+  "additionalProperties": true
+}
+```
+
+**Result Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "required": ["text"],
+  "properties": {
+    "text": { "type": "string" },
+    "language": { "type": "string" },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "duration_ms": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": true
+}
+```
+
+**Timeout:** 30 seconds
 
 ---
 
@@ -544,18 +781,101 @@ Cancel recording without transcription.
 }
 ```
 
+**Availability:** Required
+
 **Response:**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "result": { "status": "cancelled" }
+  "result": {
+    "cancelled": true,
+    "session_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+**Parameters Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "required": ["session_id"],
+  "properties": {
+    "session_id": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}
+```
+
+**Result Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "required": ["cancelled", "session_id"],
+  "properties": {
+    "cancelled": { "type": "boolean" },
+    "session_id": { "type": "string" }
+  },
+  "additionalProperties": true
 }
 ```
 
 **Behavior:**
 - Discards recorded audio
 - **MUST NOT** emit `event.transcription_complete`
+
+**Timeout:** 2 seconds
+
+---
+
+#### `recording.status`
+
+Get current recording state.
+
+**Availability:** Optional diagnostic method (host MUST handle `E_METHOD_NOT_FOUND`)
+
+**Request:**
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "recording.status" }
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "state": "recording",
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "duration_ms": 850,
+    "elapsed_sec": 0.85
+  }
+}
+```
+
+**Parameters Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+}
+```
+
+**Result Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "required": ["state", "session_id"],
+  "properties": {
+    "state": { "type": "string", "enum": ["idle", "recording", "stopping"] },
+    "session_id": { "type": ["string", "null"] },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "elapsed_sec": { "type": "number", "minimum": 0 }
+  },
+  "additionalProperties": true
+}
+```
 
 **Timeout:** 2 seconds
 
@@ -608,6 +928,286 @@ Set text replacement rules.
   "jsonrpc": "2.0",
   "id": 1,
   "result": { "count": 2 }
+}
+```
+
+**Timeout:** 2 seconds
+
+---
+
+#### `replacements.get_rules`
+
+Get currently active replacement rules.
+
+**Availability:** Optional (host MUST handle `E_METHOD_NOT_FOUND`)
+
+**Request:**
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "replacements.get_rules" }
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "rules": [
+      {
+        "id": "user:1",
+        "enabled": true,
+        "kind": "literal",
+        "pattern": "gonna",
+        "replacement": "going to",
+        "word_boundary": true,
+        "case_sensitive": false
+      }
+    ]
+  }
+}
+```
+
+**Parameters Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+}
+```
+
+**Result Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "required": ["rules"],
+  "properties": {
+    "rules": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/ReplacementRule" }
+    }
+  },
+  "additionalProperties": true
+}
+```
+
+**Timeout:** 2 seconds
+
+---
+
+#### `replacements.get_presets`
+
+List available replacement presets (metadata only).
+
+**Availability:** Optional (host MUST handle `E_METHOD_NOT_FOUND`)
+
+**Request:**
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "replacements.get_presets" }
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "presets": [
+      {
+        "id": "punctuation",
+        "name": "Punctuation",
+        "description": "Restore punctuation",
+        "rule_count": 12
+      }
+    ]
+  }
+}
+```
+
+**Parameters Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+}
+```
+
+**Result Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "required": ["presets"],
+  "properties": {
+    "presets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "description", "rule_count"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "rule_count": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
+```
+
+**Timeout:** 2 seconds
+
+---
+
+#### `replacements.get_preset_rules`
+
+Get all rules for a preset.
+
+**Availability:** Optional (host MUST handle `E_METHOD_NOT_FOUND`)
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "replacements.get_preset_rules",
+  "params": { "preset_id": "punctuation" }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "preset": {
+      "id": "punctuation",
+      "name": "Punctuation",
+      "description": "Restore punctuation",
+      "rule_count": 12
+    },
+    "rules": [
+      {
+        "id": "punctuation:r1",
+        "enabled": true,
+        "kind": "literal",
+        "pattern": "period",
+        "replacement": ".",
+        "word_boundary": true,
+        "case_sensitive": false,
+        "origin": "preset"
+      }
+    ]
+  }
+}
+```
+
+**Parameters Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "required": ["preset_id"],
+  "properties": {
+    "preset_id": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}
+```
+
+**Result Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "required": ["preset", "rules"],
+  "properties": {
+    "preset": {
+      "type": "object",
+      "required": ["id", "name", "description", "rule_count"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "rule_count": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "rules": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/ReplacementRule" }
+    }
+  },
+  "additionalProperties": true
+}
+```
+
+**Timeout:** 2 seconds
+
+---
+
+#### `replacements.preview`
+
+Preview replacement processing without saving active rules.
+
+**Availability:** Optional (host MUST handle `E_METHOD_NOT_FOUND`)
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "replacements.preview",
+  "params": {
+    "text": "insert date {{date}}",
+    "rules": [],
+    "skip_normalize": false,
+    "skip_macros": false
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "result": "insert date 2026-02-18",
+    "truncated": false
+  }
+}
+```
+
+**Parameters Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "properties": {
+    "text": { "type": "string" },
+    "rules": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/ReplacementRule" }
+    },
+    "skip_normalize": { "type": "boolean" },
+    "skip_macros": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}
+```
+
+**Result Schema (JSON Schema fragment):**
+```json
+{
+  "type": "object",
+  "required": ["result", "truncated"],
+  "properties": {
+    "result": { "type": "string" },
+    "truncated": { "type": "boolean" }
+  },
+  "additionalProperties": true
 }
 ```
 
@@ -843,13 +1443,22 @@ All macros are deterministic and use local timezone.
 | `audio.set_device` | 2s | 1 retry |
 | `audio.meter_start` | 2s | 1 retry |
 | `audio.meter_stop` | 2s | 1 retry |
+| `audio.meter_status` *(optional)* | 2s | 1 retry |
 | `model.get_status` | 2s | 1 retry |
+| `model.download` *(optional)* | 20 min | Fatal |
 | `model.purge_cache` | 10s | - |
 | `asr.initialize` | 20 min | Fatal |
+| `asr.status` *(optional)* | 2s | 1 retry |
+| `asr.transcribe` *(optional)* | 30s | 1 retry |
 | `recording.start` | 2s | 1 retry |
 | `recording.stop` | 2s | 1 retry |
 | `recording.cancel` | 2s | 1 retry |
+| `recording.status` *(optional)* | 2s | 1 retry |
 | `replacements.set_rules` | 2s | 1 retry |
+| `replacements.get_rules` *(optional)* | 2s | 1 retry |
+| `replacements.get_presets` *(optional)* | 2s | 1 retry |
+| `replacements.get_preset_rules` *(optional)* | 2s | 1 retry |
+| `replacements.preview` *(optional)* | 2s | 1 retry |
 | `status.get` | 2s | 1 retry |
 
 ### Timeout Handling
