@@ -157,6 +157,14 @@ impl AppStateManager {
         let mut state = self.state.write().unwrap();
         let current = *state;
 
+        // Guard recording start while paused: direct transitions must respect enabled state.
+        if current == AppState::Idle && new_state == AppState::Recording && !self.is_enabled() {
+            return Err(InvalidTransition {
+                from: current,
+                to: new_state,
+            });
+        }
+
         if !Self::is_valid_transition(current, new_state) {
             return Err(InvalidTransition {
                 from: current,
@@ -444,6 +452,17 @@ mod tests {
             manager.can_start_recording(),
             Err(CannotRecordReason::InErrorState)
         );
+    }
+
+    #[test]
+    fn test_transition_idle_to_recording_rejected_when_paused() {
+        let manager = AppStateManager::new();
+        manager.set_enabled(false);
+
+        let err = manager.transition(AppState::Recording).unwrap_err();
+        assert_eq!(err.from, AppState::Idle);
+        assert_eq!(err.to, AppState::Recording);
+        assert_eq!(manager.get(), AppState::Idle);
     }
 
     #[test]
