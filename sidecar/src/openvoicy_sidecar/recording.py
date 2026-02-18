@@ -45,6 +45,8 @@ CHUNK_SIZE = 1024
 # Audio level emission
 LEVEL_EMISSION_INTERVAL_MS = 80  # Emit levels every 80ms
 LEVEL_BUFFER_SIZE = 1600  # ~100ms of audio at 16kHz
+# Keep join timeout well below async-stop latency target (<250ms).
+LEVEL_THREAD_JOIN_TIMEOUT_SEC = min(0.2, (LEVEL_EMISSION_INTERVAL_MS * 2) / 1000)
 
 
 class RecordingState(Enum):
@@ -247,11 +249,8 @@ class AudioRecorder:
 
             self._state = RecordingState.STOPPING
 
-        # Stop level emission
-        self._emit_levels = False
-        if self._level_thread is not None:
-            self._level_thread.join(timeout=0.5)
-            self._level_thread = None
+        # Stop level emission without blocking stop path for long.
+        self._stop_level_emission()
 
         # Stop stream outside lock to avoid deadlock with callback
         if self._stream is not None:
@@ -290,11 +289,8 @@ class AudioRecorder:
 
             self._state = RecordingState.STOPPING
 
-        # Stop level emission
-        self._emit_levels = False
-        if self._level_thread is not None:
-            self._level_thread.join(timeout=0.5)
-            self._level_thread = None
+        # Stop level emission without blocking cancel path for long.
+        self._stop_level_emission()
 
         # Stop stream outside lock
         if self._stream is not None:
@@ -375,6 +371,26 @@ class AudioRecorder:
                     source="recording",
                     session_id=session_id,
                 )
+
+    def _stop_level_emission(self) -> None:
+        """Signal level thread to stop and join briefly."""
+        self._emit_levels = False
+        level_thread = self._level_thread
+        if level_thread is None:
+            return
+
+        level_thread.join(timeout=LEVEL_THREAD_JOIN_TIMEOUT_SEC)
+        try:
+            if level_thread.is_alive():
+                log(
+                    "Level emission thread still running after "
+                    f"{LEVEL_THREAD_JOIN_TIMEOUT_SEC * 1000:.0f}ms timeout; continuing stop path"
+                )
+        except Exception:
+            # Best-effort logging path; continue cleanup regardless.
+            pass
+
+        self._level_thread = None
 
     def _get_device_index(self, device_uid: str) -> int | None:
         """Get sounddevice device index from our UID.

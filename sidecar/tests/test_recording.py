@@ -29,6 +29,7 @@ from openvoicy_sidecar.recording import (
     handle_recording_start,
     handle_recording_status,
     handle_recording_stop,
+    LEVEL_THREAD_JOIN_TIMEOUT_SEC,
 )
 
 # === Fixtures ===
@@ -301,6 +302,38 @@ class TestAudioRecorder:
 
             with pytest.raises(RuntimeError, match="Invalid session"):
                 recorder.stop("wrong-session-id")
+
+    def test_stop_level_thread_join_timeout_is_bounded(self, recorder):
+        """Stop should not block on level thread join beyond async-stop target."""
+        session_id = "session-stop-timeout"
+        recorder._state = RecordingState.RECORDING
+        recorder._session = RecordingSession(
+            session_id=session_id,
+            started_at=time.monotonic(),
+            sample_rate=recorder.sample_rate,
+            channels=recorder.channels,
+            max_samples=recorder.max_samples,
+        )
+        recorder._session.add_chunk(np.zeros(1600, dtype=np.float32))
+        recorder._stream = MagicMock()
+
+        fake_level_thread = MagicMock()
+        fake_level_thread.is_alive.return_value = False
+        recorder._level_thread = fake_level_thread
+        recorder._emit_levels = True
+
+        audio, duration_ms = recorder.stop(session_id)
+
+        assert len(audio) == 1600
+        assert duration_ms == 100
+        fake_level_thread.join.assert_called_once()
+        join_call = fake_level_thread.join.call_args
+        timeout = join_call.kwargs.get("timeout")
+        if timeout is None and join_call.args:
+            timeout = join_call.args[0]
+        assert timeout is not None
+        assert timeout == LEVEL_THREAD_JOIN_TIMEOUT_SEC
+        assert timeout < 0.25
 
     def test_cancel_recording(self, recorder, mock_sounddevice):
         """Should cancel recording and discard audio."""
