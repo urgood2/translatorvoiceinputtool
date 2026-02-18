@@ -410,12 +410,15 @@ def load_presets_from_file(path: Path) -> dict[str, Preset]:
 
     except FileNotFoundError:
         log(f"Presets file not found: {path}")
+        _presets = {}
         return {}
     except json.JSONDecodeError as e:
         log(f"Error parsing presets file: {e}")
+        _presets = {}
         return {}
     except Exception as e:
         log(f"Error loading presets: {e}")
+        _presets = {}
         return {}
 
 

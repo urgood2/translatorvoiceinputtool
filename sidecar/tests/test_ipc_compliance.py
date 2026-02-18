@@ -151,6 +151,18 @@ def run_sidecar() -> Any:
 
 
 @pytest.fixture(autouse=True)
+def reset_replacements_state() -> Any:
+    """Keep replacements global state isolated per test."""
+    import openvoicy_sidecar.replacements as replacements_module
+
+    original_presets = replacements_module._presets.copy()
+    original_active_rules = replacements_module._active_rules.copy()
+    yield
+    replacements_module._presets = original_presets
+    replacements_module._active_rules = original_active_rules
+
+
+@pytest.fixture(autouse=True)
 def patch_recording_async(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "openvoicy_sidecar.notifications.emit_status_changed",
