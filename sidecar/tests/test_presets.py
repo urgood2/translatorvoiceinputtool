@@ -4,15 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import sys
 from pathlib import Path
 
 import pytest
-
-# Add src to path for imports
-src_path = Path(__file__).parent.parent / "src"
-sys.path.insert(0, str(src_path))
 
 import openvoicy_sidecar.server as server_mod
 from openvoicy_sidecar.protocol import Request
@@ -23,6 +17,7 @@ from openvoicy_sidecar.replacements import (
     handle_replacements_get_preset_rules,
     handle_replacements_get_presets,
     merge_preset_and_user_rules,
+    process_text,
 )
 from openvoicy_sidecar.server import load_startup_presets
 
@@ -96,6 +91,30 @@ def test_presets_load_in_dev_mode():
     assert any(p.id == "punctuation" for p in presets)
 
 
+def test_shared_presets_json_has_expected_runtime_structure():
+    """Shared PRESETS.json should load into usable preset/rule objects."""
+    load_startup_presets()
+    presets = get_all_presets()
+    preset_map = {preset.id: preset for preset in presets}
+    logger.info(
+        "loaded preset count=%d preset_ids=%s",
+        len(presets),
+        sorted(preset_map),
+    )
+
+    assert "punctuation" in preset_map
+    punctuation = preset_map["punctuation"]
+    assert punctuation.name
+    assert punctuation.description
+    assert len(punctuation.rules) > 0
+
+    first_rule = punctuation.rules[0]
+    assert isinstance(first_rule.id, str)
+    assert isinstance(first_rule.pattern, str)
+    assert isinstance(first_rule.replacement, str)
+    assert first_rule.kind in {"literal", "regex"}
+
+
 def test_presets_load_from_packaged_env_path(tmp_path, monkeypatch):
     """Presets should load from packaged-style path via OPENVOICY_PRESETS_PATH."""
     preset_file = _write_presets_file(tmp_path / "PRESETS.json")
@@ -148,6 +167,26 @@ def test_replacements_handlers_return_loaded_presets_and_rules(tmp_path, monkeyp
     assert isinstance(rules_result["rules"], list)
     assert len(rules_result["rules"]) == 1
     assert rules_result["rules"][0]["id"] == "preset-a:a1"
+
+
+def test_preset_rules_are_usable_in_process_text_pipeline(tmp_path, monkeypatch):
+    """Loaded preset rules should drive replacement output in the text pipeline."""
+    preset_file = _write_presets_file(tmp_path / "PRESETS.json")
+    monkeypatch.setenv("OPENVOICY_PRESETS_PATH", str(preset_file))
+    load_startup_presets()
+
+    rules = get_preset_rules(["preset-b"])
+    processed, truncated = process_text("hello there", rules=rules, skip_normalize=True, skip_macros=True)
+    logger.info(
+        "pipeline input=%r preset_ids=%s output=%r truncated=%s",
+        "hello there",
+        ["preset-b"],
+        processed,
+        truncated,
+    )
+
+    assert processed == "hi there"
+    assert truncated is False
 
 
 def test_invalid_or_missing_preset_file_is_graceful(tmp_path, monkeypatch, capsys):
