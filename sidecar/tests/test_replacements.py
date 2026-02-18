@@ -741,36 +741,57 @@ class TestSharedVectors:
 class TestPerformance:
     """Performance tests for replacement rules."""
 
-    def test_500_rules_under_100ms(self, reset_active_rules):
-        """Should process 500 rules in under 100ms."""
-        # Create 500 rules
-        rules = [
-            ReplacementRule(
-                id=str(i),
-                enabled=True,
-                kind="literal",
-                pattern=f"word{i}",
-                replacement=f"replaced{i}",
-                word_boundary=True,
-            )
-            for i in range(500)
-        ]
+    def test_500_rules_scales_without_extreme_regression(self, reset_active_rules):
+        """500-rule throughput should remain in line with smaller rule sets.
 
-        # Test text with a few matches
+        This avoids a hard wall-clock threshold that flakes on slower CI runners
+        while still catching major algorithmic regressions.
+        """
+
+        def make_rules(count: int) -> list[ReplacementRule]:
+            return [
+                ReplacementRule(
+                    id=str(i),
+                    enabled=True,
+                    kind="literal",
+                    pattern=f"word{i}",
+                    replacement=f"replaced{i}",
+                    word_boundary=True,
+                )
+                for i in range(count)
+            ]
+
+        # Shared input with a few matches.
         text = "The word0 and word100 and word499 are replaced."
 
-        # Time the processing
-        start = time.monotonic()
-        result, _ = apply_replacements(text, rules)
-        elapsed_ms = (time.monotonic() - start) * 1000
+        # Warmup to reduce one-time regex/cache effects.
+        apply_replacements(text, make_rules(10))
 
-        # Verify correctness
+        small_rules = make_rules(50)
+        large_rules = make_rules(500)
+
+        small_start = time.monotonic()
+        _, _ = apply_replacements(text, small_rules)
+        small_elapsed_ms = (time.monotonic() - small_start) * 1000
+
+        large_start = time.monotonic()
+        result, _ = apply_replacements(text, large_rules)
+        large_elapsed_ms = (time.monotonic() - large_start) * 1000
+
+        # Verify correctness.
         assert "replaced0" in result
         assert "replaced100" in result
         assert "replaced499" in result
 
-        # Verify performance
-        assert elapsed_ms < 100, f"Processing took {elapsed_ms:.1f}ms, expected < 100ms"
+        small_per_rule_ms = small_elapsed_ms / len(small_rules)
+        large_per_rule_ms = large_elapsed_ms / len(large_rules)
+
+        # Allow headroom for CI noise while guarding against extreme slowdowns.
+        assert large_per_rule_ms <= (small_per_rule_ms * 4) + 0.1, (
+            "Unexpected scaling regression: "
+            f"50-rule={small_per_rule_ms:.4f}ms/rule, "
+            f"500-rule={large_per_rule_ms:.4f}ms/rule"
+        )
 
 
 # === Integration Tests ===
