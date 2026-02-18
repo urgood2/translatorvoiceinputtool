@@ -230,6 +230,21 @@ class TestRuleValidation:
         with pytest.raises(ValidationError, match="invalid regex"):
             validate_rules(rules)
 
+    def test_invalid_rule_kind(self):
+        """Should reject unsupported rule kinds."""
+        rules = [
+            ReplacementRule(
+                id="1",
+                enabled=True,
+                kind="invalid",  # type: ignore[arg-type]
+                pattern="foo",
+                replacement="bar",
+            )
+        ]
+
+        with pytest.raises(ValidationError, match="invalid kind"):
+            validate_rules(rules)
+
 
 # === Unit Tests: Literal Rules ===
 
@@ -623,6 +638,26 @@ class TestReplacementHandlers:
             params={
                 "rules": [
                     {"id": "1", "enabled": True, "kind": "literal", "pattern": "", "replacement": "bar"}
+                ]
+            },
+        )
+        with pytest.raises(ReplacementError):
+            handle_replacements_set_rules(request)
+
+    def test_set_rules_rejects_invalid_kind(self, reset_active_rules):
+        """Should reject unsupported rule kinds."""
+        request = Request(
+            method="replacements.set_rules",
+            id=1,
+            params={
+                "rules": [
+                    {
+                        "id": "1",
+                        "enabled": True,
+                        "kind": "invalid",
+                        "pattern": "foo",
+                        "replacement": "bar",
+                    }
                 ]
             },
         )
