@@ -163,7 +163,6 @@ def handle_system_ping(request: Request) -> dict[str, Any]:
 
 def handle_system_info(request: Request) -> dict[str, Any]:
     """Handle system.info request."""
-    # Check for CUDA availability (placeholder - will be enhanced later)
     cuda_available = False
     try:
         import torch  # noqa: F401
@@ -175,7 +174,8 @@ def handle_system_info(request: Request) -> dict[str, Any]:
     return {
         "version": __version__,
         "protocol": PROTOCOL_VERSION,
-        "capabilities": {
+        "capabilities": ["asr", "replacements", "meter"],
+        "capabilities_detail": {
             "cuda_available": cuda_available,
             "supports_progress": True,
             "supports_model_purge": True,
@@ -183,8 +183,9 @@ def handle_system_info(request: Request) -> dict[str, Any]:
             "supports_audio_meter": True,
         },
         "runtime": {
-            "python": platform.python_version(),
+            "python_version": platform.python_version(),
             "platform": sys.platform,
+            "cuda_available": cuda_available,
         },
     }
 

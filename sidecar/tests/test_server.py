@@ -195,13 +195,18 @@ class TestServerIntegration:
         assert "version" in responses[0]["result"]
 
     def test_system_info(self, run_sidecar):
-        """system.info should return capabilities and runtime info."""
+        """system.info should return baseline shape from IPC protocol."""
         responses, _ = run_sidecar(['{"jsonrpc":"2.0","id":2,"method":"system.info"}'])
         assert len(responses) == 1
         result = responses[0]["result"]
-        assert "capabilities" in result
-        assert "runtime" in result
         assert result["protocol"] == "v1"
+        assert isinstance(result["capabilities"], list)
+        assert all(isinstance(cap, str) for cap in result["capabilities"])
+
+        runtime = result["runtime"]
+        assert isinstance(runtime["python_version"], str)
+        assert isinstance(runtime["platform"], str)
+        assert isinstance(runtime["cuda_available"], bool)
 
     def test_replacements_get_presets_loaded_on_startup(self, run_sidecar):
         """replacements.get_presets should include startup-loaded presets."""
