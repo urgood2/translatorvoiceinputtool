@@ -749,9 +749,9 @@ pub fn load_config_from_path(path: &PathBuf) -> AppConfig {
     }
 }
 
-/// Save configuration to disk atomically.
+/// Save configuration to disk with atomic replacement where platform permits.
 ///
-/// Writes to a temp file first, then renames to the final path.
+/// Writes to a temp file first, then replaces the final path.
 pub fn save_config(config: &AppConfig) -> Result<(), ConfigError> {
     save_config_to_path(config, &config_path())
 }
@@ -769,10 +769,32 @@ pub fn save_config_to_path(config: &AppConfig, path: &PathBuf) -> Result<(), Con
     let json = serde_json::to_string_pretty(config)?;
     fs::write(&temp, &json)?;
 
-    // Atomic rename
-    fs::rename(&temp, path)?;
+    replace_config_file(&temp, path)?;
 
     Ok(())
+}
+
+fn replace_config_file(temp: &PathBuf, path: &PathBuf) -> io::Result<()> {
+    match fs::rename(temp, path) {
+        Ok(()) => Ok(()),
+        Err(rename_err) => {
+            #[cfg(target_os = "windows")]
+            {
+                // Windows rename fails when destination exists; replace explicitly.
+                if path.exists()
+                    && matches!(
+                        rename_err.kind(),
+                        io::ErrorKind::AlreadyExists | io::ErrorKind::PermissionDenied
+                    )
+                {
+                    fs::remove_file(path)?;
+                    return fs::rename(temp, path);
+                }
+            }
+
+            Err(rename_err)
+        }
+    }
 }
 
 /// Migrate configuration from older schema versions.
@@ -1119,6 +1141,26 @@ mod tests {
 
         // Final file should exist
         assert!(config_path.exists());
+    }
+
+    #[test]
+    fn test_save_overwrites_existing_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        let mut first = AppConfig::default();
+        first.hotkeys.primary = "Ctrl+Shift+Space".to_string();
+        save_config_to_path(&first, &config_path).unwrap();
+
+        let mut second = AppConfig::default();
+        second.hotkeys.primary = "Alt+Shift+V".to_string();
+        save_config_to_path(&second, &config_path).unwrap();
+
+        let loaded = load_config_from_path(&config_path);
+        assert_eq!(loaded.hotkeys.primary, "Alt+Shift+V");
+
+        let temp_path = config_path.with_extension("json.tmp");
+        assert!(!temp_path.exists());
     }
 
     #[test]
