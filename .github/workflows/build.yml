@@ -51,22 +51,42 @@ jobs:
         run: |
           pyinstaller --onefile --name openvoicy-sidecar src/openvoicy_sidecar/__main__.py
 
-      - name: Generate manifest
+      - name: Collect sidecar evidence
         shell: bash
         run: |
           mkdir -p artifacts
-          cat > artifacts/manifest.json << EOF
-          {
-            "component": "sidecar",
-            "version": "${{ github.sha }}",
-            "git_sha": "${{ github.sha }}",
-            "git_branch": "${{ github.ref_name }}",
-            "build_timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "python_version": "$(python --version | cut -d' ' -f2)",
-            "platform": "${{ matrix.target }}",
-            "sidecar_hash": "$(sha256sum sidecar/dist/openvoicy-sidecar* 2>/dev/null | head -1 | cut -d' ' -f1 || sha256sum.exe sidecar/dist/openvoicy-sidecar* 2>/dev/null | head -1 | cut -d' ' -f1 || echo 'unknown')"
+          python sidecar/tools/collect_sidecar_evidence.py \
+            --binary-glob "sidecar/dist/openvoicy-sidecar*" \
+            --platform "${{ matrix.target }}" \
+            --output artifacts/sidecar-evidence.json
+
+      - name: Generate manifest
+        shell: bash
+        run: |
+          python - << 'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+
+          with open("artifacts/sidecar-evidence.json", "r", encoding="utf-8") as handle:
+              evidence = json.load(handle)
+
+          manifest = {
+              "component": "sidecar",
+              "version": os.environ["GITHUB_SHA"],
+              "git_sha": os.environ["GITHUB_SHA"],
+              "git_branch": os.environ["GITHUB_REF_NAME"],
+              "build_timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "python_version": os.sys.version.split(" ")[0],
+              "platform": evidence["platform"],
+              "sidecar_hash": evidence["binary_sha256"],
+              "binary_size_bytes": evidence["binary_size_bytes"],
+              "cold_startup_ms": evidence["cold_startup_ms"],
           }
-          EOF
+
+          with open("artifacts/manifest.json", "w", encoding="utf-8") as handle:
+              json.dump(manifest, handle, indent=2)
+          PY
           cp sidecar/dist/openvoicy-sidecar* artifacts/ 2>/dev/null || true
 
       - name: Upload sidecar artifact
