@@ -394,7 +394,7 @@ def transcribe_session_async(
             # Apply replacements
             rules = get_current_rules()
             if rules:
-                text = process_text(text, rules)
+                text, _ = process_text(text, rules)
 
             # Emit result
             emit_transcription_complete(
