@@ -140,4 +140,26 @@ describe('useTauriEvent', () => {
 
     unmount();
   });
+
+  test('cleans up listener when unmounted before async listen resolves', async () => {
+    const unlisten = vi.fn();
+    vi.mocked(listen).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve(unlisten), 20);
+        }) as ReturnType<typeof listen>
+    );
+
+    const handler = vi.fn();
+    const { unmount } = renderHook(() => useTauriEvent('custom:event', handler));
+
+    // Unmount immediately, before mocked listen promise resolves.
+    unmount();
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+
+    expect(unlisten).toHaveBeenCalledTimes(1);
+  });
 });

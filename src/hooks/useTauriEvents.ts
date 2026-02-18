@@ -157,15 +157,24 @@ export function useTauriEvent<T>(
   handlerRef.current = handler;
 
   useEffect(() => {
+    let cancelled = false;
     let unlisten: UnlistenFn | null = null;
 
-    listen<T>(eventName, (event) => {
+    void listen<T>(eventName, (event) => {
       handlerRef.current(event.payload);
     }).then((fn) => {
+      if (cancelled) {
+        // Component unmounted before async listen resolved: clean up immediately.
+        fn();
+        return;
+      }
       unlisten = fn;
+    }).catch((error) => {
+      console.error(`Failed to listen for event ${eventName}:`, error);
     });
 
     return () => {
+      cancelled = true;
       if (unlisten) {
         unlisten();
       }
