@@ -62,6 +62,30 @@ class TestStatusGetValidation:
         with pytest.raises(SelfTestError, match="state"):
             validate_status_get_result({"state": "unknown"})
 
+    def test_accepts_protocol_model_statuses(self):
+        for status in ("missing", "downloading", "verifying", "ready", "error"):
+            validate_status_get_result(
+                {
+                    "state": "loading_model" if status in {"downloading", "verifying"} else "idle",
+                    "model": {
+                        "model_id": "parakeet-tdt-0.6b-v3",
+                        "status": status,
+                    },
+                }
+            )
+
+    def test_rejects_legacy_loading_model_status(self):
+        with pytest.raises(SelfTestError, match="model.status"):
+            validate_status_get_result(
+                {
+                    "state": "loading_model",
+                    "model": {
+                        "model_id": "parakeet-tdt-0.6b-v3",
+                        "status": "loading",
+                    },
+                }
+            )
+
 
 class TestReplacementsValidation:
     """Tests for replacements.get_rules response validation."""

@@ -14,7 +14,7 @@ from typing import Any
 
 RPC_TIMEOUT_SECONDS = 5.0
 VALID_STATUS_STATES = {"idle", "loading_model", "recording", "transcribing", "error"}
-VALID_STATUS_MODEL_STATES = {"ready", "loading", "error"}
+VALID_STATUS_MODEL_STATES = {"missing", "downloading", "verifying", "ready", "error"}
 
 
 class SelfTestError(RuntimeError):
@@ -237,7 +237,9 @@ def validate_status_get_result(result: dict[str, Any]) -> None:
         if not isinstance(model.get("model_id"), str):
             raise SelfTestError("status.get model.model_id must be a string")
         if model.get("status") not in VALID_STATUS_MODEL_STATES:
-            raise SelfTestError("status.get model.status must be one of ready/loading/error")
+            raise SelfTestError(
+                "status.get model.status must be one of missing/downloading/verifying/ready/error"
+            )
 
 
 def validate_replacements_get_rules_result(result: dict[str, Any]) -> None:
