@@ -41,3 +41,11 @@ src-tauri/binaries/*
 !src-tauri/binaries/.gitkeep
 sidecar/.hypothesis/
 planning_backup_v1/
+
+# Generated test artifacts and local-only fixtures
+sidecar/tests/fixtures/generated/
+sidecar/tests/fixtures/local_only/
+sidecar/tests/.artifacts/
+sidecar/tests/tmp/
+src-tauri/tests/fixtures/generated/
+src/tests/fixtures/generated/
