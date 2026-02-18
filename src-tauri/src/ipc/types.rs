@@ -161,7 +161,10 @@ mod tests {
     #[test]
     fn test_timeout_config() {
         assert_eq!(TimeoutConfig::get("system.ping"), Duration::from_secs(1));
-        assert_eq!(TimeoutConfig::get("asr.initialize"), Duration::from_secs(1200));
+        assert_eq!(
+            TimeoutConfig::get("asr.initialize"),
+            Duration::from_secs(1200)
+        );
         assert_eq!(TimeoutConfig::get("unknown.method"), Duration::from_secs(5));
     }
 
@@ -247,7 +250,8 @@ mod tests {
 
     #[test]
     fn test_response_error_without_data() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}"#;
         let resp: Response = serde_json::from_str(json).unwrap();
         assert!(!resp.is_success());
         assert!(resp.error_kind().is_none());
@@ -258,7 +262,15 @@ mod tests {
         let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Server error","data":{"kind":"E_MODEL_NOT_LOADED","details":{"model":"parakeet"}}}}"#;
         let resp: Response = serde_json::from_str(json).unwrap();
         assert_eq!(resp.error_kind(), Some("E_MODEL_NOT_LOADED"));
-        let details = resp.error.as_ref().unwrap().data.as_ref().unwrap().details.as_ref();
+        let details = resp
+            .error
+            .as_ref()
+            .unwrap()
+            .data
+            .as_ref()
+            .unwrap()
+            .details
+            .as_ref();
         assert!(details.is_some());
     }
 

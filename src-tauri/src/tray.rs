@@ -81,7 +81,9 @@ fn get_tooltip_text(state: AppState, enabled: bool) -> &'static str {
 fn load_png_icon(bytes: &[u8]) -> Result<Image<'static>, String> {
     // Decode PNG to RGBA bytes
     let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    let mut reader = decoder.read_info().map_err(|e| format!("PNG decode error: {}", e))?;
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| format!("PNG decode error: {}", e))?;
 
     let mut buf = vec![0; reader.output_buffer_size()];
     let info = reader
@@ -155,18 +157,15 @@ pub fn setup_tray(app: &AppHandle) -> Result<TrayIcon, tauri::Error> {
         // Copy Last Transcript
         .item(&MenuItemBuilder::with_id(menu_ids::COPY_LAST, "Copy Last Transcript").build(app)?)
         // Restart Sidecar
-        .item(
-            &MenuItemBuilder::with_id(menu_ids::RESTART_SIDECAR, "Restart Sidecar").build(app)?,
-        )
+        .item(&MenuItemBuilder::with_id(menu_ids::RESTART_SIDECAR, "Restart Sidecar").build(app)?)
         .separator()
         // Quit
         .item(&PredefinedMenuItem::quit(app, Some("Quit"))?)
         .build()?;
 
     // Load the initial icon
-    let icon = load_png_icon(ICON_IDLE).map_err(|e| {
-        tauri::Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-    })?;
+    let icon = load_png_icon(ICON_IDLE)
+        .map_err(|e| tauri::Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
 
     // Build the tray icon
     let tray = TrayIconBuilder::new()
@@ -218,7 +217,10 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
         menu_ids::RESTART_SIDECAR => {
             log::info!("Tray: Restart Sidecar clicked");
             // Emit event to trigger sidecar restart
-            let _ = app.emit("sidecar:restart", serde_json::json!({"reason": "user_request"}));
+            let _ = app.emit(
+                "sidecar:restart",
+                serde_json::json!({"reason": "user_request"}),
+            );
         }
         _ => {
             log::debug!("Tray: Unhandled menu event: {}", id);
@@ -419,7 +421,11 @@ mod tests {
     fn test_load_png_icon() {
         // Test that we can load the embedded icons
         let result = load_png_icon(ICON_IDLE);
-        assert!(result.is_ok(), "Failed to load idle icon: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to load idle icon: {:?}",
+            result.err()
+        );
 
         let result = load_png_icon(ICON_RECORDING);
         assert!(

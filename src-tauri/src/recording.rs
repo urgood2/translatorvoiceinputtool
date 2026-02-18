@@ -256,7 +256,11 @@ impl RecordingController {
 
     /// Get current session ID (if any).
     pub async fn current_session_id(&self) -> Option<SessionId> {
-        self.active_session.read().await.as_ref().map(|s| s.id.clone())
+        self.active_session
+            .read()
+            .await
+            .as_ref()
+            .map(|s| s.id.clone())
     }
 
     /// Start a new recording session.
@@ -269,7 +273,9 @@ impl RecordingController {
             .map_err(|reason| match reason {
                 crate::state::CannotRecordReason::Paused => RecordingError::Disabled,
                 crate::state::CannotRecordReason::ModelLoading => RecordingError::ModelNotReady,
-                crate::state::CannotRecordReason::AlreadyRecording => RecordingError::AlreadyRecording,
+                crate::state::CannotRecordReason::AlreadyRecording => {
+                    RecordingError::AlreadyRecording
+                }
                 crate::state::CannotRecordReason::StillTranscribing => {
                     RecordingError::InvalidState(AppState::Transcribing)
                 }
@@ -472,11 +478,7 @@ impl RecordingController {
                 let config = self.config.read().await;
                 let elapsed = session.start_time.elapsed();
                 if elapsed >= config.max_duration {
-                    (
-                        Some(session.id.clone()),
-                        elapsed.as_millis() as u64,
-                        true,
-                    )
+                    (Some(session.id.clone()), elapsed.as_millis() as u64, true)
                 } else {
                     (None, 0, false)
                 }
@@ -524,13 +526,15 @@ impl RecordingController {
         let _ = self.state_manager.transition(AppState::Idle);
 
         // Emit event
-        let _ = self.event_sender.send(RecordingEvent::TranscriptionComplete {
-            session_id: result.session_id,
-            text: result.text,
-            audio_duration_ms: result.audio_duration_ms,
-            processing_duration_ms: result.processing_duration_ms,
-            timestamp: Utc::now(),
-        });
+        let _ = self
+            .event_sender
+            .send(RecordingEvent::TranscriptionComplete {
+                session_id: result.session_id,
+                text: result.text,
+                audio_duration_ms: result.audio_duration_ms,
+                processing_duration_ms: result.processing_duration_ms,
+                timestamp: Utc::now(),
+            });
 
         true
     }
@@ -584,10 +588,12 @@ impl RecordingController {
             .transition_to_error("Transcription timeout - no response from sidecar".to_string());
 
         // Emit event
-        let _ = self.event_sender.send(RecordingEvent::TranscriptionTimeout {
-            session_id,
-            timestamp: Utc::now(),
-        });
+        let _ = self
+            .event_sender
+            .send(RecordingEvent::TranscriptionTimeout {
+                session_id,
+                timestamp: Utc::now(),
+            });
 
         log::error!("Transcription timeout");
     }

@@ -38,10 +38,7 @@ pub enum FocusValidation {
     /// Focus is the same window.
     Same,
     /// Focus changed to a different window.
-    Changed {
-        from_app: String,
-        to_app: String,
-    },
+    Changed { from_app: String, to_app: String },
     /// OpenVoicy itself is focused (self-injection prevention).
     SelfFocused,
     /// Focus capture not available on this platform.
@@ -61,9 +58,7 @@ impl FocusValidation {
             FocusValidation::Changed { from_app, to_app } => {
                 Some(format!("Focus changed from {} to {}", from_app, to_app))
             }
-            FocusValidation::SelfFocused => {
-                Some("OpenVoicy settings window focused".to_string())
-            }
+            FocusValidation::SelfFocused => Some("OpenVoicy settings window focused".to_string()),
             FocusValidation::Unavailable => {
                 Some("Focus detection unavailable on this platform".to_string())
             }
@@ -162,14 +157,10 @@ fn get_active_window_id_linux() -> String {
     }
 
     // Use xdotool to get active window
-    let output = Command::new("xdotool")
-        .args(["getactivewindow"])
-        .output();
+    let output = Command::new("xdotool").args(["getactivewindow"]).output();
 
     match output {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).trim().to_string()
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => "unknown".to_string(),
     }
 }

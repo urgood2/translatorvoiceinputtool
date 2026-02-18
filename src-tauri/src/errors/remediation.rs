@@ -36,9 +36,9 @@ impl SettingsPage {
                 Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
             }
             #[cfg(target_os = "macos")]
-            Self::MacOSAccessibility => {
-                Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-            }
+            Self::MacOSAccessibility => Some(
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+            ),
             #[cfg(target_os = "macos")]
             Self::MacOSSecurity => {
                 Some("x-apple.systempreferences:com.apple.preference.security?General")

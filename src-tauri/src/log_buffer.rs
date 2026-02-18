@@ -23,9 +23,8 @@ const DEFAULT_MAX_ENTRIES: usize = 500;
 const DEFAULT_MAX_BYTES: usize = 256 * 1024; // 256 KiB
 
 /// Global log buffer instance.
-static LOG_BUFFER: Lazy<Arc<LogRingBuffer>> = Lazy::new(|| {
-    Arc::new(LogRingBuffer::new(DEFAULT_MAX_ENTRIES, DEFAULT_MAX_BYTES))
-});
+static LOG_BUFFER: Lazy<Arc<LogRingBuffer>> =
+    Lazy::new(|| Arc::new(LogRingBuffer::new(DEFAULT_MAX_ENTRIES, DEFAULT_MAX_BYTES)));
 
 /// Get the global log buffer.
 pub fn global_buffer() -> Arc<LogRingBuffer> {
@@ -80,22 +79,18 @@ impl LogEntry {
 static REDACTION_PATTERNS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
     vec![
         // User home directories
-        (
-            Regex::new(r"/Users/[^/\s]+").unwrap(),
-            "/Users/[REDACTED]",
-        ),
-        (
-            Regex::new(r"/home/[^/\s]+").unwrap(),
-            "/home/[REDACTED]",
-        ),
+        (Regex::new(r"/Users/[^/\s]+").unwrap(), "/Users/[REDACTED]"),
+        (Regex::new(r"/home/[^/\s]+").unwrap(), "/home/[REDACTED]"),
         (
             Regex::new(r"C:\\Users\\[^\\\s]+").unwrap(),
             "C:\\Users\\[REDACTED]",
         ),
         // API keys and tokens (common patterns)
         (
-            Regex::new(r#"(api[_-]?key|token|secret|password|credential)[=:]\s*['"]?[\w\-\.]+['"]?"#)
-                .unwrap(),
+            Regex::new(
+                r#"(api[_-]?key|token|secret|password|credential)[=:]\s*['"]?[\w\-\.]+['"]?"#,
+            )
+            .unwrap(),
             "$1=[REDACTED]",
         ),
         // Email addresses
@@ -374,7 +369,11 @@ mod tests {
         let buffer = LogRingBuffer::new(3, 1_000_000);
 
         for i in 0..5 {
-            buffer.push(LogEntry::new(Level::Info, "test", &format!("Message {}", i)));
+            buffer.push(LogEntry::new(
+                Level::Info,
+                "test",
+                &format!("Message {}", i),
+            ));
         }
 
         assert_eq!(buffer.len(), 3);

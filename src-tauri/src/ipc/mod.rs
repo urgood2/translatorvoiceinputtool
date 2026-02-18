@@ -99,7 +99,8 @@ impl RpcClient {
         let (writer_tx, writer_rx) = mpsc::channel::<WriterCommand>(32);
         let (notification_tx, _) = broadcast::channel::<NotificationEvent>(64);
 
-        let pending: Arc<Mutex<HashMap<u64, PendingRequest>>> = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<u64, PendingRequest>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let connected = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
         // Start writer task
@@ -115,7 +116,12 @@ impl RpcClient {
         let notification_tx_clone = notification_tx.clone();
         let connected_clone = Arc::clone(&connected);
         std::thread::spawn(move || {
-            Self::reader_loop(stdout, pending_clone, notification_tx_clone, connected_clone);
+            Self::reader_loop(
+                stdout,
+                pending_clone,
+                notification_tx_clone,
+                connected_clone,
+            );
         });
 
         Self {

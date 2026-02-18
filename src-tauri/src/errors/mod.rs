@@ -126,7 +126,10 @@ pub enum AppError {
     /// Model download failed due to network error.
     ModelDownloadNetwork { url: Option<String> },
     /// Model download failed due to disk full.
-    ModelDownloadDiskFull { required_bytes: u64, available_bytes: u64 },
+    ModelDownloadDiskFull {
+        required_bytes: u64,
+        available_bytes: u64,
+    },
     /// Model cache corrupted.
     ModelCacheCorrupt,
     /// Model failed to load.
@@ -632,7 +635,11 @@ mod tests {
         for error in errors {
             let user_error = error.to_user_error();
             // Every error must have a non-empty title and message
-            assert!(!user_error.title.is_empty(), "Missing title for {:?}", error);
+            assert!(
+                !user_error.title.is_empty(),
+                "Missing title for {:?}",
+                error
+            );
             assert!(
                 !user_error.message.is_empty(),
                 "Missing message for {:?}",

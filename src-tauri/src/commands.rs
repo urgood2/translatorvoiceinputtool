@@ -311,14 +311,19 @@ pub fn get_transcript_history(history: tauri::State<TranscriptHistory>) -> Vec<T
 
 /// Copy a specific transcript to clipboard by ID.
 #[tauri::command]
-pub fn copy_transcript(history: tauri::State<TranscriptHistory>, id: String) -> Result<(), CommandError> {
+pub fn copy_transcript(
+    history: tauri::State<TranscriptHistory>,
+    id: String,
+) -> Result<(), CommandError> {
     let uuid = Uuid::parse_str(&id).map_err(|_| CommandError::Clipboard {
         message: "Invalid transcript ID".to_string(),
     })?;
 
-    history.copy_by_id(uuid).ok_or_else(|| CommandError::Clipboard {
-        message: "Transcript not found or clipboard error".to_string(),
-    })?;
+    history
+        .copy_by_id(uuid)
+        .ok_or_else(|| CommandError::Clipboard {
+            message: "Transcript not found or clipboard error".to_string(),
+        })?;
 
     Ok(())
 }
@@ -594,7 +599,10 @@ mod tests {
             },
         ];
 
-        let result = preview_replacement("Hello period how are you comma I am fine".to_string(), rules);
+        let result = preview_replacement(
+            "Hello period how are you comma I am fine".to_string(),
+            rules,
+        );
         assert_eq!(result, "Hello. how are you, I am fine");
     }
 

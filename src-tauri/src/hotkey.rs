@@ -158,7 +158,8 @@ impl HotkeyManager {
         };
 
         // Parse and register copy last hotkey
-        let (copy_last_registered, copy_last_error) = match parse_hotkey(&config.hotkeys.copy_last) {
+        let (copy_last_registered, copy_last_error) = match parse_hotkey(&config.hotkeys.copy_last)
+        {
             Ok(hk) => match manager.register(hk) {
                 Ok(()) => {
                     self.copy_last_id = Some(hk.id());
@@ -213,10 +214,7 @@ impl HotkeyManager {
     /// Handle primary key down event.
     ///
     /// Returns true if recording should start.
-    pub fn handle_primary_down(
-        &self,
-        state_manager: &AppStateManager,
-    ) -> Option<RecordingAction> {
+    pub fn handle_primary_down(&self, state_manager: &AppStateManager) -> Option<RecordingAction> {
         // Check if enabled
         if !state_manager.is_enabled() {
             return None; // Paused, ignore
@@ -231,11 +229,17 @@ impl HotkeyManager {
 
                 // Check if we can start recording
                 if state_manager.can_start_recording().is_err() {
-                    play_sound(Sound::Error, self.state.audio_cues_enabled.load(Ordering::Relaxed));
+                    play_sound(
+                        Sound::Error,
+                        self.state.audio_cues_enabled.load(Ordering::Relaxed),
+                    );
                     return None;
                 }
 
-                play_sound(Sound::Start, self.state.audio_cues_enabled.load(Ordering::Relaxed));
+                play_sound(
+                    Sound::Start,
+                    self.state.audio_cues_enabled.load(Ordering::Relaxed),
+                );
                 Some(RecordingAction::Start)
             }
             HotkeyMode::Toggle => {
@@ -247,17 +251,26 @@ impl HotkeyManager {
                 if self.state.recording.load(Ordering::SeqCst) {
                     // Currently recording, stop
                     self.state.recording.store(false, Ordering::SeqCst);
-                    play_sound(Sound::Stop, self.state.audio_cues_enabled.load(Ordering::Relaxed));
+                    play_sound(
+                        Sound::Stop,
+                        self.state.audio_cues_enabled.load(Ordering::Relaxed),
+                    );
                     Some(RecordingAction::Stop)
                 } else {
                     // Not recording, start
                     if state_manager.can_start_recording().is_err() {
-                        play_sound(Sound::Error, self.state.audio_cues_enabled.load(Ordering::Relaxed));
+                        play_sound(
+                            Sound::Error,
+                            self.state.audio_cues_enabled.load(Ordering::Relaxed),
+                        );
                         return None;
                     }
 
                     self.state.recording.store(true, Ordering::SeqCst);
-                    play_sound(Sound::Start, self.state.audio_cues_enabled.load(Ordering::Relaxed));
+                    play_sound(
+                        Sound::Start,
+                        self.state.audio_cues_enabled.load(Ordering::Relaxed),
+                    );
                     Some(RecordingAction::Start)
                 }
             }
@@ -275,7 +288,10 @@ impl HotkeyManager {
 
         match self.state.mode {
             HotkeyMode::Hold => {
-                play_sound(Sound::Stop, self.state.audio_cues_enabled.load(Ordering::Relaxed));
+                play_sound(
+                    Sound::Stop,
+                    self.state.audio_cues_enabled.load(Ordering::Relaxed),
+                );
                 Some(RecordingAction::Stop)
             }
             HotkeyMode::Toggle => {
@@ -298,7 +314,9 @@ impl HotkeyManager {
 
     /// Update audio cues setting.
     pub fn set_audio_cues_enabled(&self, enabled: bool) {
-        self.state.audio_cues_enabled.store(enabled, Ordering::Relaxed);
+        self.state
+            .audio_cues_enabled
+            .store(enabled, Ordering::Relaxed);
     }
 
     /// Unregister hotkeys.

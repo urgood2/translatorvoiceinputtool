@@ -546,8 +546,8 @@ mod tests {
     #[tokio::test]
     async fn test_injection_serialization() {
         // Test that injections are serialized (not interleaved)
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
 
         let counter = Arc::new(AtomicUsize::new(0));
 

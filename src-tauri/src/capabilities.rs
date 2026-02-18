@@ -200,9 +200,7 @@ impl Capabilities {
                 category: "permissions".to_string(),
                 title: "Microphone Permission Denied".to_string(),
                 description: "Voice Input Tool cannot access the microphone.".to_string(),
-                remediation: Some(
-                    "Grant microphone permission in system settings.".to_string(),
-                ),
+                remediation: Some("Grant microphone permission in system settings.".to_string()),
             });
         }
 
@@ -212,8 +210,11 @@ impl Capabilities {
                 severity: IssueSeverity::Warning,
                 category: "platform".to_string(),
                 title: "Wayland Detected - Limited Functionality".to_string(),
-                description: "Wayland security restrictions affect hotkey and text injection.".to_string(),
-                remediation: Some("Using toggle mode and clipboard injection for best compatibility.".to_string()),
+                description: "Wayland security restrictions affect hotkey and text injection."
+                    .to_string(),
+                remediation: Some(
+                    "Using toggle mode and clipboard injection for best compatibility.".to_string(),
+                ),
             });
         }
 
@@ -501,9 +502,7 @@ fn generate_diagnostics(
             PermissionState::NotApplicable => {}
         }
         match permissions.microphone {
-            PermissionState::Granted => {
-                lines.push("  ✓ Microphone permission granted".to_string())
-            }
+            PermissionState::Granted => lines.push("  ✓ Microphone permission granted".to_string()),
             PermissionState::Denied => lines.push("  ✗ Microphone permission DENIED".to_string()),
             PermissionState::NotDetermined => {
                 lines.push("  ? Microphone permission not yet requested".to_string())

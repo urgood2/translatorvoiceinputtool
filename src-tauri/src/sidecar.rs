@@ -273,8 +273,8 @@ impl SidecarManager {
 
         // Get the path to the sidecar binary
         // Tauri 2.x: binaries are in the same directory as the main executable
-        let exe_path = std::env::current_exe()
-            .map_err(|e| format!("Failed to get executable path: {}", e))?;
+        let exe_path =
+            std::env::current_exe().map_err(|e| format!("Failed to get executable path: {}", e))?;
 
         let exe_dir = exe_path
             .parent()
@@ -597,8 +597,8 @@ impl SidecarManager {
         let response = self.read_line()?;
 
         // Parse the response
-        let parsed: PingResponse =
-            serde_json::from_str(&response).map_err(|e| format!("Failed to parse response: {}", e))?;
+        let parsed: PingResponse = serde_json::from_str(&response)
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
 
         if let Some(error) = parsed.error {
             return Err(format!("Sidecar returned error: {:?}", error));
@@ -714,10 +714,7 @@ mod tests {
     fn test_backoff_index_for_restart_count() {
         // Test the backoff delay lookup logic
         for i in 0..=5 {
-            let delay = BACKOFF_DELAYS_MS
-                .get(i as usize)
-                .copied()
-                .unwrap_or(10000);
+            let delay = BACKOFF_DELAYS_MS.get(i as usize).copied().unwrap_or(10000);
             assert!(delay >= 250);
             assert!(delay <= 10000);
         }
@@ -744,10 +741,7 @@ mod tests {
     #[test]
     fn test_set_python_mode() {
         let mut manager = SidecarManager::new();
-        manager.set_python_mode(
-            "/usr/bin/python3".to_string(),
-            "custom_module".to_string(),
-        );
+        manager.set_python_mode("/usr/bin/python3".to_string(), "custom_module".to_string());
         assert!(!manager.is_bundled_mode());
     }
 
@@ -764,7 +758,9 @@ mod tests {
         // Should fail when not in Failed state
         let result = manager.retry();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Can only retry when in Failed state"));
+        assert!(result
+            .unwrap_err()
+            .contains("Can only retry when in Failed state"));
     }
 
     #[test]
@@ -811,7 +807,8 @@ mod tests {
 
     #[test]
     fn test_ping_error_response_parsing() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
         let resp: PingResponse = serde_json::from_str(json).unwrap();
         assert!(resp.error.is_some());
         assert!(resp.result.is_none());

@@ -258,7 +258,10 @@ impl Watchdog {
 
         tokio::spawn(async move {
             let mut check_interval = interval(config.check_interval);
-            log::info!("Watchdog loop started (interval: {:?})", config.check_interval);
+            log::info!(
+                "Watchdog loop started (interval: {:?})",
+                config.check_interval
+            );
 
             loop {
                 check_interval.tick().await;
@@ -278,8 +281,7 @@ impl Watchdog {
                 }
 
                 // Perform health check
-                let ping_result =
-                    tokio::time::timeout(config.ping_timeout, pinger.ping()).await;
+                let ping_result = tokio::time::timeout(config.ping_timeout, pinger.ping()).await;
 
                 let status = {
                     let mut state_guard = state.write().await;
@@ -633,8 +635,7 @@ mod tests {
 
         // Should have received health check events
         let mut healthy_count = 0;
-        while let Ok(event) =
-            tokio::time::timeout(Duration::from_millis(10), receiver.recv()).await
+        while let Ok(event) = tokio::time::timeout(Duration::from_millis(10), receiver.recv()).await
         {
             if let Ok(WatchdogEvent::HealthCheck { status }) = event {
                 if status == HealthStatus::Healthy {
