@@ -59,6 +59,27 @@ describe('useTauriEvents', () => {
     unmount();
   });
 
+  test('cleans up when unmounted before async setup resolves', async () => {
+    const unlisten = vi.fn();
+    vi.mocked(listen).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve(unlisten), 20);
+        }) as ReturnType<typeof listen>
+    );
+
+    const { unmount } = renderHook(() => useTauriEvents());
+    unmount();
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+
+    expect(unlisten).toHaveBeenCalledTimes(1);
+    // Setup should stop once cancellation is observed.
+    expect(listen).toHaveBeenCalledTimes(1);
+  });
+
   test('store actions update state correctly', () => {
     // Test internal actions directly since event mock is complex
     const store = useAppStore.getState();

@@ -51,72 +51,87 @@ export function useTauriEvents(): void {
     // Prevent double setup in StrictMode
     if (isSetupRef.current) return;
     isSetupRef.current = true;
+    let cancelled = false;
+
+    const registerListener = async <T>(
+      eventName: string,
+      onEvent: Parameters<typeof listen<T>>[1]
+    ): Promise<boolean> => {
+      const unlisten = await listen<T>(eventName, onEvent);
+      if (cancelled) {
+        // Component unmounted before async listener setup completed.
+        unlisten();
+        return false;
+      }
+      unlistenersRef.current.push(unlisten);
+      return true;
+    };
 
     const setupListeners = async () => {
       const store = useAppStore.getState();
 
       // Subscribe to app state changes
-      const unlistenState = await listen<StateEvent>(
+      const stateRegistered = await registerListener<StateEvent>(
         EVENTS.STATE_CHANGED,
         (event) => {
           console.debug('Event: state_changed', event.payload);
           store._setAppState(event.payload);
         }
       );
-      unlistenersRef.current.push(unlistenState);
+      if (!stateRegistered) return;
 
       // Subscribe to model status changes
-      const unlistenModelStatus = await listen<ModelStatus>(
+      const modelStatusRegistered = await registerListener<ModelStatus>(
         EVENTS.MODEL_STATUS,
         (event) => {
           console.debug('Event: model:status', event.payload);
           store._setModelStatus(event.payload);
         }
       );
-      unlistenersRef.current.push(unlistenModelStatus);
+      if (!modelStatusRegistered) return;
 
       // Subscribe to model download progress
-      const unlistenModelProgress = await listen<Progress>(
+      const modelProgressRegistered = await registerListener<Progress>(
         EVENTS.MODEL_PROGRESS,
         (event) => {
           console.debug('Event: model:progress', event.payload);
           store._setDownloadProgress(event.payload);
         }
       );
-      unlistenersRef.current.push(unlistenModelProgress);
+      if (!modelProgressRegistered) return;
 
       // Subscribe to audio level updates (during mic test)
-      const unlistenAudioLevel = await listen<AudioLevelEvent>(
+      const audioLevelRegistered = await registerListener<AudioLevelEvent>(
         EVENTS.AUDIO_LEVEL,
         (event) => {
           // Don't log audio levels - too noisy
           store._setAudioLevel(event.payload);
         }
       );
-      unlistenersRef.current.push(unlistenAudioLevel);
+      if (!audioLevelRegistered) return;
 
       // Subscribe to transcript completions
-      const unlistenTranscript = await listen<{ entry: TranscriptEntry }>(
+      const transcriptRegistered = await registerListener<{ entry: TranscriptEntry }>(
         EVENTS.TRANSCRIPT_COMPLETE,
         (event) => {
           console.debug('Event: transcript:complete', event.payload);
           store._addHistoryEntry(event.payload.entry);
         }
       );
-      unlistenersRef.current.push(unlistenTranscript);
+      if (!transcriptRegistered) return;
 
       // Subscribe to error events
-      const unlistenError = await listen<{ message: string; recoverable: boolean }>(
+      const errorRegistered = await registerListener<{ message: string; recoverable: boolean }>(
         EVENTS.ERROR,
         (event) => {
           console.error('Event: app:error', event.payload);
           store._setError(event.payload.message);
         }
       );
-      unlistenersRef.current.push(unlistenError);
+      if (!errorRegistered) return;
 
       // Subscribe to sidecar status changes
-      const unlistenSidecar = await listen<{
+      const sidecarRegistered = await registerListener<{
         state: string;
         restart_count: number;
         message?: string;
@@ -124,7 +139,7 @@ export function useTauriEvents(): void {
         console.debug('Event: sidecar:status', event.payload);
         // Could update a dedicated sidecar state slice if needed
       });
-      unlistenersRef.current.push(unlistenSidecar);
+      if (!sidecarRegistered) return;
 
       console.log('Tauri event listeners set up');
     };
@@ -136,6 +151,7 @@ export function useTauriEvents(): void {
     // Cleanup on unmount
     return () => {
       console.log('Cleaning up Tauri event listeners');
+      cancelled = true;
       unlistenersRef.current.forEach((unlisten) => unlisten());
       unlistenersRef.current = [];
       isSetupRef.current = false;
