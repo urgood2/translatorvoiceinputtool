@@ -2,7 +2,6 @@
 .bv/
 
 # bd (beads) issue tracker state
-.beads/
 
 # Ephemeral files
 *.log
@@ -41,3 +40,4 @@ sidecar/dist/
 src-tauri/binaries/*
 !src-tauri/binaries/.gitkeep
 sidecar/.hypothesis/
+planning_backup_v1/
