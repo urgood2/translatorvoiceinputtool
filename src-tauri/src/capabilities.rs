@@ -155,12 +155,15 @@ impl Capabilities {
         // Get permission status
         let permissions = detect_permissions(&display_server);
 
+        let clipboard_available = check_clipboard_available(&display_server);
+
         // Generate diagnostics
         let diagnostics = generate_diagnostics(
             &display_server,
             hotkey_press,
             hotkey_release,
             keystroke_injection,
+            clipboard_available,
             &permissions,
         );
 
@@ -169,7 +172,7 @@ impl Capabilities {
             hotkey_press_available: hotkey_press,
             hotkey_release_available: hotkey_release,
             keystroke_injection_available: keystroke_injection,
-            clipboard_available: true, // Clipboard is available on all platforms
+            clipboard_available,
             hotkey_mode,
             injection_method,
             permissions,
@@ -230,6 +233,36 @@ impl Capabilities {
                 remediation: Some(
                     "Install xdotool: sudo apt install xdotool (Debian/Ubuntu)".to_string(),
                 ),
+            });
+        }
+
+        if !self.clipboard_available {
+            let (title, remediation) = match self.display_server {
+                DisplayServer::Wayland { .. } => (
+                    "Missing Dependency: wl-copy",
+                    Some(
+                        "Install wl-clipboard: sudo apt install wl-clipboard (Debian/Ubuntu)"
+                            .to_string(),
+                    ),
+                ),
+                DisplayServer::X11 => (
+                    "Missing Dependency: xclip",
+                    Some("Install xclip: sudo apt install xclip (Debian/Ubuntu)".to_string()),
+                ),
+                DisplayServer::MacOS => (
+                    "Clipboard Tool Unavailable",
+                    Some("Ensure pbcopy/pbpaste are available on PATH.".to_string()),
+                ),
+                _ => ("Clipboard Unavailable", None),
+            };
+
+            issues.push(CapabilityIssue {
+                severity: IssueSeverity::Blocking,
+                category: "dependencies".to_string(),
+                title: title.to_string(),
+                description: "Clipboard operations are unavailable; text injection cannot run."
+                    .to_string(),
+                remediation,
             });
         }
 
@@ -335,6 +368,59 @@ fn check_xdotool_available() -> bool {
 
 #[cfg(not(target_os = "linux"))]
 fn check_xdotool_available() -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn check_clipboard_available(display_server: &DisplayServer) -> bool {
+    let has_wl_copy = check_command_available("wl-copy");
+    let has_xclip = check_command_available("xclip");
+    clipboard_available_from_probe(display_server, has_wl_copy, has_xclip)
+}
+
+#[cfg(target_os = "linux")]
+fn clipboard_available_from_probe(
+    display_server: &DisplayServer,
+    has_wl_copy: bool,
+    has_xclip: bool,
+) -> bool {
+    match display_server {
+        DisplayServer::Wayland { .. } => has_wl_copy,
+        DisplayServer::X11 => has_xclip,
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn check_command_available(command: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(command)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn check_clipboard_available(_: &DisplayServer) -> bool {
+    check_command_available("pbcopy") && check_command_available("pbpaste")
+}
+
+#[cfg(target_os = "macos")]
+fn check_command_available(command: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(command)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn check_clipboard_available(_: &DisplayServer) -> bool {
+    true
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn check_clipboard_available(_: &DisplayServer) -> bool {
     false
 }
 
@@ -556,6 +642,7 @@ fn generate_diagnostics(
     hotkey_press: bool,
     hotkey_release: bool,
     keystroke_injection: bool,
+    clipboard_available: bool,
     permissions: &PermissionStatus,
 ) -> String {
     let mut lines = Vec::new();
@@ -598,7 +685,11 @@ fn generate_diagnostics(
     } else {
         lines.push("  ⚠ Direct injection NOT available (clipboard mode only)".to_string());
     }
-    lines.push("  ✓ Clipboard access available".to_string());
+    if clipboard_available {
+        lines.push("  ✓ Clipboard access available".to_string());
+    } else {
+        lines.push("  ✗ Clipboard access NOT available".to_string());
+    }
     lines.push(String::new());
 
     // Permissions (if applicable)
@@ -659,7 +750,7 @@ mod tests {
     fn test_capabilities_detect_returns_valid() {
         let caps = Capabilities::detect();
         // Should always succeed
-        assert!(caps.clipboard_available); // Clipboard is always available
+        assert!(!caps.diagnostics.is_empty());
     }
 
     #[test]
@@ -711,6 +802,13 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_macos_accessibility_check_is_not_not_determined() {
+        let state = check_macos_accessibility();
+        assert_ne!(state, PermissionState::NotDetermined);
+    }
+
     #[test]
     fn test_issues_returns_list() {
         let caps = Capabilities::detect();
@@ -758,6 +856,31 @@ mod tests {
         "#;
 
         assert!(portal_introspection_has_global_shortcuts(xml));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_clipboard_probe_uses_display_server_specific_dependency() {
+        assert!(clipboard_available_from_probe(
+            &DisplayServer::Wayland { compositor: None },
+            true,
+            false
+        ));
+        assert!(!clipboard_available_from_probe(
+            &DisplayServer::Wayland { compositor: None },
+            false,
+            true
+        ));
+        assert!(clipboard_available_from_probe(
+            &DisplayServer::X11,
+            false,
+            true
+        ));
+        assert!(!clipboard_available_from_probe(
+            &DisplayServer::X11,
+            true,
+            false
+        ));
     }
 
     #[test]
