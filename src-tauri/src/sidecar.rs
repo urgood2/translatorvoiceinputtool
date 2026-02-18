@@ -10,6 +10,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::env;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -92,12 +93,20 @@ enum SpawnMode {
     Python { path: String, module: String },
 }
 
+/// Optional simulation modes for exercising crash-loop handling in tests/e2e.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidecarSimulationMode {
+    None,
+    CrashOnStart,
+}
+
 /// Sidecar manager for process lifecycle management.
 pub struct SidecarManager {
     inner: Arc<Mutex<SidecarInner>>,
     shutdown_flag: Arc<AtomicBool>,
     app_handle: Option<AppHandle>,
     spawn_mode: SpawnMode,
+    simulation_mode: SidecarSimulationMode,
 }
 
 impl SidecarManager {
@@ -127,6 +136,7 @@ impl SidecarManager {
             shutdown_flag: Arc::new(AtomicBool::new(false)),
             app_handle: None,
             spawn_mode,
+            simulation_mode: Self::simulation_mode_from_env(),
         }
     }
 
@@ -233,9 +243,16 @@ impl SidecarManager {
 
     /// Spawn the sidecar process.
     fn spawn_process(&self) -> Result<(), String> {
-        log::info!("Spawning sidecar process (mode: {:?})", self.spawn_mode);
+        log::info!(
+            "Spawning sidecar process (mode: {:?}, simulation: {:?})",
+            self.spawn_mode,
+            self.simulation_mode
+        );
 
-        let mut child = match &self.spawn_mode {
+        let mut child = if self.simulation_mode == SidecarSimulationMode::CrashOnStart {
+            Self::spawn_simulated_crash_process()?
+        } else {
+            match &self.spawn_mode {
             SpawnMode::Python { path, module } => {
                 // Development mode: run via Python interpreter
                 log::info!("Using Python mode: {} -m {}", path, module);
@@ -280,6 +297,7 @@ impl SidecarManager {
                     .spawn()
                     .map_err(|e| format!("Failed to spawn bundled sidecar: {}", e))?
             }
+        }
         };
 
         let pid = child.id();
@@ -305,6 +323,64 @@ impl SidecarManager {
         self.start_monitor_thread();
 
         Ok(())
+    }
+
+    fn simulation_mode_from_env() -> SidecarSimulationMode {
+        if let Ok(raw_mode) = env::var("OPENVOICY_SIDECAR_SIMULATION_MODE") {
+            let normalized = raw_mode.trim().to_ascii_lowercase();
+            if normalized == "crash" || normalized == "crash_on_start" {
+                return SidecarSimulationMode::CrashOnStart;
+            }
+            if !normalized.is_empty() && normalized != "none" && normalized != "off" {
+                log::warn!(
+                    "Unknown OPENVOICY_SIDECAR_SIMULATION_MODE '{}', ignoring",
+                    raw_mode
+                );
+            }
+        }
+
+        if let Ok(flag) = env::var("OPENVOICY_SIDECAR_SIMULATE_CRASH") {
+            if Self::is_truthy_env_flag(&flag) {
+                return SidecarSimulationMode::CrashOnStart;
+            }
+        }
+
+        SidecarSimulationMode::None
+    }
+
+    fn is_truthy_env_flag(value: &str) -> bool {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    }
+
+    fn spawn_simulated_crash_process() -> Result<Child, String> {
+        #[cfg(windows)]
+        {
+            Command::new("cmd")
+                .args([
+                    "/C",
+                    "echo [OPENVOICY] simulated sidecar crash>&2 && exit /B 1",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("Failed to spawn simulated crash process: {}", e))
+        }
+
+        #[cfg(not(windows))]
+        {
+            Command::new("sh")
+                .arg("-c")
+                .arg("echo '[OPENVOICY] simulated sidecar crash' 1>&2; exit 1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("Failed to spawn simulated crash process: {}", e))
+        }
     }
 
     /// Get the path to the bundled sidecar binary.
@@ -714,6 +790,7 @@ impl SidecarManager {
             shutdown_flag: Arc::clone(&self.shutdown_flag),
             app_handle: self.app_handle.clone(),
             spawn_mode: self.spawn_mode.clone(),
+            simulation_mode: self.simulation_mode,
         }
     }
 
@@ -770,6 +847,7 @@ impl Default for SidecarManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn test_initial_state() {
@@ -1002,6 +1080,78 @@ mod tests {
         manager.shutdown_flag.store(true, Ordering::SeqCst);
         manager.clear_shutdown_flag_for_start();
         assert!(!manager.shutdown_flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_simulation_mode_defaults_to_none() {
+        unsafe {
+            std::env::remove_var("OPENVOICY_SIDECAR_SIMULATION_MODE");
+            std::env::remove_var("OPENVOICY_SIDECAR_SIMULATE_CRASH");
+        }
+        assert_eq!(
+            SidecarManager::simulation_mode_from_env(),
+            SidecarSimulationMode::None
+        );
+    }
+
+    #[test]
+    fn test_simulation_mode_accepts_explicit_crash_mode() {
+        unsafe {
+            std::env::set_var("OPENVOICY_SIDECAR_SIMULATION_MODE", "crash");
+            std::env::remove_var("OPENVOICY_SIDECAR_SIMULATE_CRASH");
+        }
+        assert_eq!(
+            SidecarManager::simulation_mode_from_env(),
+            SidecarSimulationMode::CrashOnStart
+        );
+        unsafe {
+            std::env::remove_var("OPENVOICY_SIDECAR_SIMULATION_MODE");
+        }
+    }
+
+    #[test]
+    fn test_simulation_mode_accepts_legacy_crash_flag() {
+        unsafe {
+            std::env::remove_var("OPENVOICY_SIDECAR_SIMULATION_MODE");
+            std::env::set_var("OPENVOICY_SIDECAR_SIMULATE_CRASH", "true");
+        }
+        assert_eq!(
+            SidecarManager::simulation_mode_from_env(),
+            SidecarSimulationMode::CrashOnStart
+        );
+        unsafe {
+            std::env::remove_var("OPENVOICY_SIDECAR_SIMULATE_CRASH");
+        }
+    }
+
+    #[test]
+    fn test_truthy_env_flag_parser() {
+        assert!(SidecarManager::is_truthy_env_flag("1"));
+        assert!(SidecarManager::is_truthy_env_flag("true"));
+        assert!(SidecarManager::is_truthy_env_flag("YES"));
+        assert!(!SidecarManager::is_truthy_env_flag("0"));
+        assert!(!SidecarManager::is_truthy_env_flag("false"));
+        assert!(!SidecarManager::is_truthy_env_flag("no"));
+    }
+
+    #[test]
+    fn test_spawn_simulated_crash_process_exits_quickly() {
+        let mut child = SidecarManager::spawn_simulated_crash_process().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    assert!(!status.success());
+                    break;
+                }
+                Ok(None) => {
+                    assert!(Instant::now() < deadline, "simulated crash process did not exit");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("failed to wait on simulated crash process: {}", e),
+            }
+        }
     }
 
     #[cfg(unix)]
