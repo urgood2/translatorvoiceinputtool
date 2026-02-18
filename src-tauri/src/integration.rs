@@ -221,6 +221,13 @@ fn map_transcription_complete_durations(
     (audio_duration_ms, processing_duration_ms)
 }
 
+fn stop_rpc_method_for_result(result: &StopResult) -> &'static str {
+    match result {
+        StopResult::TooShort => "recording.cancel",
+        StopResult::Transcribing { .. } => "recording.stop",
+    }
+}
+
 fn startup_model_status_requires_loading_state(status: &str) -> bool {
     matches!(status, "downloading" | "loading" | "verifying")
 }
@@ -1208,21 +1215,18 @@ impl IntegrationManager {
         match recording_controller.stop().await {
             Ok(result) => {
                 log::info!("Recording stopped: {:?}", result);
+                let stop_rpc_method = stop_rpc_method_for_result(&result);
+                let too_short = matches!(result, StopResult::TooShort);
 
-                // Too-short recordings don't produce transcription and should clear session context.
-                if matches!(result, StopResult::TooShort) {
-                    *current_session_id.write().await = None;
-                    *recording_context.write().await = None;
-                    return;
-                }
-
-                // Tell sidecar to stop recording (triggers async transcription)
+                // Tell sidecar to stop/cancel recording.
                 if let Some(client) = rpc_client.read().await.as_ref() {
                     let stop_called_at = Instant::now();
                     let session_id = {
                         let mut ctx = recording_context.write().await;
                         if let Some(ctx) = ctx.as_mut() {
-                            ctx.timing_marks.t0_stop_called = Some(stop_called_at);
+                            if !too_short {
+                                ctx.timing_marks.t0_stop_called = Some(stop_called_at);
+                            }
                             Some(ctx.session_id.clone())
                         } else {
                             None
@@ -1230,32 +1234,48 @@ impl IntegrationManager {
                     };
 
                     if let Some(session_id) = session_id {
-                        #[derive(Deserialize)]
-                        struct StopResultPayload {
-                            audio_duration_ms: u64,
-                        }
-
                         let params = json!({
                             "session_id": session_id
                         });
-                        let stop_result: Result<StopResultPayload, _> =
-                            client.call("recording.stop", Some(params)).await;
+                        if stop_rpc_method == "recording.stop" {
+                            #[derive(Deserialize)]
+                            struct StopResultPayload {
+                                audio_duration_ms: u64,
+                            }
 
-                        let stop_rpc_returned_at = Instant::now();
-                        let mut ctx = recording_context.write().await;
-                        if let Some(ctx) = ctx.as_mut() {
-                            if ctx.session_id == session_id {
-                                ctx.timing_marks.t1_stop_rpc_returned = Some(stop_rpc_returned_at);
-                                if let Ok(stop_payload) = &stop_result {
-                                    ctx.audio_duration_ms = Some(stop_payload.audio_duration_ms);
+                            let stop_result: Result<StopResultPayload, _> =
+                                client.call(stop_rpc_method, Some(params)).await;
+
+                            let stop_rpc_returned_at = Instant::now();
+                            let mut ctx = recording_context.write().await;
+                            if let Some(ctx) = ctx.as_mut() {
+                                if ctx.session_id == session_id {
+                                    ctx.timing_marks.t1_stop_rpc_returned =
+                                        Some(stop_rpc_returned_at);
+                                    if let Ok(stop_payload) = &stop_result {
+                                        ctx.audio_duration_ms =
+                                            Some(stop_payload.audio_duration_ms);
+                                    }
                                 }
                             }
-                        }
-
-                        if let Err(err) = stop_result {
-                            log::warn!("Failed to call recording.stop RPC: {}", err);
+                            if let Err(err) = stop_result {
+                                log::warn!("Failed to call {} RPC: {}", stop_rpc_method, err);
+                            }
+                        } else {
+                            let cancel_result: Result<Value, _> =
+                                client.call(stop_rpc_method, Some(params)).await;
+                            if let Err(err) = cancel_result {
+                                log::warn!("Failed to call {} RPC: {}", stop_rpc_method, err);
+                            }
                         }
                     }
+                }
+
+                // Too-short recordings don't produce transcription and should clear session context.
+                if too_short {
+                    *current_session_id.write().await = None;
+                    *recording_context.write().await = None;
+                    return;
                 }
             }
             Err(e) => {
@@ -1986,6 +2006,20 @@ mod tests {
             map_transcription_complete_durations(420, None);
         assert_eq!(audio_duration_ms, 0);
         assert_eq!(processing_duration_ms, 420);
+    }
+
+    #[test]
+    fn test_stop_rpc_method_for_result_routes_too_short_to_cancel() {
+        assert_eq!(
+            stop_rpc_method_for_result(&StopResult::TooShort),
+            "recording.cancel"
+        );
+        assert_eq!(
+            stop_rpc_method_for_result(&StopResult::Transcribing {
+                session_id: "session".to_string()
+            }),
+            "recording.stop"
+        );
     }
 
     #[test]
