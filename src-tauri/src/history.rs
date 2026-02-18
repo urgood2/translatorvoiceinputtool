@@ -8,11 +8,12 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::RwLock;
 use uuid::Uuid;
 
 /// Default maximum history size.
-const DEFAULT_MAX_SIZE: usize = 20;
+const DEFAULT_MAX_SIZE: usize = 100;
 
 /// Result of text injection for a transcript entry.
 #[derive(Debug, Clone, Serialize)]
@@ -84,7 +85,7 @@ impl TranscriptEntry {
 /// Thread-safe transcript history ring buffer.
 pub struct TranscriptHistory {
     entries: RwLock<VecDeque<TranscriptEntry>>,
-    max_size: usize,
+    max_size: AtomicUsize,
 }
 
 impl Default for TranscriptHistory {
@@ -94,16 +95,17 @@ impl Default for TranscriptHistory {
 }
 
 impl TranscriptHistory {
-    /// Create a new history with default max size (20).
+    /// Create a new history with default max size (100).
     pub fn new() -> Self {
         Self::with_capacity(DEFAULT_MAX_SIZE)
     }
 
     /// Create a new history with a specific max size.
     pub fn with_capacity(max_size: usize) -> Self {
+        let max_size = max_size.max(1);
         Self {
             entries: RwLock::new(VecDeque::with_capacity(max_size)),
-            max_size,
+            max_size: AtomicUsize::new(max_size),
         }
     }
 
@@ -112,10 +114,40 @@ impl TranscriptHistory {
     /// If the history is full, the oldest entry is removed.
     pub fn push(&self, entry: TranscriptEntry) {
         let mut entries = self.entries.write().unwrap();
-        if entries.len() >= self.max_size {
+        let max_size = self.max_size.load(Ordering::Relaxed);
+        if entries.len() >= max_size {
             entries.pop_front();
         }
         entries.push_back(entry);
+    }
+
+    /// Resize the maximum retained entries.
+    ///
+    /// When shrinking, oldest entries are dropped first.
+    pub fn resize(&self, new_max_size: usize) {
+        let new_max_size = new_max_size.max(1);
+        let previous_max = self.max_size.swap(new_max_size, Ordering::Relaxed);
+        if previous_max == new_max_size {
+            return;
+        }
+
+        let mut entries = self.entries.write().unwrap();
+        let before = entries.len();
+        while entries.len() > new_max_size {
+            entries.pop_front();
+        }
+        let removed = before.saturating_sub(entries.len());
+        log::info!(
+            "Resized transcript history max entries: {} -> {} (removed {} old entries)",
+            previous_max,
+            new_max_size,
+            removed
+        );
+    }
+
+    /// Current configured max entries.
+    pub fn max_size(&self) -> usize {
+        self.max_size.load(Ordering::Relaxed)
     }
 
     /// Get the most recent transcript entry.
@@ -244,6 +276,36 @@ mod tests {
         let all = history.all();
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].text, "Entry 4"); // Newest first
+        assert_eq!(all[1].text, "Entry 3");
+        assert_eq!(all[2].text, "Entry 2");
+    }
+
+    #[test]
+    fn test_default_capacity_matches_config_default() {
+        let history = TranscriptHistory::new();
+        assert_eq!(history.max_size(), 100);
+    }
+
+    #[test]
+    fn test_resize_drops_oldest_entries() {
+        let history = TranscriptHistory::with_capacity(5);
+
+        for i in 0..5 {
+            let entry = TranscriptEntry::new(
+                format!("Entry {}", i),
+                1000,
+                200,
+                HistoryInjectionResult::Injected,
+            );
+            history.push(entry);
+        }
+
+        history.resize(3);
+        assert_eq!(history.max_size(), 3);
+        assert_eq!(history.len(), 3);
+
+        let all = history.all();
+        assert_eq!(all[0].text, "Entry 4");
         assert_eq!(all[1].text, "Entry 3");
         assert_eq!(all[2].text, "Entry 2");
     }

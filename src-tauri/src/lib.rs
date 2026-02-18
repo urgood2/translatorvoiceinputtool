@@ -48,13 +48,16 @@ pub fn run() {
     let integration_manager = Arc::new(RwLock::new(IntegrationManager::new(Arc::clone(
         &state_manager,
     ))));
+    let initial_config = config::load_config();
+    let transcript_history =
+        TranscriptHistory::with_capacity(initial_config.history.max_entries as usize);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         // Manage state components
         .manage(IntegrationState(Arc::clone(&integration_manager)))
         .manage(state_manager)
-        .manage(TranscriptHistory::new())
+        .manage(transcript_history)
         .invoke_handler(tauri::generate_handler![
             // State commands
             commands::get_app_state,

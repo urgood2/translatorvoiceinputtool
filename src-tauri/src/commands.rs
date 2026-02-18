@@ -172,18 +172,25 @@ pub fn get_config() -> AppConfig {
 
 /// Update configuration.
 #[tauri::command]
-pub fn update_config(config: AppConfig) -> Result<(), CommandError> {
+pub fn update_config(
+    config: AppConfig,
+    history: tauri::State<TranscriptHistory>,
+) -> Result<(), CommandError> {
     let mut config = config;
     config.validate_and_clamp();
     config::save_config(&config)?;
+    history.resize(config.history.max_entries as usize);
     Ok(())
 }
 
 /// Reset configuration to defaults.
 #[tauri::command]
-pub fn reset_config_to_defaults() -> Result<AppConfig, CommandError> {
+pub fn reset_config_to_defaults(
+    history: tauri::State<TranscriptHistory>,
+) -> Result<AppConfig, CommandError> {
     let config = AppConfig::default();
     config::save_config(&config)?;
+    history.resize(config.history.max_entries as usize);
     Ok(config)
 }
 
