@@ -16,6 +16,7 @@ use chrono::{DateTime, Utc};
 use once_cell::sync::Lazy;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::future::Future;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -27,6 +28,35 @@ use crate::focus::{
 
 /// Global injection mutex to serialize injections.
 static INJECTION_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+async fn with_injection_lock<T, F, Fut>(operation: F) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = T>,
+{
+    let _guard = INJECTION_MUTEX.lock().await;
+    operation().await
+}
+
+async fn set_clipboard_serialized(text: &str) -> Result<(), InjectionError> {
+    with_injection_lock(|| async { set_clipboard(text) }).await
+}
+
+async fn clipboard_only_result(text: &str, suffix: &str, reason: String) -> InjectionResult {
+    let text_with_suffix = format!("{}{}", text, suffix);
+    if let Err(e) = set_clipboard_serialized(&text_with_suffix).await {
+        return InjectionResult::Failed {
+            error: format!("Clipboard error: {}", e),
+            timestamp: Utc::now(),
+        };
+    }
+
+    InjectionResult::ClipboardOnly {
+        reason,
+        text_length: text.len(),
+        timestamp: Utc::now(),
+    }
+}
 
 /// Injection configuration.
 #[derive(Debug, Clone)]
@@ -198,25 +228,13 @@ pub async fn inject_text(
     let effective = config.effective_for_focus(&current_focus);
 
     if effective.use_clipboard_only {
-        let text_with_suffix = format!("{}{}", text, effective.suffix);
-        if let Err(e) = set_clipboard(&text_with_suffix) {
-            return InjectionResult::Failed {
-                error: format!("Clipboard error: {}", e),
-                timestamp: Utc::now(),
-            };
-        }
-
         let reason = if let Some(app_id) = &effective.matched_override {
             format!("App override clipboard-only mode ({})", app_id)
         } else {
             "App override clipboard-only mode".to_string()
         };
 
-        return InjectionResult::ClipboardOnly {
-            reason,
-            text_length: text.len(),
-            timestamp: Utc::now(),
-        };
+        return clipboard_only_result(text, &effective.suffix, reason).await;
     }
 
     // Validate focus if Focus Guard is enabled and we have an expected signature
@@ -229,40 +247,20 @@ pub async fn inject_text(
                     .clipboard_only_reason()
                     .unwrap_or_else(|| "Focus validation failed".to_string());
 
-                // Still set clipboard for user to paste manually
-                let text_with_suffix = format!("{}{}", text, effective.suffix);
-                if let Err(e) = set_clipboard(&text_with_suffix) {
-                    return InjectionResult::Failed {
-                        error: format!("Clipboard error: {}", e),
-                        timestamp: Utc::now(),
-                    };
-                }
-
                 log::info!("Clipboard-only mode: {}", reason);
-                return InjectionResult::ClipboardOnly {
-                    reason,
-                    text_length: text.len(),
-                    timestamp: Utc::now(),
-                };
+                return clipboard_only_result(text, &effective.suffix, reason).await;
             }
         }
     }
 
     // Check for self-injection even without expected focus
     if crate::focus::is_self_focused(&current_focus) {
-        let text_with_suffix = format!("{}{}", text, effective.suffix);
-        if let Err(e) = set_clipboard(&text_with_suffix) {
-            return InjectionResult::Failed {
-                error: format!("Clipboard error: {}", e),
-                timestamp: Utc::now(),
-            };
-        }
-
-        return InjectionResult::ClipboardOnly {
-            reason: "OpenVoicy settings window focused".to_string(),
-            text_length: text.len(),
-            timestamp: Utc::now(),
-        };
+        return clipboard_only_result(
+            text,
+            &effective.suffix,
+            "OpenVoicy settings window focused".to_string(),
+        )
+        .await;
     }
 
     // Perform injection (serialized)
@@ -271,53 +269,53 @@ pub async fn inject_text(
 
 /// Perform the actual injection (clipboard + paste).
 async fn perform_injection(text: &str, config: &EffectiveInjectionConfig) -> InjectionResult {
-    // Serialize injections
-    let _guard = INJECTION_MUTEX.lock().await;
+    with_injection_lock(|| async {
+        let text_with_suffix = format!("{}{}", text, config.suffix);
 
-    let text_with_suffix = format!("{}{}", text, config.suffix);
-
-    // Save previous clipboard if needed
-    let previous_clipboard = if config.restore_clipboard {
-        get_clipboard().ok()
-    } else {
-        None
-    };
-
-    // Set clipboard
-    if let Err(e) = set_clipboard(&text_with_suffix) {
-        return InjectionResult::Failed {
-            error: format!("Clipboard error: {}", e),
-            timestamp: Utc::now(),
+        // Save previous clipboard if needed
+        let previous_clipboard = if config.restore_clipboard {
+            get_clipboard().ok()
+        } else {
+            None
         };
-    }
 
-    // Wait before paste
-    sleep(config.clamped_delay()).await;
-
-    // Synthesize paste shortcut
-    match synthesize_paste() {
-        Ok(()) => {
-            // Restore clipboard if needed
-            if let Some(prev) = previous_clipboard {
-                // Small delay to let paste complete
-                sleep(Duration::from_millis(50)).await;
-                let _ = set_clipboard(&prev);
-            }
-
-            InjectionResult::Injected {
-                text_length: text.len(),
+        // Set clipboard
+        if let Err(e) = set_clipboard(&text_with_suffix) {
+            return InjectionResult::Failed {
+                error: format!("Clipboard error: {}", e),
                 timestamp: Utc::now(),
+            };
+        }
+
+        // Wait before paste
+        sleep(config.clamped_delay()).await;
+
+        // Synthesize paste shortcut
+        match synthesize_paste() {
+            Ok(()) => {
+                // Restore clipboard if needed
+                if let Some(prev) = previous_clipboard {
+                    // Small delay to let paste complete
+                    sleep(Duration::from_millis(50)).await;
+                    let _ = set_clipboard(&prev);
+                }
+
+                InjectionResult::Injected {
+                    text_length: text.len(),
+                    timestamp: Utc::now(),
+                }
+            }
+            Err(e) => {
+                // Paste failed, but text is still on clipboard
+                InjectionResult::ClipboardOnly {
+                    reason: format!("Paste synthesis failed: {}", e),
+                    text_length: text.len(),
+                    timestamp: Utc::now(),
+                }
             }
         }
-        Err(e) => {
-            // Paste failed, but text is still on clipboard
-            InjectionResult::ClipboardOnly {
-                reason: format!("Paste synthesis failed: {}", e),
-                text_length: text.len(),
-                timestamp: Utc::now(),
-            }
-        }
-    }
+    })
+    .await
 }
 
 /// Set text to clipboard (public API for other modules).
@@ -657,11 +655,13 @@ mod tests {
             .map(|i| {
                 let counter = Arc::clone(&counter);
                 tokio::spawn(async move {
-                    let _guard = INJECTION_MUTEX.lock().await;
-                    // Simulate work
-                    let val = counter.fetch_add(1, Ordering::SeqCst);
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                    val
+                    with_injection_lock(|| async {
+                        // Simulate work
+                        let val = counter.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        val
+                    })
+                    .await
                 })
             })
             .collect();
