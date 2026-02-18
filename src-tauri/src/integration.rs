@@ -32,7 +32,7 @@ use crate::ipc::{NotificationEvent, RpcClient, RpcError};
 use crate::model_defaults;
 use crate::recording::{RecordingController, RecordingEvent, StopResult, TranscriptionResult};
 use crate::state::{AppState, AppStateManager};
-use crate::watchdog::{PingCallback, Watchdog, WatchdogConfig, WatchdogEvent};
+use crate::watchdog::{self, PingCallback, Watchdog, WatchdogConfig, WatchdogEvent};
 
 /// Tray icon event name.
 const EVENT_TRAY_UPDATE: &str = "tray:update";
@@ -161,6 +161,27 @@ fn model_status_to_event_fields(status: ModelStatus) -> (String, Option<String>)
         ModelStatus::Loading => ("loading".to_string(), None),
         ModelStatus::Ready => ("ready".to_string(), None),
         ModelStatus::Error(message) => ("error".to_string(), Some(message)),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AudioDeviceSummary {
+    uid: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AudioListResult {
+    #[serde(default)]
+    devices: Vec<AudioDeviceSummary>,
+}
+
+fn is_configured_device_available(
+    configured_device_uid: Option<&str>,
+    devices: &[AudioDeviceSummary],
+) -> bool {
+    match configured_device_uid {
+        Some(uid) => devices.iter().any(|device| device.uid == uid),
+        None => true,
     }
 }
 
@@ -426,7 +447,24 @@ impl IntegrationManager {
         // Start the watchdog loop
         watchdog.start_loop(pinger);
 
+        // Start platform power listener (if available) and feed events into watchdog.
+        if let Some(mut power_rx) = watchdog::platform::start_power_listener() {
+            let watchdog_for_power = Arc::clone(&watchdog);
+            tokio::spawn(async move {
+                log::info!("Power event listener started");
+                while let Some(event) = power_rx.recv().await {
+                    watchdog_for_power.on_power_event(event).await;
+                }
+                log::info!("Power event listener ended");
+            });
+        } else {
+            log::info!(
+                "Power event listener unavailable; watchdog will infer resume via loop-gap fallback"
+            );
+        }
+
         // Start event handler loop
+        let watchdog_for_events = Arc::clone(&watchdog);
         let mut event_rx = watchdog.subscribe();
         tokio::spawn(async move {
             log::info!("Watchdog event handler started");
@@ -507,6 +545,41 @@ impl IntegrationManager {
                                 }
                             }
                         }
+
+                        // Revalidate available input devices and configured device presence.
+                        let client = rpc_client.read().await;
+                        if let Some(ref c) = *client {
+                            match c.call::<AudioListResult>("audio.list_devices", None).await {
+                                Ok(result) => {
+                                    let configured_uid = config::load_config().audio.device_uid;
+                                    if !is_configured_device_available(
+                                        configured_uid.as_deref(),
+                                        &result.devices,
+                                    ) {
+                                        if let Some(uid) = configured_uid {
+                                            log::warn!(
+                                                "Configured audio device missing after resume: {}",
+                                                uid
+                                            );
+                                            state_manager.transition_to_error(format!(
+                                                "Configured audio device unavailable after resume: {}",
+                                                uid
+                                            ));
+                                        }
+                                    } else {
+                                        log::info!(
+                                            "Audio devices revalidated after resume ({} devices)",
+                                            result.devices.len()
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    log::warn!("Failed to list audio devices after resume: {}", e);
+                                }
+                            }
+                        }
+
+                        watchdog_for_events.clear_revalidation_pending().await;
                     }
                 }
             }
@@ -1830,6 +1903,27 @@ mod tests {
             resolve_model_id(Some("custom/model".to_string())),
             "custom/model"
         );
+    }
+
+    #[test]
+    fn test_configured_device_available_when_uid_present() {
+        let devices = vec![
+            AudioDeviceSummary {
+                uid: "mic-a".to_string(),
+            },
+            AudioDeviceSummary {
+                uid: "mic-b".to_string(),
+            },
+        ];
+        assert!(is_configured_device_available(Some("mic-b"), &devices));
+    }
+
+    #[test]
+    fn test_configured_device_unavailable_when_uid_missing() {
+        let devices = vec![AudioDeviceSummary {
+            uid: "mic-a".to_string(),
+        }];
+        assert!(!is_configured_device_available(Some("mic-z"), &devices));
     }
 
     #[tokio::test]

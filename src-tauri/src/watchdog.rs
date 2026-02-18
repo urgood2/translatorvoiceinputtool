@@ -22,6 +22,9 @@ const PING_TIMEOUT: Duration = Duration::from_secs(5);
 /// Duration of unresponsiveness before declaring sidecar hung.
 const HANG_THRESHOLD: Duration = Duration::from_secs(30);
 
+/// Minimum loop gap treated as likely suspend/resume.
+const RESUME_GAP_MIN_THRESHOLD: Duration = Duration::from_secs(20);
+
 /// Watchdog health check result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -258,6 +261,7 @@ impl Watchdog {
 
         tokio::spawn(async move {
             let mut check_interval = interval(config.check_interval);
+            let mut last_tick = Instant::now();
             log::info!(
                 "Watchdog loop started (interval: {:?})",
                 config.check_interval
@@ -265,11 +269,37 @@ impl Watchdog {
 
             loop {
                 check_interval.tick().await;
+                let now = Instant::now();
+                let loop_gap = now.saturating_duration_since(last_tick);
+                last_tick = now;
 
                 // Check shutdown flag
                 if shutdown_flag.load(Ordering::SeqCst) {
                     log::info!("Watchdog loop shutting down");
                     break;
+                }
+
+                // Fallback resume detection when platform listeners are unavailable.
+                if is_probable_resume_gap(loop_gap, config.check_interval) {
+                    let should_emit = {
+                        let mut state_guard = state.write().await;
+                        state_guard.is_suspended = false;
+                        if state_guard.revalidation_pending {
+                            false
+                        } else {
+                            state_guard.revalidation_pending = true;
+                            true
+                        }
+                    };
+
+                    if should_emit {
+                        log::info!(
+                            "Watchdog inferred suspend/resume from loop gap {:?}; requesting revalidation",
+                            loop_gap
+                        );
+                        let _ = event_tx.send(WatchdogEvent::SystemResumed);
+                        let _ = event_tx.send(WatchdogEvent::RevalidationNeeded);
+                    }
                 }
 
                 // Skip check if suspended
@@ -338,6 +368,12 @@ impl Watchdog {
     pub fn is_shutdown_requested(&self) -> bool {
         self.shutdown_flag.load(Ordering::SeqCst)
     }
+}
+
+fn is_probable_resume_gap(loop_gap: Duration, check_interval: Duration) -> bool {
+    let dynamic_threshold = check_interval.saturating_mul(3);
+    let threshold = dynamic_threshold.max(RESUME_GAP_MIN_THRESHOLD);
+    loop_gap > threshold
 }
 
 impl Default for Watchdog {
@@ -691,6 +727,29 @@ mod tests {
         assert_eq!(PowerEvent::Suspending, PowerEvent::Suspending);
         assert_eq!(PowerEvent::Resumed, PowerEvent::Resumed);
         assert_ne!(PowerEvent::Suspending, PowerEvent::Resumed);
+    }
+
+    #[test]
+    fn test_probable_resume_gap_uses_dynamic_and_min_thresholds() {
+        // check_interval=2s -> threshold=max(6s,20s)=20s
+        assert!(!is_probable_resume_gap(
+            Duration::from_secs(19),
+            Duration::from_secs(2)
+        ));
+        assert!(is_probable_resume_gap(
+            Duration::from_secs(21),
+            Duration::from_secs(2)
+        ));
+
+        // check_interval=10s -> threshold=max(30s,20s)=30s
+        assert!(!is_probable_resume_gap(
+            Duration::from_secs(30),
+            Duration::from_secs(10)
+        ));
+        assert!(is_probable_resume_gap(
+            Duration::from_secs(31),
+            Duration::from_secs(10)
+        ));
     }
 
     #[tokio::test]
