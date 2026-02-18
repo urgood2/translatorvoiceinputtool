@@ -155,6 +155,11 @@ function generateDiagnosticsText(report: DiagnosticsReport): string {
   sections.push(redactPaths(formatRecentLogs(report.recent_logs)));
   sections.push('');
 
+  // Reference docs for platform-specific caveats.
+  sections.push('--- References ---');
+  sections.push('Known limitations: docs/KNOWN_LIMITATIONS.md');
+  sections.push('');
+
   // Footer
   sections.push('=== End of Report ===');
 
@@ -255,6 +260,7 @@ export function Diagnostics({ report, onRefresh, isLoading }: DiagnosticsProps) 
       <p className="text-sm text-gray-600 dark:text-gray-400">
         This diagnostic report contains system information that can help troubleshoot issues.
         Personal paths and sensitive data are automatically redacted.
+        Platform-specific caveats are documented in docs/KNOWN_LIMITATIONS.md.
         Copy and include this when reporting bugs.
       </p>
 

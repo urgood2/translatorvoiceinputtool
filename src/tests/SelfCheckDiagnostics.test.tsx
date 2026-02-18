@@ -312,6 +312,14 @@ describe('Diagnostics', () => {
     expect(screen.getByText(/sample diagnostics log/)).toBeDefined();
   });
 
+  it('references KNOWN_LIMITATIONS.md in diagnostics output', () => {
+    render(
+      <Diagnostics report={mockDiagnosticsReport} onRefresh={vi.fn()} />
+    );
+
+    expect(screen.getByText(/Known limitations: docs\/KNOWN_LIMITATIONS\.md/)).toBeDefined();
+  });
+
   it('shows stats', () => {
     render(
       <Diagnostics report={mockDiagnosticsReport} onRefresh={vi.fn()} />
@@ -341,6 +349,7 @@ describe('Diagnostics', () => {
     });
 
     expect(mockWriteText).toHaveBeenCalled();
+    expect(mockWriteText).toHaveBeenCalledWith(expect.stringContaining('docs/KNOWN_LIMITATIONS.md'));
     expect(screen.getByText('Copied!')).toBeDefined();
   });
 
