@@ -266,6 +266,15 @@ class TestServerIntegration:
         assert len(responses) == 3
         assert [r["id"] for r in responses] == [1, 2, 3]
 
+    def test_notification_does_not_emit_response(self, run_sidecar):
+        """Notification requests should execute without sending a response."""
+        responses, _ = run_sidecar([
+            '{"jsonrpc":"2.0","method":"system.ping"}',
+            '{"jsonrpc":"2.0","id":2,"method":"system.ping"}',
+        ])
+        assert len(responses) == 1
+        assert responses[0]["id"] == 2
+
     def test_empty_lines_ignored(self, run_sidecar):
         """Empty lines should be ignored."""
         responses, _ = run_sidecar([

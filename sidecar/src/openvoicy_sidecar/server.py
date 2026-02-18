@@ -9,51 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .audio import (
-    DeviceNotFoundError,
-    MicPermissionError,
-    handle_audio_list_devices,
-    handle_audio_set_device,
-)
-from .audio_meter import (
-    MeterAlreadyRunningError,
-    MeterError,
-    MeterNotRunningError,
-    handle_audio_meter_start,
-    handle_audio_meter_status,
-    handle_audio_meter_stop,
-)
-from .recording import (
-    AlreadyRecordingError,
-    InvalidSessionError,
-    NotRecordingError,
-    RecordingError,
-    get_recorder,
-    handle_recording_cancel,
-    handle_recording_start,
-    handle_recording_status,
-    handle_recording_stop,
-)
-from .replacements import (
-    ReplacementError,
-    load_presets_from_file,
-    handle_replacements_get_presets,
-    handle_replacements_get_preset_rules,
-    handle_replacements_get_rules,
-    handle_replacements_preview,
-    handle_replacements_set_rules,
-)
-from .model_cache import (
-    CacheCorruptError,
-    DiskFullError,
-    LockError,
-    ModelCacheError,
-    ModelInUseError,
-    NetworkError,
-    handle_model_download,
-    handle_model_get_status,
-    handle_model_purge_cache,
-)
 from .asr import (
     ASRError,
     DeviceUnavailableError,
@@ -65,6 +20,30 @@ from .asr import (
     handle_asr_initialize,
     handle_asr_status,
     handle_asr_transcribe,
+)
+from .audio import (
+    DeviceNotFoundError,
+    MicPermissionError,
+    handle_audio_list_devices,
+    handle_audio_set_device,
+)
+from .audio_meter import (
+    MeterAlreadyRunningError,
+    MeterError,
+    handle_audio_meter_start,
+    handle_audio_meter_status,
+    handle_audio_meter_stop,
+)
+from .model_cache import (
+    CacheCorruptError,
+    DiskFullError,
+    LockError,
+    ModelCacheError,
+    ModelInUseError,
+    NetworkError,
+    handle_model_download,
+    handle_model_get_status,
+    handle_model_purge_cache,
 )
 from .notifications import get_session_tracker
 from .protocol import (
@@ -94,6 +73,26 @@ from .protocol import (
     make_success,
     parse_line,
     write_response,
+)
+from .recording import (
+    AlreadyRecordingError,
+    InvalidSessionError,
+    NotRecordingError,
+    RecordingError,
+    get_recorder,
+    handle_recording_cancel,
+    handle_recording_start,
+    handle_recording_status,
+    handle_recording_stop,
+)
+from .replacements import (
+    ReplacementError,
+    handle_replacements_get_preset_rules,
+    handle_replacements_get_presets,
+    handle_replacements_get_rules,
+    handle_replacements_preview,
+    handle_replacements_set_rules,
+    load_presets_from_file,
 )
 
 # Protocol version
@@ -171,7 +170,7 @@ def handle_system_info(request: Request) -> dict[str, Any]:
     """Handle system.info request."""
     cuda_available = False
     try:
-        import torch  # noqa: F401
+        import torch
 
         cuda_available = torch.cuda.is_available()
     except ImportError:
@@ -518,9 +517,12 @@ def run_server() -> None:
                     "E_INTERNAL",
                 )
 
-            write_response(response)
+            if request.id is not None:
+                write_response(response)
+            else:
+                log(f"Notification handled without response: {request.method}")
 
-            # Exit after sending shutdown response
+            # Exit after handling shutdown request.
             if shutdown_requested:
                 log("Shutdown complete")
                 break
