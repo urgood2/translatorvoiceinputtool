@@ -32,6 +32,10 @@ const ICON_LOADING: &[u8] = include_bytes!("../icons/tray-loading.png");
 const ICON_ERROR: &[u8] = include_bytes!("../icons/tray-error.png");
 const ICON_DISABLED: &[u8] = include_bytes!("../icons/tray-disabled.png");
 
+fn sidecar_restart_event_payload(reason: &str) -> serde_json::Value {
+    crate::event_seq::payload_with_next_seq(serde_json::json!({ "reason": reason }))
+}
+
 /// Get the appropriate icon bytes for the given state.
 fn get_icon_for_state(state: AppState, enabled: bool) -> &'static [u8] {
     if !enabled {
@@ -219,7 +223,7 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
             // Emit event to trigger sidecar restart
             let _ = app.emit(
                 "sidecar:restart",
-                serde_json::json!({"reason": "user_request"}),
+                sidecar_restart_event_payload("user_request"),
             );
         }
         _ => {
@@ -465,5 +469,19 @@ mod tests {
             "Failed to load recording icon: {:?}",
             result.err()
         );
+    }
+
+    #[test]
+    fn test_sidecar_restart_event_payload_includes_seq() {
+        let first = sidecar_restart_event_payload("user_request");
+        let second = sidecar_restart_event_payload("user_request");
+
+        assert_eq!(first["reason"], "user_request");
+        assert!(first["seq"].is_u64());
+        assert!(second["seq"].is_u64());
+
+        let first_seq = first["seq"].as_u64().unwrap();
+        let second_seq = second["seq"].as_u64().unwrap();
+        assert!(second_seq > first_seq);
     }
 }

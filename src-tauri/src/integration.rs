@@ -165,16 +165,7 @@ fn model_status_to_event_fields(status: ModelStatus) -> (String, Option<String>)
 }
 
 fn add_seq_to_payload(payload: Value, seq: u64) -> Value {
-    match payload {
-        Value::Object(mut map) => {
-            map.insert("seq".to_string(), json!(seq));
-            Value::Object(map)
-        }
-        other => json!({
-            "seq": seq,
-            "data": other
-        }),
-    }
+    crate::event_seq::add_seq_to_payload(payload, seq)
 }
 
 fn sha256_prefix(input: &str) -> String {
@@ -261,9 +252,9 @@ fn emit_with_shared_seq(
     handle: &AppHandle,
     events: &[&str],
     payload: Value,
-    seq_counter: &Arc<AtomicU64>,
+    _seq_counter: &Arc<AtomicU64>,
 ) -> u64 {
-    let seq = seq_counter.fetch_add(1, Ordering::Relaxed);
+    let seq = crate::event_seq::next_event_seq();
     let payload_with_seq = add_seq_to_payload(payload, seq);
 
     for event in events {

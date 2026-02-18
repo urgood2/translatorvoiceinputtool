@@ -12,6 +12,7 @@ mod capabilities;
 mod commands;
 mod config;
 mod errors;
+mod event_seq;
 mod focus;
 mod history;
 mod hotkey;

@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use crate::errors::{AppError, ErrorKind};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Maximum number of restart attempts before giving up.
@@ -198,7 +198,7 @@ impl SidecarManager {
     /// Emit a status event to the frontend.
     fn emit_status(&self, status: SidecarStatus) {
         if let Some(ref handle) = self.app_handle {
-            let _ = handle.emit(EVENT_SIDECAR_STATUS, status);
+            let _ = handle.emit(EVENT_SIDECAR_STATUS, sidecar_status_event_payload(&status));
         }
     }
 
@@ -671,6 +671,17 @@ impl SidecarManager {
     }
 }
 
+fn sidecar_status_event_payload(status: &SidecarStatus) -> Value {
+    let payload = serde_json::to_value(status).unwrap_or_else(|_| {
+        json!({
+            "state": "failed",
+            "restart_count": status.restart_count,
+            "message": status.message
+        })
+    });
+    crate::event_seq::payload_with_next_seq(payload)
+}
+
 impl Default for SidecarManager {
     fn default() -> Self {
         Self::new()
@@ -756,6 +767,26 @@ mod tests {
         assert!(json.contains("\"state\":\"running\""));
         assert!(json.contains("\"restart_count\":2"));
         assert!(json.contains("All systems go"));
+    }
+
+    #[test]
+    fn test_sidecar_status_event_payload_includes_seq() {
+        let status = SidecarStatus {
+            state: SidecarState::Running,
+            restart_count: 1,
+            message: Some("ok".to_string()),
+            error: None,
+        };
+
+        let first = sidecar_status_event_payload(&status);
+        let second = sidecar_status_event_payload(&status);
+
+        assert_eq!(first["state"], "running");
+        assert_eq!(first["restart_count"], 1);
+        assert_eq!(first["message"], "ok");
+        assert!(first["seq"].is_u64());
+        assert!(second["seq"].is_u64());
+        assert!(second["seq"].as_u64().unwrap() > first["seq"].as_u64().unwrap());
     }
 
     #[test]
