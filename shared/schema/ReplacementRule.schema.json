@@ -8,9 +8,10 @@
   "properties": {
     "id": {
       "type": "string",
-      "description": "Unique identifier for this rule. For preset rules, prefixed with preset ID (e.g., 'punctuation:period').",
+      "description": "Unique identifier for this rule. User-created rules should use UUIDs; preset rules may use scoped IDs (e.g., 'punctuation:period').",
       "minLength": 1,
       "maxLength": 128,
+      "pattern": "^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|[A-Za-z0-9][A-Za-z0-9._:-]{0,127})$",
       "examples": ["uuid-123", "punctuation:period", "user-rule-1"]
     },
     "enabled": {
@@ -51,8 +52,8 @@
     },
     "origin": {
       "type": "string",
-      "enum": ["user", "preset"],
-      "description": "Origin of this rule: 'user' for user-created rules, 'preset' for rules from preset packs."
+      "pattern": "^(user|preset(?::[A-Za-z0-9._-]+)?)$",
+      "description": "Origin of this rule: 'user' for user-created rules, or 'preset'/'preset:<name>' for rules loaded from preset packs."
     }
   },
   "additionalProperties": false,

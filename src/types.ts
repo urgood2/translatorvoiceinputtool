@@ -113,11 +113,18 @@ export interface HotkeyConfig {
 }
 
 /** Injection configuration. */
+export interface AppOverride {
+  paste_delay_ms?: number;
+  use_clipboard_only?: boolean;
+}
+
+/** Injection configuration. */
 export interface InjectionConfig {
   paste_delay_ms: number;
   restore_clipboard: boolean;
   suffix: string;
   focus_guard_enabled: boolean;
+  app_overrides?: Record<string, AppOverride>;
 }
 
 /** Model configuration. */
@@ -144,7 +151,7 @@ export interface UiConfig {
 export type ReplacementKind = 'literal' | 'regex';
 
 /** Text replacement rule origin. */
-export type ReplacementOrigin = 'user' | 'preset';
+export type ReplacementOrigin = 'user' | 'preset' | `preset:${string}`;
 
 /** Text replacement rule (matches IPC protocol). */
 export interface ReplacementRule {

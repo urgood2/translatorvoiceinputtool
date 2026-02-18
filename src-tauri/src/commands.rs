@@ -3,6 +3,7 @@
 //! This module provides the complete API surface between the React UI
 //! and the Rust backend via Tauri commands.
 
+use regex::{NoExpand, RegexBuilder};
 use serde::Serialize;
 use thiserror::Error;
 use uuid::Uuid;
@@ -423,7 +424,42 @@ pub fn preview_replacement(input: String, rules: Vec<ReplacementRule>) -> String
     let mut result = input;
     for rule in rules {
         if rule.enabled {
-            result = result.replace(&rule.pattern, &rule.replacement);
+            let pattern = if rule.word_boundary {
+                if rule.kind == "regex" {
+                    format!(r"\b(?:{})\b", rule.pattern)
+                } else {
+                    format!(r"\b{}\b", regex::escape(&rule.pattern))
+                }
+            } else if rule.kind == "regex" {
+                rule.pattern.clone()
+            } else {
+                regex::escape(&rule.pattern)
+            };
+
+            match RegexBuilder::new(&pattern)
+                .case_insensitive(!rule.case_sensitive)
+                .build()
+            {
+                Ok(compiled) => {
+                    result = if rule.kind == "regex" {
+                        compiled
+                            .replace_all(&result, rule.replacement.as_str())
+                            .into_owned()
+                    } else {
+                        compiled
+                            .replace_all(&result, NoExpand(rule.replacement.as_str()))
+                            .into_owned()
+                    };
+                }
+                Err(error) => {
+                    log::warn!(
+                        "Skipping replacement rule '{}' due to invalid pattern '{}': {}",
+                        rule.id,
+                        rule.pattern,
+                        error
+                    );
+                }
+            }
         }
     }
     result
@@ -456,19 +492,37 @@ pub fn load_preset(preset_id: String) -> Vec<ReplacementRule> {
     match preset_id.as_str() {
         "punctuation" => vec![
             ReplacementRule {
+                id: "punctuation:period".to_string(),
+                kind: "literal".to_string(),
                 pattern: " period".to_string(),
                 replacement: ".".to_string(),
                 enabled: true,
+                word_boundary: false,
+                case_sensitive: false,
+                description: Some("Convert spoken 'period' to punctuation".to_string()),
+                origin: Some("preset:punctuation".to_string()),
             },
             ReplacementRule {
+                id: "punctuation:comma".to_string(),
+                kind: "literal".to_string(),
                 pattern: " comma".to_string(),
                 replacement: ",".to_string(),
                 enabled: true,
+                word_boundary: false,
+                case_sensitive: false,
+                description: Some("Convert spoken 'comma' to punctuation".to_string()),
+                origin: Some("preset:punctuation".to_string()),
             },
             ReplacementRule {
+                id: "punctuation:question-mark".to_string(),
+                kind: "literal".to_string(),
                 pattern: " question mark".to_string(),
                 replacement: "?".to_string(),
                 enabled: true,
+                word_boundary: false,
+                case_sensitive: false,
+                description: Some("Convert spoken 'question mark' to punctuation".to_string()),
+                origin: Some("preset:punctuation".to_string()),
             },
         ],
         _ => vec![],
@@ -583,19 +637,37 @@ mod tests {
     fn test_preview_replacement() {
         let rules = vec![
             ReplacementRule {
+                id: "rule-1".to_string(),
+                kind: "literal".to_string(),
                 pattern: " period".to_string(),
                 replacement: ".".to_string(),
                 enabled: true,
+                word_boundary: false,
+                case_sensitive: false,
+                description: None,
+                origin: None,
             },
             ReplacementRule {
+                id: "rule-2".to_string(),
+                kind: "literal".to_string(),
                 pattern: " comma".to_string(),
                 replacement: ",".to_string(),
                 enabled: true,
+                word_boundary: false,
+                case_sensitive: false,
+                description: None,
+                origin: None,
             },
             ReplacementRule {
+                id: "rule-3".to_string(),
+                kind: "literal".to_string(),
                 pattern: " disabled".to_string(),
                 replacement: "XXX".to_string(),
                 enabled: false,
+                word_boundary: false,
+                case_sensitive: false,
+                description: None,
+                origin: None,
             },
         ];
 
@@ -604,6 +676,42 @@ mod tests {
             rules,
         );
         assert_eq!(result, "Hello. how are you, I am fine");
+    }
+
+    #[test]
+    fn test_preview_replacement_word_boundary_and_case_sensitivity() {
+        let rules = vec![ReplacementRule {
+            id: "rule-word-boundary".to_string(),
+            kind: "literal".to_string(),
+            pattern: "asap".to_string(),
+            replacement: "as soon as possible".to_string(),
+            enabled: true,
+            word_boundary: true,
+            case_sensitive: false,
+            description: None,
+            origin: None,
+        }];
+
+        let result = preview_replacement("ASAPly ASAP".to_string(), rules);
+        assert_eq!(result, "ASAPly as soon as possible");
+    }
+
+    #[test]
+    fn test_preview_replacement_regex_kind() {
+        let rules = vec![ReplacementRule {
+            id: "rule-regex".to_string(),
+            kind: "regex".to_string(),
+            pattern: "\\$\\d+(\\.\\d{2})?".to_string(),
+            replacement: "[PRICE]".to_string(),
+            enabled: true,
+            word_boundary: false,
+            case_sensitive: true,
+            description: None,
+            origin: None,
+        }];
+
+        let result = preview_replacement("Total: $42.50".to_string(), rules);
+        assert_eq!(result, "Total: [PRICE]");
     }
 
     #[test]

@@ -154,6 +154,25 @@
           "type": "boolean",
           "description": "Enable Focus Guard to detect if target window changed during recording.",
           "default": true
+        },
+        "app_overrides": {
+          "type": "object",
+          "description": "Per-application injection overrides keyed by app identifier.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "paste_delay_ms": {
+                "type": "integer",
+                "minimum": 10,
+                "maximum": 500
+              },
+              "use_clipboard_only": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "default": {}
         }
       },
       "additionalProperties": false,
@@ -161,7 +180,8 @@
         "paste_delay_ms": 40,
         "restore_clipboard": true,
         "suffix": " ",
-        "focus_guard_enabled": true
+        "focus_guard_enabled": true,
+        "app_overrides": {}
       }
     },
     "ModelConfig": {
@@ -327,7 +347,8 @@
         "paste_delay_ms": 40,
         "restore_clipboard": true,
         "suffix": " ",
-        "focus_guard_enabled": true
+        "focus_guard_enabled": true,
+        "app_overrides": {}
       },
       "model": null,
       "replacements": [],
@@ -369,7 +390,15 @@
         "paste_delay_ms": 100,
         "restore_clipboard": true,
         "suffix": "\n",
-        "focus_guard_enabled": true
+        "focus_guard_enabled": true,
+        "app_overrides": {
+          "slack": {
+            "paste_delay_ms": 120
+          },
+          "code": {
+            "use_clipboard_only": true
+          }
+        }
       },
       "model": {
         "model_id": "nvidia/parakeet-tdt-0.6b-v2",

@@ -10,9 +10,11 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use uuid::Uuid;
 
 /// Current schema version.
 const CURRENT_SCHEMA_VERSION: u32 = 1;
@@ -122,6 +124,20 @@ impl AppConfig {
     pub fn validate_and_clamp(&mut self) {
         // Clamp paste delay
         self.injection.paste_delay_ms = self.injection.paste_delay_ms.clamp(10, 500);
+        for (app_id, override_config) in &mut self.injection.app_overrides {
+            if let Some(delay) = override_config.paste_delay_ms {
+                let clamped = delay.clamp(10, 500);
+                if clamped != delay {
+                    log::info!(
+                        "injection.app_overrides['{}'].paste_delay_ms clamped from {} to {}",
+                        app_id,
+                        delay,
+                        clamped
+                    );
+                    override_config.paste_delay_ms = Some(clamped);
+                }
+            }
+        }
 
         let original_vad_silence_ms = self.audio.vad_silence_ms;
         self.audio.vad_silence_ms = self.audio.vad_silence_ms.clamp(400, 5000);
@@ -293,6 +309,20 @@ pub struct InjectionConfig {
     pub suffix: String,
     /// Whether Focus Guard is enabled.
     pub focus_guard_enabled: bool,
+    /// Per-application overrides keyed by app identifier.
+    #[serde(default)]
+    pub app_overrides: HashMap<String, AppOverride>,
+}
+
+/// Per-application injection override.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppOverride {
+    /// Optional paste delay override for this app.
+    #[serde(default)]
+    pub paste_delay_ms: Option<u32>,
+    /// Whether clipboard-only injection should be used for this app.
+    #[serde(default)]
+    pub use_clipboard_only: Option<bool>,
 }
 
 impl Default for InjectionConfig {
@@ -302,6 +332,7 @@ impl Default for InjectionConfig {
             restore_clipboard: true,
             suffix: " ".to_string(), // Single space
             focus_guard_enabled: true,
+            app_overrides: HashMap::new(),
         }
     }
 }
@@ -309,12 +340,30 @@ impl Default for InjectionConfig {
 /// Text replacement rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplacementRule {
+    /// Stable rule identifier (UUID for user-created rules).
+    #[serde(default = "generate_replacement_rule_id")]
+    pub id: String,
+    /// Rule type: literal text or regex pattern.
+    #[serde(default = "default_replacement_kind")]
+    pub kind: String,
     /// Pattern to match.
     pub pattern: String,
     /// Replacement text.
     pub replacement: String,
     /// Whether this rule is enabled.
     pub enabled: bool,
+    /// Whether matching is restricted to word boundaries.
+    #[serde(default)]
+    pub word_boundary: bool,
+    /// Whether matching is case-sensitive.
+    #[serde(default = "default_true")]
+    pub case_sensitive: bool,
+    /// Optional human-readable rule description.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Optional origin identifier (e.g., "user" or "preset:punctuation").
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
 /// UI configuration.
@@ -442,6 +491,14 @@ fn map_preferred_device_to_backend(preferred_device: &str) -> String {
 
 fn is_iso_639_1_code(language: &str) -> bool {
     language.len() == 2 && language.chars().all(|ch| ch.is_ascii_alphabetic())
+}
+
+fn generate_replacement_rule_id() -> String {
+    Uuid::new_v4().to_string()
+}
+
+fn default_replacement_kind() -> String {
+    "literal".to_string()
 }
 
 /// Preset configurations.
@@ -601,6 +658,8 @@ fn migrate_config(mut config: Value) -> AppConfig {
         }
     }
 
+    ensure_replacement_rule_ids(&mut config);
+
     // Future migrations go here:
     // if version < 2 { ... }
 
@@ -608,6 +667,36 @@ fn migrate_config(mut config: Value) -> AppConfig {
         log::error!("Config migration failed, using defaults: {}", e);
         AppConfig::default()
     })
+}
+
+fn ensure_replacement_rule_ids(config: &mut Value) {
+    let mut migrated = 0usize;
+
+    if let Some(Value::Array(rules)) = config.get_mut("replacements") {
+        for rule in rules {
+            if let Value::Object(rule_obj) = rule {
+                let needs_id = !matches!(
+                    rule_obj.get("id"),
+                    Some(Value::String(id)) if !id.trim().is_empty()
+                );
+
+                if needs_id {
+                    rule_obj.insert(
+                        "id".to_string(),
+                        Value::String(generate_replacement_rule_id()),
+                    );
+                    migrated += 1;
+                }
+            }
+        }
+    }
+
+    if migrated > 0 {
+        log::info!(
+            "Migrated {} replacement rules to include generated IDs",
+            migrated
+        );
+    }
 }
 
 /// Configuration errors.
@@ -641,6 +730,7 @@ mod tests {
         assert!(config.injection.restore_clipboard);
         assert_eq!(config.injection.suffix, " ");
         assert!(config.injection.focus_guard_enabled);
+        assert!(config.injection.app_overrides.is_empty());
         assert!(config.model.is_none());
         assert!(config.replacements.is_empty());
         assert!(config.ui.show_on_startup);
@@ -667,6 +757,24 @@ mod tests {
         config.audio.vad_min_speech_ms = 300;
         config.hotkeys.primary = "Ctrl+Space".to_string();
         config.injection.paste_delay_ms = 100;
+        config.injection.app_overrides.insert(
+            "slack".to_string(),
+            AppOverride {
+                paste_delay_ms: Some(120),
+                use_clipboard_only: Some(true),
+            },
+        );
+        config.replacements = vec![ReplacementRule {
+            id: "f06abed8-b4b4-4fc2-ac96-c7a418084f39".to_string(),
+            kind: "literal".to_string(),
+            pattern: "BTW".to_string(),
+            replacement: "by the way".to_string(),
+            enabled: true,
+            word_boundary: true,
+            case_sensitive: false,
+            description: Some("Expand common abbreviation".to_string()),
+            origin: Some("user".to_string()),
+        }];
         config.model = Some(ModelConfig {
             model_id: Some("nvidia/parakeet-tdt-0.6b-v2".to_string()),
             device: Some("cuda".to_string()),
@@ -694,6 +802,38 @@ mod tests {
         assert_eq!(loaded.audio.vad_min_speech_ms, 300);
         assert_eq!(loaded.hotkeys.primary, "Ctrl+Space");
         assert_eq!(loaded.injection.paste_delay_ms, 100);
+        assert_eq!(
+            loaded
+                .injection
+                .app_overrides
+                .get("slack")
+                .and_then(|ov| ov.paste_delay_ms),
+            Some(120)
+        );
+        assert_eq!(
+            loaded
+                .injection
+                .app_overrides
+                .get("slack")
+                .and_then(|ov| ov.use_clipboard_only),
+            Some(true)
+        );
+        assert_eq!(loaded.replacements.len(), 1);
+        assert_eq!(
+            loaded.replacements[0].id,
+            "f06abed8-b4b4-4fc2-ac96-c7a418084f39"
+        );
+        assert_eq!(loaded.replacements[0].kind, "literal");
+        assert_eq!(loaded.replacements[0].pattern, "BTW");
+        assert_eq!(loaded.replacements[0].replacement, "by the way");
+        assert!(loaded.replacements[0].enabled);
+        assert!(loaded.replacements[0].word_boundary);
+        assert!(!loaded.replacements[0].case_sensitive);
+        assert_eq!(
+            loaded.replacements[0].description.as_deref(),
+            Some("Expand common abbreviation")
+        );
+        assert_eq!(loaded.replacements[0].origin.as_deref(), Some("user"));
         assert_eq!(
             loaded
                 .model
@@ -803,6 +943,52 @@ mod tests {
     }
 
     #[test]
+    fn test_replacement_rules_without_id_get_generated_and_stable_ids() {
+        use std::collections::HashSet;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        fs::write(
+            &config_path,
+            r#"{
+                "schema_version": 1,
+                "replacements": [
+                    {"pattern": "BTW", "replacement": "by the way", "enabled": true},
+                    {"pattern": "ASAP", "replacement": "as soon as possible", "enabled": false}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = load_config_from_path(&config_path);
+        assert_eq!(loaded.replacements.len(), 2);
+        assert_eq!(loaded.replacements[0].kind, "literal");
+        assert!(!loaded.replacements[0].word_boundary);
+        assert!(loaded.replacements[0].case_sensitive);
+        assert!(loaded.replacements[0].description.is_none());
+        assert!(loaded.replacements[0].origin.is_none());
+        assert_eq!(loaded.replacements[0].pattern, "BTW");
+        assert_eq!(loaded.replacements[1].kind, "literal");
+        assert!(!loaded.replacements[1].word_boundary);
+        assert!(loaded.replacements[1].case_sensitive);
+        assert!(loaded.replacements[1].description.is_none());
+        assert!(loaded.replacements[1].origin.is_none());
+        assert_eq!(loaded.replacements[1].pattern, "ASAP");
+        assert_ne!(loaded.replacements[0].id, loaded.replacements[1].id);
+        assert!(Uuid::parse_str(&loaded.replacements[0].id).is_ok());
+        assert!(Uuid::parse_str(&loaded.replacements[1].id).is_ok());
+
+        let initial_ids: HashSet<String> =
+            loaded.replacements.iter().map(|r| r.id.clone()).collect();
+        save_config_to_path(&loaded, &config_path).unwrap();
+        let reloaded = load_config_from_path(&config_path);
+        let reloaded_ids: HashSet<String> =
+            reloaded.replacements.iter().map(|r| r.id.clone()).collect();
+        assert_eq!(initial_ids, reloaded_ids);
+    }
+
+    #[test]
     fn test_missing_optional_fields_get_defaults() {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("config.json");
@@ -821,6 +1007,7 @@ mod tests {
         assert_eq!(config.audio.vad_min_speech_ms, 250);
         assert_eq!(config.hotkeys.primary, "Ctrl+Shift+Space");
         assert_eq!(config.injection.paste_delay_ms, 40);
+        assert!(config.injection.app_overrides.is_empty());
         assert_eq!(config.ui.theme, "system");
         assert!(config.ui.onboarding_completed); // Existing config file should skip onboarding
         assert!(config.ui.overlay_enabled);
@@ -849,6 +1036,28 @@ mod tests {
         config.injection.paste_delay_ms = 200;
         config.validate_and_clamp();
         assert_eq!(config.injection.paste_delay_ms, 200);
+    }
+
+    #[test]
+    fn test_app_override_paste_delay_clamping() {
+        let mut config = AppConfig::default();
+        config.injection.app_overrides.insert(
+            "slack".to_string(),
+            AppOverride {
+                paste_delay_ms: Some(700),
+                use_clipboard_only: Some(false),
+            },
+        );
+
+        config.validate_and_clamp();
+        assert_eq!(
+            config
+                .injection
+                .app_overrides
+                .get("slack")
+                .and_then(|ov| ov.paste_delay_ms),
+            Some(500)
+        );
     }
 
     #[test]
@@ -916,6 +1125,7 @@ mod tests {
         assert!(json.contains("vad_min_speech_ms"));
         assert!(json.contains("hotkeys"));
         assert!(json.contains("injection"));
+        assert!(json.contains("app_overrides"));
         assert!(json.contains("onboarding_completed"));
         assert!(json.contains("overlay_enabled"));
         assert!(json.contains("locale"));
