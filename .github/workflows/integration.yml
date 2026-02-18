@@ -72,16 +72,21 @@ jobs:
 
       - name: Verify sidecar ping
         run: |
-          # Start sidecar in background
-          sidecar/dist/openvoicy-sidecar &
-          SIDECAR_PID=$!
-          sleep 2
+          # Validate JSON-RPC over stdin/stdout (the integration IPC transport).
+          PING_RESULT=$(echo '{"jsonrpc":"2.0","id":1,"method":"system.ping","params":{}}' | timeout 10 sidecar/dist/openvoicy-sidecar 2>/dev/null | grep '"jsonrpc"' | head -1 || true)
+          if [ -z "$PING_RESULT" ]; then
+            echo "✗ system.ping did not return a JSON-RPC response over stdin/stdout"
+            exit 1
+          fi
+          python - "$PING_RESULT" <<'PY'
+import json
+import sys
 
-          # Send ping request
-          echo '{"jsonrpc":"2.0","id":1,"method":"system.ping"}' | timeout 5 nc -U /tmp/openvoicy.sock || echo "Ping via socket"
-
-          # Cleanup
-          kill $SIDECAR_PID 2>/dev/null || true
+payload = json.loads(sys.argv[1])
+if payload.get("result", {}).get("protocol") != "v1":
+    raise SystemExit(1)
+PY
+          echo "✓ system.ping stdin/stdout RPC verified"
 
       - name: Run integration tests
         run: |
