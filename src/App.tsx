@@ -1,6 +1,8 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAppStore, selectAppState, selectIsRecording } from './store';
 import { useTauriEvents } from './hooks';
+import { SelfCheck, Diagnostics } from './components';
+import type { DiagnosticsReport } from './types';
 
 function App() {
   // Set up Tauri event listeners
@@ -15,14 +17,48 @@ function App() {
   const devices = useAppStore((state) => state.devices);
   const history = useAppStore((state) => state.history);
   const modelStatus = useAppStore((state) => state.modelStatus);
+  const selfCheckResult = useAppStore((state) => state.selfCheckResult);
 
   const initialize = useAppStore((state) => state.initialize);
   const refreshDevices = useAppStore((state) => state.refreshDevices);
+  const runSelfCheck = useAppStore((state) => state.runSelfCheck);
+  const generateDiagnostics = useAppStore((state) => state.generateDiagnostics);
+
+  const [isSelfCheckLoading, setIsSelfCheckLoading] = useState(false);
+  const [isDiagnosticsLoading, setIsDiagnosticsLoading] = useState(false);
+  const [diagnosticsReport, setDiagnosticsReport] = useState<DiagnosticsReport | null>(null);
 
   // Initialize store on mount
   useEffect(() => {
     initialize();
   }, [initialize]);
+
+  const refreshSelfCheck = useCallback(async () => {
+    setIsSelfCheckLoading(true);
+    try {
+      await runSelfCheck();
+    } finally {
+      setIsSelfCheckLoading(false);
+    }
+  }, [runSelfCheck]);
+
+  const refreshDiagnostics = useCallback(async () => {
+    setIsDiagnosticsLoading(true);
+    try {
+      const report = await generateDiagnostics();
+      setDiagnosticsReport(report);
+    } finally {
+      setIsDiagnosticsLoading(false);
+    }
+  }, [generateDiagnostics]);
+
+  useEffect(() => {
+    if (!isInitialized) {
+      return;
+    }
+    void refreshSelfCheck();
+    void refreshDiagnostics();
+  }, [isInitialized, refreshSelfCheck, refreshDiagnostics]);
 
   // Loading state
   if (isLoading && !isInitialized) {
@@ -137,6 +173,24 @@ function App() {
               ))
             )}
           </div>
+        </div>
+
+        {/* Self-check */}
+        <div className="bg-gray-800 rounded-lg p-6">
+          <SelfCheck
+            result={selfCheckResult}
+            onRefresh={refreshSelfCheck}
+            isLoading={isSelfCheckLoading}
+          />
+        </div>
+
+        {/* Diagnostics */}
+        <div className="bg-gray-800 rounded-lg p-6">
+          <Diagnostics
+            report={diagnosticsReport}
+            onRefresh={refreshDiagnostics}
+            isLoading={isDiagnosticsLoading}
+          />
         </div>
 
         <p className="text-center text-gray-500 text-sm">
