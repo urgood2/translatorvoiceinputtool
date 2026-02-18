@@ -743,9 +743,9 @@ class ModelCacheManager:
                 log(f"Model {manifest.model_id} downloaded successfully")
                 return model_dir
 
-        except (DiskFullError, NetworkError, CacheCorruptError, LockError):
+        except (DiskFullError, NetworkError, CacheCorruptError, LockError) as e:
             self._status = ModelStatus.ERROR
-            self._error = str(Exception)
+            self._error = str(e)
             raise
         except Exception as e:
             self._status = ModelStatus.ERROR

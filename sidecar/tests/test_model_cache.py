@@ -516,6 +516,8 @@ class TestModelCacheIntegration:
                 manager.download_model(sample_manifest)
 
         assert manager.status == ModelStatus.ERROR
+        assert manager.error is not None
+        assert "Verification failed" in manager.error
 
     def test_concurrent_downloads_blocked(self, temp_cache_dir, sample_manifest):
         """Should block concurrent downloads with lock."""
