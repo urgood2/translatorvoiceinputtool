@@ -506,4 +506,34 @@ describe('Shared Replacement Vectors', () => {
       }
     }
   });
+
+  it('validates rendered ReplacementPreview output against shared vectors', () => {
+    const testCases = sharedReplacementVectors.test_cases as SharedReplacementVector[];
+    expect(testCases.length).toBeGreaterThan(0);
+
+    for (const testCase of testCases) {
+      const { container, unmount } = render(
+        <ReplacementPreview rules={testCase.rules} />
+      );
+
+      const input = screen.getByPlaceholderText(
+        /Type or paste text/
+      ) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: testCase.input } });
+
+      const outputSpan = container.querySelector(
+        'span.whitespace-pre-wrap'
+      ) as HTMLSpanElement | null;
+      expect(outputSpan, testCase.name).not.toBeNull();
+      const output = outputSpan?.textContent ?? '';
+
+      if (testCase.expected !== undefined) {
+        expect(output, testCase.name).toBe(testCase.expected);
+      } else if (testCase.expected_pattern !== undefined) {
+        expect(output, testCase.name).toMatch(new RegExp(testCase.expected_pattern));
+      }
+
+      unmount();
+    }
+  });
 });
