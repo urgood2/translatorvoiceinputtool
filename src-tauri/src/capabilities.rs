@@ -393,7 +393,62 @@ fn wayland_portal_support_from_probe(
 
 #[cfg(target_os = "linux")]
 fn portal_introspection_has_global_shortcuts(introspection_xml: &str) -> bool {
-    introspection_xml.contains(r#"interface name="org.freedesktop.portal.GlobalShortcuts""#)
+    const TARGET_INTERFACE: &str = "org.freedesktop.portal.GlobalShortcuts";
+
+    let mut remaining = introspection_xml;
+    while let Some(interface_pos) = remaining.find("<interface") {
+        remaining = &remaining[interface_pos + "<interface".len()..];
+
+        let Some(tag_end) = remaining.find('>') else {
+            break;
+        };
+
+        let interface_tag = &remaining[..tag_end];
+        if extract_xml_attribute(interface_tag, "name") == Some(TARGET_INTERFACE) {
+            return true;
+        }
+
+        remaining = &remaining[tag_end + 1..];
+    }
+
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn extract_xml_attribute<'a>(tag_body: &'a str, attribute: &str) -> Option<&'a str> {
+    let mut cursor = tag_body;
+    loop {
+        cursor = cursor.trim_start();
+        if cursor.is_empty() {
+            return None;
+        }
+
+        let key_end = cursor
+            .find(|ch: char| ch.is_whitespace() || ch == '=' || ch == '/' || ch == '>')
+            .unwrap_or(cursor.len());
+        let key = &cursor[..key_end];
+        cursor = &cursor[key_end..];
+
+        cursor = cursor.trim_start();
+        if !cursor.starts_with('=') {
+            continue;
+        }
+        cursor = &cursor[1..];
+        cursor = cursor.trim_start();
+
+        let quote = cursor.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            continue;
+        }
+        cursor = &cursor[quote.len_utf8()..];
+        let value_end = cursor.find(quote)?;
+        let value = &cursor[..value_end];
+        cursor = &cursor[value_end + quote.len_utf8()..];
+
+        if key == attribute {
+            return Some(value);
+        }
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -680,9 +735,29 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn test_wayland_portal_support_false_without_owner_even_if_interface_present() {
+        let xml = r#"<node><interface name="org.freedesktop.portal.GlobalShortcuts"/></node>"#;
+        assert!(!wayland_portal_support_from_probe(false, Some(xml)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn test_wayland_portal_support_true_when_interface_present() {
         let xml = r#"<node><interface name="org.freedesktop.portal.GlobalShortcuts"/></node>"#;
         assert!(wayland_portal_support_from_probe(true, Some(xml)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_portal_introspection_support_true_with_spaced_single_quote_attribute() {
+        let xml = r#"
+            <node>
+                <interface version="1" name='org.freedesktop.portal.ScreenCast'/>
+                <interface version="1"   name = 'org.freedesktop.portal.GlobalShortcuts' />
+            </node>
+        "#;
+
+        assert!(portal_introspection_has_global_shortcuts(xml));
     }
 
     #[test]
