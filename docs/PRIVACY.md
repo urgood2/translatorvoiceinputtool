@@ -93,9 +93,9 @@ OpenVoicy does not collect:
 ### Configuration
 | Platform | Location |
 |----------|----------|
-| Windows | `%APPDATA%\openvoicy\config.json` |
-| macOS | `~/Library/Application Support/openvoicy/config.json` |
-| Linux | `~/.config/openvoicy/config.json` |
+| Windows | `%APPDATA%\OpenVoicy\config.json` |
+| macOS | `~/Library/Application Support/OpenVoicy/config.json` |
+| Linux | `~/.config/OpenVoicy/config.json` |
 
 ### Model Cache
 | Platform | Location |
@@ -127,7 +127,7 @@ OpenVoicy does not collect:
 #### Windows
 ```powershell
 # Remove config
-Remove-Item -Recurse "$env:APPDATA\openvoicy"
+Remove-Item -Recurse "$env:APPDATA\OpenVoicy"
 # Remove cache
 Remove-Item -Recurse "$env:LOCALAPPDATA\openvoicy"
 ```
@@ -135,7 +135,7 @@ Remove-Item -Recurse "$env:LOCALAPPDATA\openvoicy"
 #### macOS
 ```bash
 # Remove config
-rm -rf ~/Library/Application\ Support/openvoicy
+rm -rf ~/Library/Application\ Support/OpenVoicy
 # Remove cache
 rm -rf ~/Library/Caches/openvoicy
 # Remove logs
@@ -145,7 +145,7 @@ rm -rf ~/Library/Logs/openvoicy
 #### Linux
 ```bash
 # Remove all OpenVoicy data
-rm -rf ~/.config/openvoicy
+rm -rf ~/.config/OpenVoicy
 rm -rf ~/.cache/openvoicy
 rm -rf ~/.local/share/openvoicy
 ```
