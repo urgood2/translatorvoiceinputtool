@@ -115,12 +115,8 @@ OpenVoicy does not collect:
 
 ## How to Clear All Data
 
-### Quick Clear (from App)
-1. Open Settings → Advanced → Clear Data
-2. Select what to clear:
-   - Configuration (resets settings)
-   - Model cache (re-download required)
-   - Logs
+OpenVoicy does not currently provide an in-app "Clear Data" action.
+Use the platform-specific manual removal commands below.
 
 ### Complete Removal
 
@@ -190,4 +186,4 @@ OpenVoicy is open source. You can:
 
 ---
 
-*Last updated: 2026-02-05*
+*Last updated: 2026-02-18*
