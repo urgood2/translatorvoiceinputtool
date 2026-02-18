@@ -2,7 +2,7 @@
  * Model settings component for ASR model management.
  *
  * Features:
- * - Model status display (missing, downloading, verifying, ready, error)
+ * - Model status display (missing, downloading, verifying, ready, error, unknown)
  * - Download progress with visual progress bar
  * - "Download now" and "Purge cache" actions
  * - Model info (ID, revision, size)
@@ -40,6 +40,8 @@ function getStatusConfig(state: ModelState): { color: string; icon: string; labe
       return { color: 'text-green-600 dark:text-green-400', icon: '✅', label: 'Ready' };
     case 'error':
       return { color: 'text-red-600 dark:text-red-400', icon: '❌', label: 'Error' };
+    case 'unknown':
+      return { color: 'text-gray-600 dark:text-gray-400', icon: '❔', label: 'Unknown' };
   }
 
   // Exhaustive fallback for future enum extensions.

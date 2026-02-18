@@ -141,6 +141,22 @@ describe('ModelSettings', () => {
     expect(screen.getByText('Retry Download')).toBeDefined();
   });
 
+  it('shows unknown status safely', () => {
+    const status: ModelStatus = {
+      model_id: 'parakeet-tdt-0.6b-v3',
+      status: 'unknown',
+    };
+    render(
+      <ModelSettings
+        status={status}
+        onDownload={vi.fn()}
+        onPurgeCache={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText('Unknown')).toBeDefined();
+  });
+
   it('shows purge cache button when ready', () => {
     const status: ModelStatus = {
       model_id: 'parakeet-tdt-0.6b-v3',
