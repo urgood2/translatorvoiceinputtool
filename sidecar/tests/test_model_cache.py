@@ -419,6 +419,21 @@ class TestModelCacheManager:
         assert status["status"] == "missing"
         assert status["cache_path"] is not None
 
+    def test_check_cache_lock_timeout_does_not_overwrite_status(
+        self, temp_cache_dir, sample_manifest
+    ):
+        """Lock contention during status checks should not clobber in-flight state."""
+        manager = ModelCacheManager()
+        manager._status = ModelStatus.DOWNLOADING
+
+        with patch(
+            "openvoicy_sidecar.model_cache.CacheLock.__enter__",
+            side_effect=LockError("Timeout waiting for cache lock"),
+        ):
+            assert manager.check_cache(sample_manifest) is False
+
+        assert manager.status == ModelStatus.DOWNLOADING
+
     def test_purge_cache(self, temp_cache_dir, sample_manifest):
         """Should purge cache directory."""
         manager = ModelCacheManager()

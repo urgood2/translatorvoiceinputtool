@@ -24,6 +24,7 @@ import os
 import platform
 import shutil
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -36,6 +37,8 @@ from .protocol import Request, log
 # === Constants ===
 
 LOCK_TIMEOUT_SECONDS = 600  # 10 minutes for slow downloads
+# Keep status-path cache checks responsive when another operation holds the lock.
+CHECK_CACHE_LOCK_TIMEOUT_SECONDS = 1.0
 DOWNLOAD_CHUNK_SIZE = 8192
 DISK_SPACE_BUFFER = 1.1  # 10% buffer
 
@@ -529,6 +532,7 @@ class ModelCacheManager:
     """Manages model cache operations."""
 
     def __init__(self):
+        self._state_lock = threading.RLock()
         self._status = ModelStatus.MISSING
         self._progress = DownloadProgress()
         self._error: Optional[str] = None
@@ -538,28 +542,40 @@ class ModelCacheManager:
     @property
     def status(self) -> ModelStatus:
         """Get current status."""
-        return self._status
+        with self._state_lock:
+            return self._status
 
     @property
     def progress(self) -> DownloadProgress:
         """Get current progress."""
-        return self._progress
+        with self._state_lock:
+            return DownloadProgress(
+                current_bytes=self._progress.current_bytes,
+                total_bytes=self._progress.total_bytes,
+                current_file=self._progress.current_file,
+                files_completed=self._progress.files_completed,
+                files_total=self._progress.files_total,
+            )
 
     @property
     def error(self) -> Optional[str]:
         """Get error message if status is ERROR."""
-        return self._error
+        with self._state_lock:
+            return self._error
 
     def set_model_in_use(self, in_use: bool) -> None:
         """Set whether the model is currently in use."""
-        self._model_in_use = in_use
+        with self._state_lock:
+            self._model_in_use = in_use
 
     def load_manifest(self, manifest_path: Path) -> ModelManifest:
         """Load manifest from file."""
         with open(manifest_path) as f:
             data = json.load(f)
-        self._manifest = ModelManifest.from_dict(data)
-        return self._manifest
+        manifest = ModelManifest.from_dict(data)
+        with self._state_lock:
+            self._manifest = manifest
+        return manifest
 
     def get_status(self, manifest: Optional[ModelManifest] = None) -> dict[str, Any]:
         """Get current model status.
@@ -570,7 +586,17 @@ class ModelCacheManager:
         Returns:
             Status dictionary.
         """
-        manifest = manifest or self._manifest
+        with self._state_lock:
+            manifest = manifest or self._manifest
+            status = self._status
+            error = self._error
+            progress = DownloadProgress(
+                current_bytes=self._progress.current_bytes,
+                total_bytes=self._progress.total_bytes,
+                current_file=self._progress.current_file,
+                files_completed=self._progress.files_completed,
+                files_total=self._progress.files_total,
+            )
 
         cache_dir = get_cache_directory()
         model_dir = cache_dir / manifest.model_id if manifest else cache_dir
@@ -578,19 +604,24 @@ class ModelCacheManager:
         result: dict[str, Any] = {
             "model_id": manifest.model_id if manifest else "unknown",
             "revision": manifest.revision if manifest else "unknown",
-            "status": self._status.value,
+            "status": status.value,
             "cache_path": str(model_dir) if manifest else None,
         }
 
-        if self._status == ModelStatus.DOWNLOADING:
-            result["progress"] = self._progress.to_dict()
+        if status == ModelStatus.DOWNLOADING:
+            result["progress"] = progress.to_dict()
 
-        if self._status == ModelStatus.ERROR and self._error:
-            result["error"] = self._error
+        if status == ModelStatus.ERROR and error:
+            result["error"] = error
 
         return result
 
-    def check_cache(self, manifest: ModelManifest) -> bool:
+    def check_cache(
+        self,
+        manifest: ModelManifest,
+        *,
+        lock_timeout: float = CHECK_CACHE_LOCK_TIMEOUT_SECONDS,
+    ) -> bool:
         """Check if model is already cached and valid.
 
         Args:
@@ -599,25 +630,39 @@ class ModelCacheManager:
         Returns:
             True if cache is valid.
         """
+        try:
+            with CacheLock(timeout=lock_timeout):
+                return self._check_cache_unlocked(manifest)
+        except LockError:
+            log("Could not acquire cache lock for check_cache; skipping verification")
+            return False
+
+    def _check_cache_unlocked(self, manifest: ModelManifest) -> bool:
+        """Check cache state while caller owns the cache lock."""
         cache_dir = get_cache_directory() / manifest.model_id
 
         if not cache_dir.exists():
-            self._status = ModelStatus.MISSING
+            with self._state_lock:
+                self._status = ModelStatus.MISSING
             return False
 
         # Check manifest exists
         cached_manifest = cache_dir / "manifest.json"
         if not cached_manifest.exists():
-            self._status = ModelStatus.MISSING
+            with self._state_lock:
+                self._status = ModelStatus.MISSING
             return False
 
         # Verify all files
-        self._status = ModelStatus.VERIFYING
+        with self._state_lock:
+            self._status = ModelStatus.VERIFYING
         if verify_manifest(manifest, cache_dir):
-            self._status = ModelStatus.READY
+            with self._state_lock:
+                self._status = ModelStatus.READY
             return True
 
-        self._status = ModelStatus.MISSING
+        with self._state_lock:
+            self._status = ModelStatus.MISSING
         return False
 
     def get_model_path(self, manifest: ModelManifest) -> Path:
@@ -654,8 +699,9 @@ class ModelCacheManager:
             CacheCorruptError: Verification failure.
             LockError: Unable to acquire lock.
         """
-        self._manifest = manifest
-        self._error = None
+        with self._state_lock:
+            self._manifest = manifest
+            self._error = None
 
         cache_dir = get_cache_directory()
         model_dir = cache_dir / manifest.model_id
@@ -668,7 +714,7 @@ class ModelCacheManager:
             # Acquire lock
             with CacheLock():
                 # Check if already downloaded
-                if self.check_cache(manifest):
+                if self._check_cache_unlocked(manifest):
                     log(f"Model {manifest.model_id} already cached")
                     return model_dir
 
@@ -698,40 +744,45 @@ class ModelCacheManager:
                     )
 
                 # Download files
-                self._status = ModelStatus.DOWNLOADING
-                self._progress = DownloadProgress(
-                    total_bytes=manifest.total_size_bytes,
-                    files_total=len(manifest.files),
-                )
+                with self._state_lock:
+                    self._status = ModelStatus.DOWNLOADING
+                    self._progress = DownloadProgress(
+                        total_bytes=manifest.total_size_bytes,
+                        files_total=len(manifest.files),
+                    )
 
                 for i, file_info in enumerate(manifest.files):
-                    self._progress.current_file = file_info.path
-                    self._progress.files_completed = i
+                    with self._state_lock:
+                        self._progress.current_file = file_info.path
+                        self._progress.files_completed = i
 
                     if progress_callback:
-                        progress_callback(self._progress)
+                        progress_callback(self.progress)
 
                     dest_path = temp_dir / file_info.path
 
                     def update_progress(current: int, total: int) -> None:
                         # Calculate total progress across all files
                         completed_bytes = sum(
-                            fi.size_bytes for fi in manifest.files[: self._progress.files_completed]
+                            fi.size_bytes for fi in manifest.files[:i]
                         )
-                        self._progress.current_bytes = completed_bytes + current
+                        with self._state_lock:
+                            self._progress.current_bytes = completed_bytes + current
                         if progress_callback:
-                            progress_callback(self._progress)
+                            progress_callback(self.progress)
 
                     download_with_mirrors(file_info, dest_path, update_progress)
 
                     # Verify file
-                    self._status = ModelStatus.VERIFYING
+                    with self._state_lock:
+                        self._status = ModelStatus.VERIFYING
                     if not verify_file(dest_path, file_info.sha256, file_info.size_bytes):
                         raise CacheCorruptError(
                             f"Verification failed for {file_info.path}", str(dest_path)
                         )
 
-                self._progress.files_completed = len(manifest.files)
+                with self._state_lock:
+                    self._progress.files_completed = len(manifest.files)
 
                 # Atomic rename
                 if model_dir.exists():
@@ -739,17 +790,20 @@ class ModelCacheManager:
                 temp_dir.rename(model_dir)
                 temp_dir = None  # Don't clean up on success
 
-                self._status = ModelStatus.READY
+                with self._state_lock:
+                    self._status = ModelStatus.READY
                 log(f"Model {manifest.model_id} downloaded successfully")
                 return model_dir
 
         except (DiskFullError, NetworkError, CacheCorruptError, LockError) as e:
-            self._status = ModelStatus.ERROR
-            self._error = str(e)
+            with self._state_lock:
+                self._status = ModelStatus.ERROR
+                self._error = str(e)
             raise
         except Exception as e:
-            self._status = ModelStatus.ERROR
-            self._error = str(e)
+            with self._state_lock:
+                self._status = ModelStatus.ERROR
+                self._error = str(e)
             raise ModelCacheError(str(e))
         finally:
             # Clean up temp directory on failure
@@ -771,8 +825,9 @@ class ModelCacheManager:
         Raises:
             ModelInUseError: If model is currently in use.
         """
-        if self._model_in_use:
-            raise ModelInUseError()
+        with self._state_lock:
+            if self._model_in_use:
+                raise ModelInUseError()
 
         cache_dir = get_cache_directory()
 
@@ -790,7 +845,8 @@ class ModelCacheManager:
                             shutil.rmtree(item)
                     log("Purged all model caches")
 
-        self._status = ModelStatus.MISSING
+        with self._state_lock:
+            self._status = ModelStatus.MISSING
         return True
 
 
