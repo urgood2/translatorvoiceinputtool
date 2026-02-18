@@ -57,6 +57,7 @@ pub enum PermissionState {
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum DisplayServer {
     Windows,
+    #[serde(rename = "mac_os")]
     MacOS,
     X11,
     Wayland {
@@ -525,6 +526,7 @@ fn generate_diagnostics(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn test_detect_display_server_returns_valid() {
@@ -586,5 +588,24 @@ mod tests {
         // Should return a list (may be empty depending on platform)
         // Just verify it doesn't panic
         let _ = issues;
+    }
+
+    #[test]
+    fn test_display_server_wire_snapshot_parity() {
+        let snapshot: Value =
+            serde_json::from_str(include_str!("../../shared/contracts/tauri_wire.v1.json")).unwrap();
+        let expected = snapshot.get("display_server").unwrap();
+
+        let actual = serde_json::json!([
+            DisplayServer::Windows,
+            DisplayServer::MacOS,
+            DisplayServer::X11,
+            DisplayServer::Wayland {
+                compositor: Some("sway".to_string())
+            },
+            DisplayServer::Unknown
+        ]);
+
+        assert_eq!(&actual, expected);
     }
 }

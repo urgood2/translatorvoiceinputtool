@@ -1,0 +1,27 @@
+{
+  "cannot_record_reason": [
+    "paused",
+    "model_loading",
+    "already_recording",
+    "still_transcribing",
+    "in_error_state"
+  ],
+  "display_server": [
+    {
+      "type": "windows"
+    },
+    {
+      "type": "mac_os"
+    },
+    {
+      "type": "x11"
+    },
+    {
+      "type": "wayland",
+      "compositor": "sway"
+    },
+    {
+      "type": "unknown"
+    }
+  ]
+}

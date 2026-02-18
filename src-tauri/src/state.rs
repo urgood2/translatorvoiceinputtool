@@ -265,6 +265,7 @@ impl Default for AppStateManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use std::sync::Arc;
     use std::thread;
 
@@ -519,5 +520,22 @@ mod tests {
 
         // Manager should still be in valid state
         let _ = manager.get();
+    }
+
+    #[test]
+    fn test_cannot_record_reason_wire_snapshot_parity() {
+        let snapshot: Value =
+            serde_json::from_str(include_str!("../../shared/contracts/tauri_wire.v1.json")).unwrap();
+        let expected = snapshot.get("cannot_record_reason").unwrap();
+
+        let actual = serde_json::json!([
+            CannotRecordReason::Paused,
+            CannotRecordReason::ModelLoading,
+            CannotRecordReason::AlreadyRecording,
+            CannotRecordReason::StillTranscribing,
+            CannotRecordReason::InErrorState
+        ]);
+
+        assert_eq!(&actual, expected);
     }
 }

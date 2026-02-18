@@ -27,10 +27,11 @@ export interface StateEvent {
 
 /** Reason why recording cannot start. */
 export type CannotRecordReason =
-  | { type: 'already_recording' }
-  | { type: 'transcribing' }
-  | { type: 'model_not_ready' }
-  | { type: 'disabled' };
+  | 'paused'
+  | 'model_loading'
+  | 'already_recording'
+  | 'still_transcribing'
+  | 'in_error_state';
 
 // ============================================================================
 // CAPABILITY TYPES
@@ -39,7 +40,7 @@ export type CannotRecordReason =
 /** Display server type. */
 export type DisplayServer =
   | { type: 'windows' }
-  | { type: 'macos' }
+  | { type: 'mac_os' }
   | { type: 'x11' }
   | { type: 'wayland'; compositor?: string }
   | { type: 'unknown' };
