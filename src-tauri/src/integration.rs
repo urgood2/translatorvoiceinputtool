@@ -1124,16 +1124,33 @@ impl IntegrationManager {
                         // Handle model progress updates
                         #[derive(Deserialize)]
                         struct StatusParams {
+                            #[allow(dead_code)]
                             #[serde(default)]
-                            model: Option<String>,
+                            state: Option<String>,
+                            #[allow(dead_code)]
+                            #[serde(default)]
+                            detail: Option<String>,
+                            #[serde(default)]
+                            model: Option<Value>,
                             #[serde(default)]
                             progress: Option<ProgressParams>,
                         }
 
                         #[derive(Deserialize)]
+                        struct ModelParams {
+                            #[allow(dead_code)]
+                            #[serde(default)]
+                            model_id: Option<String>,
+                            status: String,
+                        }
+
+                        #[derive(Deserialize)]
                         struct ProgressParams {
                             current: u64,
+                            #[serde(default)]
                             total: Option<u64>,
+                            #[serde(default)]
+                            unit: Option<String>,
                             #[serde(default)]
                             stage: Option<String>,
                         }
@@ -1141,19 +1158,30 @@ impl IntegrationManager {
                         if let Ok(params) =
                             serde_json::from_value::<StatusParams>(event.params.clone())
                         {
+                            // Support both spec-compliant model object and legacy string model state.
+                            let model_state = params.model.as_ref().and_then(|model| {
+                                serde_json::from_value::<ModelParams>(model.clone())
+                                    .map(|parsed| parsed.status)
+                                    .ok()
+                                    .or_else(|| model.as_str().map(ToOwned::to_owned))
+                            });
+
                             // Update model status if provided
-                            if let Some(ref model_state) = params.model {
+                            if let Some(model_state) = model_state {
                                 let new_status = match model_state.as_str() {
                                     "downloading" => ModelStatus::Downloading,
                                     "loading" => ModelStatus::Loading,
                                     "ready" => ModelStatus::Ready,
                                     "missing" => ModelStatus::Missing,
+                                    "error" => ModelStatus::Error("model status error".to_string()),
                                     _ => ModelStatus::Unknown,
                                 };
                                 *model_status.write().await = new_status.clone();
 
                                 if new_status == ModelStatus::Ready {
                                     recording_controller.set_model_ready(true).await;
+                                } else {
+                                    recording_controller.set_model_ready(false).await;
                                 }
                             }
 
@@ -1165,6 +1193,7 @@ impl IntegrationManager {
                                     stage: progress
                                         .stage
                                         .clone()
+                                        .or_else(|| progress.unit.clone())
                                         .unwrap_or_else(|| "processing".to_string()),
                                 };
                                 *model_progress.write().await = Some(model_progress_data.clone());
@@ -1191,14 +1220,37 @@ impl IntegrationManager {
                         }
                     }
                     "event.audio_level" => {
-                        // Forward audio levels to frontend
-                        if let Some(ref handle) = app_handle {
-                            emit_with_shared_seq(
-                                handle,
-                                &["audio:level"],
-                                event.params,
-                                &event_seq,
-                            );
+                        #[derive(Deserialize)]
+                        struct AudioLevelParams {
+                            source: String,
+                            rms: f64,
+                            peak: f64,
+                            #[serde(default)]
+                            session_id: Option<String>,
+                        }
+
+                        if let Ok(params) = serde_json::from_value::<AudioLevelParams>(event.params) {
+                            // recording source is session-scoped and should include session_id.
+                            if params.source == "recording" && params.session_id.is_none() {
+                                log::warn!("Ignoring invalid audio_level event: missing session_id for recording source");
+                                continue;
+                            }
+
+                            if let Some(ref handle) = app_handle {
+                                emit_with_shared_seq(
+                                    handle,
+                                    &["audio:level"],
+                                    json!({
+                                        "source": params.source,
+                                        "rms": params.rms,
+                                        "peak": params.peak,
+                                        "session_id": params.session_id,
+                                    }),
+                                    &event_seq,
+                                );
+                            }
+                        } else {
+                            log::warn!("Ignoring invalid audio_level payload");
                         }
                     }
                     _ => {
