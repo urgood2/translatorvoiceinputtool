@@ -196,7 +196,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({
         appState: stateEvent.state,
         enabled: stateEvent.enabled,
-        errorDetail: stateEvent.error_detail,
+        errorDetail: stateEvent.detail,
       });
 
       set({ isInitialized: true });
@@ -566,7 +566,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({
       appState: event.state,
       enabled: event.enabled,
-      errorDetail: event.error_detail,
+      errorDetail: event.detail,
     });
   },
 

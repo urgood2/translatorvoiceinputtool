@@ -21,7 +21,7 @@ export type AppState =
 export interface StateEvent {
   state: AppState;
   enabled: boolean;
-  error_detail?: string;
+  detail?: string;
   timestamp: string;
 }
 

@@ -67,7 +67,7 @@ describe('useTauriEvents', () => {
     store._setAppState({
       state: 'recording',
       enabled: true,
-      error_detail: undefined,
+      detail: undefined,
     });
     expect(useAppStore.getState().appState).toBe('recording');
 

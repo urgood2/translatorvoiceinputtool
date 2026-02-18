@@ -364,7 +364,7 @@ describe('Internal Actions', () => {
     useAppStore.getState()._setAppState({
       state: 'recording',
       enabled: true,
-      error_detail: undefined,
+      detail: undefined,
     });
 
     expect(useAppStore.getState().appState).toBe('recording');
@@ -375,7 +375,7 @@ describe('Internal Actions', () => {
     useAppStore.getState()._setAppState({
       state: 'error',
       enabled: true,
-      error_detail: 'Something went wrong',
+      detail: 'Something went wrong',
     });
 
     expect(useAppStore.getState().appState).toBe('error');
