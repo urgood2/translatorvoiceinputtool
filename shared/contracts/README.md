@@ -5,6 +5,7 @@ This directory contains versioned cross-runtime contracts used by Rust host and 
 - `sidecar.rpc.v1.json`: canonical sidecar RPC schema
 - `error.codes.v1.json`: canonical error kind/code mapping
 - `MIGRATION.md`: compatibility windows and alias deprecation timeline
+- `VERSIONING.md`: dual-source versioning strategy and drift prevention rules
 
 ## Compatibility Policy
 
