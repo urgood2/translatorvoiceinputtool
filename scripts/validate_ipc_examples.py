@@ -8,7 +8,7 @@ This script:
 3. Validates error codes are in valid ranges
 4. Validates all error.data.kind values are from the allowed set
 5. Validates message types (request, response, notification, error)
-6. Validates response examples include required result fields from sidecar.rpc.v1
+6. Validates method-level request/response payloads against sidecar.rpc.v1 schemas
 7. Validates status.get fixtures include idle behavior with and without a model object
 
 Exit codes:
@@ -17,6 +17,7 @@ Exit codes:
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -84,33 +85,140 @@ VALID_REQUEST_METHODS = {
 }
 
 
-def load_contract_required_result_fields(contract_file: Path) -> dict[str, set[str]]:
-    """Load method -> required result fields from sidecar.rpc.v1 contract."""
+METHOD_NAME_RE = re.compile(r"([a-z]+\.[a-z_]+)")
+
+
+def load_contract_method_schemas(contract_file: Path) -> dict[str, dict[str, Any]]:
+    """Load method -> params/result schema objects from sidecar.rpc.v1 contract."""
     contract_data = json.loads(contract_file.read_text())
-    result: dict[str, set[str]] = {}
+    result: dict[str, dict[str, Any]] = {}
 
     for item in contract_data.get("items", []):
         if item.get("type") != "method":
             continue
         method_name = item.get("name")
-        required = item.get("result_schema", {}).get("required", [])
-        if method_name and isinstance(required, list) and required:
-            result[method_name] = {field for field in required if isinstance(field, str)}
+        if not isinstance(method_name, str):
+            continue
+        result[method_name] = {
+            "params_schema": item.get("params_schema"),
+            "result_schema": item.get("result_schema"),
+        }
 
     return result
 
 
-def validate_contract_required_result_fields(examples_file: Path, contract_file: Path) -> list[str]:
-    """Validate that response examples include all required result fields for each method."""
+def _json_type_matches(value: Any, expected_type: str) -> bool:
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "number":
+        return (isinstance(value, int) or isinstance(value, float)) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "null":
+        return value is None
+    return True
+
+
+def _format_type_decl(schema: dict[str, Any]) -> str:
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list):
+        return "|".join(str(t) for t in schema_type)
+    return str(schema_type)
+
+
+def validate_schema_value(value: Any, schema: Any, path: str) -> list[str]:
+    """Validate a value against the contract schema subset used by sidecar.rpc.v1."""
+    if not isinstance(schema, dict):
+        return []
+
+    errors: list[str] = []
+
+    if "enum" in schema and value not in schema["enum"]:
+        errors.append(f"{path}: expected one of {schema['enum']}, got {value!r}")
+
+    expected_types = schema.get("type")
+    if expected_types is not None:
+        type_list = expected_types if isinstance(expected_types, list) else [expected_types]
+        if not any(_json_type_matches(value, t) for t in type_list):
+            errors.append(f"{path}: expected type {_format_type_decl(schema)}, got {type(value).__name__}")
+            return errors
+
+    if isinstance(value, dict):
+        required = schema.get("required", [])
+        for key in required:
+            if key not in value:
+                errors.append(f"{path}: missing required field '{key}'")
+
+        properties = schema.get("properties", {})
+        if isinstance(properties, dict):
+            for key, sub_schema in properties.items():
+                if key in value:
+                    errors.extend(validate_schema_value(value[key], sub_schema, f"{path}.{key}"))
+
+            additional = schema.get("additionalProperties", True)
+            if additional is False:
+                extra_keys = sorted(key for key in value if key not in properties)
+                for key in extra_keys:
+                    errors.append(f"{path}: unexpected field '{key}'")
+            elif isinstance(additional, dict):
+                for key in value:
+                    if key not in properties:
+                        errors.extend(validate_schema_value(value[key], additional, f"{path}.{key}"))
+
+    if isinstance(value, list):
+        item_schema = schema.get("items")
+        if item_schema is not None:
+            for idx, item in enumerate(value):
+                errors.extend(validate_schema_value(item, item_schema, f"{path}[{idx}]"))
+
+    if isinstance(value, str) and "minLength" in schema:
+        if len(value) < schema["minLength"]:
+            errors.append(f"{path}: expected minLength {schema['minLength']}, got {len(value)}")
+
+    if (isinstance(value, int) or isinstance(value, float)) and not isinstance(value, bool):
+        if "minimum" in schema and value < schema["minimum"]:
+            errors.append(f"{path}: expected minimum {schema['minimum']}, got {value}")
+        if "maximum" in schema and value > schema["maximum"]:
+            errors.append(f"{path}: expected maximum {schema['maximum']}, got {value}")
+
+    return errors
+
+
+def infer_response_method(
+    msg_id: Any, comment: str, request_method_by_id: dict[Any, str], known_methods: set[str]
+) -> str | None:
+    """Infer method for response examples from request id mapping or comment text."""
+    method_name = request_method_by_id.get(msg_id)
+    if method_name:
+        return method_name
+
+    match = METHOD_NAME_RE.search(comment)
+    if not match:
+        return None
+
+    candidate = match.group(1)
+    if candidate in known_methods:
+        return candidate
+    return None
+
+
+def validate_method_level_contract_shapes(examples_file: Path, contract_file: Path) -> list[str]:
+    """Validate request params/response results against per-method contract schemas."""
     errors: list[str] = []
 
     try:
-        required_by_method = load_contract_required_result_fields(contract_file)
+        method_schemas = load_contract_method_schemas(contract_file)
     except Exception as e:
         return [f"Contract parse error: {e}"]
 
     request_method_by_id: dict[Any, str] = {}
-    response_entries: list[tuple[int, dict[str, Any]]] = []
+    lines: list[tuple[int, dict[str, Any]]] = []
 
     for line_num, line in enumerate(examples_file.read_text().splitlines(), 1):
         line = line.strip()
@@ -119,48 +227,52 @@ def validate_contract_required_result_fields(examples_file: Path, contract_file:
         try:
             obj = json.loads(line)
         except json.JSONDecodeError:
-            # Base JSON parse validation reports this already.
             continue
+        lines.append((line_num, obj))
 
+    for _line_num, obj in lines:
+        if obj.get("type") != "request":
+            continue
         data = obj.get("data", {})
+        msg_id = data.get("id")
+        method_name = data.get("method")
+        if msg_id is not None and isinstance(method_name, str):
+            request_method_by_id[msg_id] = method_name
+
+    known_methods = set(method_schemas.keys())
+
+    for line_num, obj in lines:
         msg_type = obj.get("type")
-        msg_id = data.get("id")
-
-        if msg_type == "request" and msg_id is not None and "method" in data:
-            request_method_by_id[msg_id] = data["method"]
-        elif msg_type == "response":
-            response_entries.append((line_num, obj))
-
-    for line_num, obj in response_entries:
         data = obj.get("data", {})
-        if "result" not in data:
+        comment = str(obj.get("_comment", ""))
+
+        if msg_type == "request":
+            method_name = data.get("method")
+            if not isinstance(method_name, str):
+                continue
+            method_schema = method_schemas.get(method_name)
+            if not method_schema:
+                continue
+
+            params = data.get("params", {})
+            params_errors = validate_schema_value(params, method_schema.get("params_schema"), f"{method_name}.params")
+            errors.extend(f"Line {line_num}: {err}" for err in params_errors)
             continue
 
-        msg_id = data.get("id")
-        if msg_id is None:
-            continue
+        if msg_type == "response":
+            if "result" not in data:
+                continue
+            method_name = infer_response_method(data.get("id"), comment, request_method_by_id, known_methods)
+            if not method_name:
+                continue
+            method_schema = method_schemas.get(method_name)
+            if not method_schema:
+                continue
 
-        method_name = request_method_by_id.get(msg_id)
-        if not method_name:
-            continue
-
-        required_fields = required_by_method.get(method_name)
-        if not required_fields:
-            continue
-
-        result = data["result"]
-        if not isinstance(result, dict):
-            errors.append(
-                f"Line {line_num}: Response result for '{method_name}' must be an object to validate required fields"
+            result_errors = validate_schema_value(
+                data["result"], method_schema.get("result_schema"), f"{method_name}.result"
             )
-            continue
-
-        missing_fields = sorted(field for field in required_fields if field not in result)
-        if missing_fields:
-            errors.append(
-                f"Line {line_num}: Response result for '{method_name}' missing required "
-                f"contract field(s): {', '.join(missing_fields)}"
-            )
+            errors.extend(f"Line {line_num}: {err}" for err in result_errors)
 
     return errors
 
@@ -407,7 +519,7 @@ def main() -> int:
             if "type" in obj and obj["type"] in stats:
                 stats[obj["type"]] += 1
 
-    all_errors.extend(validate_contract_required_result_fields(examples_file, contract_file))
+    all_errors.extend(validate_method_level_contract_shapes(examples_file, contract_file))
     all_errors.extend(validate_status_get_idle_fixture_variants(examples_file))
 
     # Print results
