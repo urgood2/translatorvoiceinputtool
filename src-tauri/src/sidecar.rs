@@ -315,54 +315,119 @@ impl SidecarManager {
             .parent()
             .ok_or_else(|| "Failed to get executable directory".to_string())?;
 
+        // Tauri externalBin artifacts are target-triple suffixed. Keep unsuffixed
+        // fallback for older/local setups that still ship plain names.
+        let sidecar_names = Self::get_sidecar_binary_candidates();
+        let mut checked_paths = Vec::new();
+
         // Try resource path first (for bundled apps)
         if let Ok(resource_dir) = app_handle.path().resource_dir() {
-            let sidecar_name = Self::get_sidecar_binary_name();
-            let resource_path = resource_dir.join(&sidecar_name);
-            if resource_path.exists() {
-                log::info!("Found sidecar in resource dir: {:?}", resource_path);
-                return Ok(resource_path);
+            for sidecar_name in &sidecar_names {
+                let resource_path = resource_dir.join(sidecar_name);
+                checked_paths.push(resource_path.clone());
+                if resource_path.exists() {
+                    log::info!("Found sidecar in resource dir: {:?}", resource_path);
+                    return Ok(resource_path);
+                }
             }
         }
 
         // Fallback: same directory as executable
-        let sidecar_name = Self::get_sidecar_binary_name();
-        let sidecar_path = exe_dir.join(&sidecar_name);
-
-        if sidecar_path.exists() {
-            log::info!("Found sidecar in exe dir: {:?}", sidecar_path);
-            Ok(sidecar_path)
-        } else {
-            // Development fallback: check dist directory
-            let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap()
-                .join("sidecar")
-                .join("dist")
-                .join(&sidecar_name);
-
-            if dev_path.exists() {
-                log::info!("Found sidecar in dev dist: {:?}", dev_path);
-                Ok(dev_path)
-            } else {
-                Err(format!(
-                    "Sidecar binary not found. Checked: {:?}, {:?}",
-                    sidecar_path, dev_path
-                ))
+        for sidecar_name in &sidecar_names {
+            let sidecar_path = exe_dir.join(sidecar_name);
+            checked_paths.push(sidecar_path.clone());
+            if sidecar_path.exists() {
+                log::info!("Found sidecar in exe dir: {:?}", sidecar_path);
+                return Ok(sidecar_path);
             }
         }
+
+        // Development fallback: check dist directory
+        let dev_dist = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("sidecar")
+            .join("dist");
+
+        for sidecar_name in &sidecar_names {
+            let dev_path = dev_dist.join(sidecar_name);
+            checked_paths.push(dev_path.clone());
+            if dev_path.exists() {
+                log::info!("Found sidecar in dev dist: {:?}", dev_path);
+                return Ok(dev_path);
+            }
+        }
+
+        Err(format!(
+            "Sidecar binary not found. Checked: {}",
+            checked_paths
+                .iter()
+                .map(|p| format!("{:?}", p))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
     }
 
     /// Get the sidecar binary name for the current platform.
     fn get_sidecar_binary_name() -> String {
+        Self::get_sidecar_binary_candidates()
+            .into_iter()
+            .next()
+            .unwrap()
+    }
+
+    fn get_target_triple() -> String {
+        if let Some(target) = option_env!("TARGET") {
+            return target.to_string();
+        }
+
+        let arch = if cfg!(target_arch = "x86_64") {
+            "x86_64"
+        } else if cfg!(target_arch = "aarch64") {
+            "aarch64"
+        } else {
+            std::env::consts::ARCH
+        };
+
+        if cfg!(target_os = "linux") {
+            if cfg!(target_env = "musl") {
+                format!("{arch}-unknown-linux-musl")
+            } else {
+                // Default to GNU for Linux builds in this project.
+                format!("{arch}-unknown-linux-gnu")
+            }
+        } else if cfg!(target_os = "macos") {
+            format!("{arch}-apple-darwin")
+        } else if cfg!(target_os = "windows") {
+            if cfg!(target_env = "gnu") {
+                format!("{arch}-pc-windows-gnu")
+            } else {
+                format!("{arch}-pc-windows-msvc")
+            }
+        } else {
+            format!("{arch}-unknown-{}", std::env::consts::OS)
+        }
+    }
+
+    /// Get sidecar filename candidates for the current platform/target.
+    fn get_sidecar_binary_candidates() -> Vec<String> {
+        let target = Self::get_target_triple();
+
         #[cfg(target_os = "windows")]
         {
-            "openvoicy-sidecar.exe".to_string()
+            vec![
+                format!("openvoicy-sidecar-{}.exe", target),
+                "openvoicy-sidecar.exe".to_string(),
+                format!("openvoicy-sidecar-{}", target),
+            ]
         }
 
         #[cfg(not(target_os = "windows"))]
         {
-            "openvoicy-sidecar".to_string()
+            vec![
+                format!("openvoicy-sidecar-{}", target),
+                "openvoicy-sidecar".to_string(),
+            ]
         }
     }
 
@@ -808,11 +873,29 @@ mod tests {
     #[test]
     fn test_sidecar_binary_name() {
         let name = SidecarManager::get_sidecar_binary_name();
+        let target = SidecarManager::get_target_triple();
         #[cfg(target_os = "windows")]
-        assert!(name.ends_with(".exe"));
+        assert_eq!(name, format!("openvoicy-sidecar-{}.exe", target));
         #[cfg(not(target_os = "windows"))]
-        assert!(!name.ends_with(".exe"));
-        assert!(name.contains("openvoicy-sidecar"));
+        assert_eq!(name, format!("openvoicy-sidecar-{}", target));
+    }
+
+    #[test]
+    fn test_sidecar_binary_candidates_include_target_and_fallback() {
+        let names = SidecarManager::get_sidecar_binary_candidates();
+        let target = SidecarManager::get_target_triple();
+
+        #[cfg(target_os = "windows")]
+        {
+            assert!(names.contains(&format!("openvoicy-sidecar-{}.exe", target)));
+            assert!(names.contains(&"openvoicy-sidecar.exe".to_string()));
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert!(names.contains(&format!("openvoicy-sidecar-{}", target)));
+            assert!(names.contains(&"openvoicy-sidecar".to_string()));
+        }
     }
 
     #[test]
