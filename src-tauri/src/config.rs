@@ -147,7 +147,7 @@ impl Default for AppConfig {
 /// Model configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
-    /// Model ID (e.g., "nvidia/parakeet-tdt-0.6b-v2").
+    /// Model ID (e.g., "parakeet-tdt-0.6b-v3").
     #[serde(default)]
     pub model_id: Option<String>,
     /// Device preference ("auto", "cpu", "cuda", "mps").

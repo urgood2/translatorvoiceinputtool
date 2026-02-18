@@ -14,6 +14,7 @@ use std::sync::Arc;
 use crate::capabilities::{Capabilities, CapabilityIssue};
 use crate::config::{self, AppConfig, ReplacementRule};
 use crate::history::{TranscriptEntry, TranscriptHistory};
+use crate::model_defaults;
 use crate::state::{AppStateManager, CannotRecordReason, StateEvent};
 
 /// Command error types.
@@ -283,7 +284,7 @@ pub struct Progress {
 pub async fn get_model_status() -> ModelStatus {
     // TODO: Query sidecar for model status
     ModelStatus {
-        model_id: "nvidia/parakeet-tdt-0.6b-v2".to_string(),
+        model_id: model_defaults::default_model_id().to_string(),
         status: ModelState::Missing, // Placeholder
         progress: None,
         error: None,

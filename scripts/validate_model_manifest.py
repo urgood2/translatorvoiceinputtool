@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Validate MODEL_MANIFEST.json schema and cross-reference with IPC examples.
+Validate MODEL_MANIFEST.json schema and cross-reference with IPC examples/runtime defaults.
 
 This script:
 1. Validates MODEL_MANIFEST.json parses correctly
 2. Validates required schema fields are present
-3. Validates asr.initialize examples in IPC_V1_EXAMPLES.jsonl use valid model_ids
+3. Validates asr.initialize examples in IPC_V1_EXAMPLES.jsonl use manifest model_id
+4. Validates Rust runtime defaults resolve model_id from manifest-backed defaults
 
 Exit codes:
   0 - All validations passed
@@ -13,6 +14,7 @@ Exit codes:
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -40,6 +42,9 @@ REQUIRED_FILE_FIELDS = {
     "size_bytes",
     "sha256",
 }
+
+MANIFEST_MODEL_INCLUDE_SNIPPET = 'include_str!("../../shared/model/MODEL_MANIFEST.json")'
+DEFAULT_MODEL_CALL_SNIPPET = "model_defaults::default_model_id()"
 
 
 def validate_manifest_schema(manifest: dict[str, Any]) -> list[str]:
@@ -101,7 +106,7 @@ def validate_manifest_schema(manifest: dict[str, Any]) -> list[str]:
 
 
 def validate_ipc_model_ids(manifest: dict[str, Any], examples_file: Path) -> list[str]:
-    """Validate asr.initialize examples use valid model_ids from manifest."""
+    """Validate asr.initialize examples use the manifest model_id."""
     errors = []
 
     if not examples_file.exists():
@@ -133,13 +138,60 @@ def validate_ipc_model_ids(manifest: dict[str, Any], examples_file: Path) -> lis
                 model_id = params.get("model_id")
 
                 if model_id and model_id != manifest_model_id:
-                    # Allow whisper models in examples for compatibility testing
-                    # but warn about mismatch
-                    if not model_id.startswith("whisper"):
-                        errors.append(
-                            f"Line {line_num}: asr.initialize uses model_id '{model_id}' "
-                            f"but manifest defines '{manifest_model_id}'"
-                        )
+                    errors.append(
+                        f"Line {line_num}: asr.initialize uses model_id '{model_id}' "
+                        f"but manifest defines '{manifest_model_id}'"
+                    )
+
+    return errors
+
+
+def validate_rust_model_defaults(manifest: dict[str, Any], repo_root: Path) -> list[str]:
+    """Validate Rust default model wiring matches manifest contract."""
+    errors = []
+    manifest_model_id = manifest.get("model_id")
+    if not manifest_model_id:
+        return ["Cannot validate Rust defaults: manifest has no model_id"]
+
+    integration_file = repo_root / "src-tauri" / "src" / "integration.rs"
+    commands_file = repo_root / "src-tauri" / "src" / "commands.rs"
+    model_defaults_file = repo_root / "src-tauri" / "src" / "model_defaults.rs"
+
+    required_snippets = {
+        integration_file: DEFAULT_MODEL_CALL_SNIPPET,
+        commands_file: DEFAULT_MODEL_CALL_SNIPPET,
+        model_defaults_file: MANIFEST_MODEL_INCLUDE_SNIPPET,
+    }
+
+    for file_path, snippet in required_snippets.items():
+        if not file_path.exists():
+            errors.append(f"Rust defaults file not found: {file_path}")
+            continue
+
+        content = file_path.read_text()
+        if snippet not in content:
+            errors.append(
+                f"{file_path.relative_to(repo_root)} must include '{snippet}' for manifest-backed defaults"
+            )
+
+        for literal in set(re.findall(r'"(parakeet-tdt-0\.6b-v[^"]+)"', content)):
+            if literal != manifest_model_id:
+                errors.append(
+                    f"{file_path.relative_to(repo_root)} embeds model_id '{literal}' "
+                    f"but manifest defines '{manifest_model_id}'"
+                )
+
+    fallback_match = None
+    if model_defaults_file.exists():
+        fallback_match = re.search(
+            r'const DEFAULT_MODEL_ID:\s*&str\s*=\s*"([^"]+)";',
+            model_defaults_file.read_text(),
+        )
+    if fallback_match and fallback_match.group(1) != manifest_model_id:
+        errors.append(
+            f"src-tauri/src/model_defaults.rs fallback DEFAULT_MODEL_ID is '{fallback_match.group(1)}' "
+            f"but manifest defines '{manifest_model_id}'"
+        )
 
     return errors
 
@@ -171,14 +223,9 @@ def main() -> int:
     schema_errors = validate_manifest_schema(manifest)
     all_errors.extend(schema_errors)
 
-    # Validate IPC cross-reference (warn only, don't fail)
-    # IPC examples may use different model IDs for testing purposes
-    ipc_warnings = validate_ipc_model_ids(manifest, examples_file)
-    if ipc_warnings:
-        print("WARNINGS (IPC model_id cross-reference):")
-        for warn in ipc_warnings:
-            print(f"  {warn}")
-        print()
+    # Validate IPC and runtime defaults cross-reference
+    all_errors.extend(validate_ipc_model_ids(manifest, examples_file))
+    all_errors.extend(validate_rust_model_defaults(manifest, repo_root))
 
     # Print results
     if all_errors:

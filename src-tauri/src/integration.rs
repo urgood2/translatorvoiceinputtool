@@ -29,6 +29,7 @@ use crate::history::{
 use crate::hotkey::{HotkeyAction, HotkeyManager, RecordingAction};
 use crate::injection::{inject_text, InjectionConfig, InjectionResult};
 use crate::ipc::{NotificationEvent, RpcClient, RpcError};
+use crate::model_defaults;
 use crate::recording::{RecordingController, RecordingEvent, StopResult, TranscriptionResult};
 use crate::state::{AppState, AppStateManager};
 use crate::watchdog::{PingCallback, Watchdog, WatchdogConfig, WatchdogEvent};
@@ -41,9 +42,6 @@ const EVENT_MODEL_PROGRESS: &str = "model:progress";
 
 /// Model status event name.
 const EVENT_MODEL_STATUS: &str = "model:status";
-
-/// Default model to use if not configured.
-const DEFAULT_MODEL_ID: &str = "nvidia/parakeet-tdt-0.6b-v2";
 
 /// Model status tracking.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -139,7 +137,7 @@ fn configured_model_id() -> String {
                 Some(trimmed.to_string())
             }
         })
-        .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string())
+        .unwrap_or_else(|| model_defaults::default_model_id().to_string())
 }
 
 fn resolve_model_id(model_id: Option<String>) -> String {
@@ -695,7 +693,7 @@ impl IntegrationManager {
             .model
             .as_ref()
             .and_then(|m| m.model_id.clone())
-            .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string());
+            .unwrap_or_else(|| model_defaults::default_model_id().to_string());
 
         let raw_device = config.model.as_ref().and_then(|m| m.device.as_deref());
         let raw_preferred = config
