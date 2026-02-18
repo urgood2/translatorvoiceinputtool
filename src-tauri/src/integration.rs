@@ -24,7 +24,7 @@ use crate::history::{HistoryInjectionResult, TranscriptEntry, TranscriptHistory}
 use crate::hotkey::{HotkeyAction, HotkeyManager, RecordingAction};
 use crate::injection::{inject_text, InjectionConfig, InjectionResult};
 use crate::ipc::{NotificationEvent, RpcClient, RpcError};
-use crate::recording::{RecordingController, RecordingEvent, TranscriptionResult};
+use crate::recording::{RecordingController, RecordingEvent, StopResult, TranscriptionResult};
 use crate::state::{AppState, AppStateManager};
 use crate::watchdog::{PingCallback, Watchdog, WatchdogConfig, WatchdogEvent};
 
@@ -97,6 +97,20 @@ fn add_seq_to_payload(payload: Value, seq: u64) -> Value {
     }
 }
 
+fn extract_session_id(params: &Value) -> Option<&str> {
+    params.get("session_id").and_then(Value::as_str)
+}
+
+fn is_stale_session(
+    notification_session_id: Option<&str>,
+    active_session_id: Option<&str>,
+) -> bool {
+    match notification_session_id {
+        Some(incoming) => active_session_id != Some(incoming),
+        None => false,
+    }
+}
+
 fn emit_with_shared_seq(
     handle: &AppHandle,
     events: &[&str],
@@ -158,6 +172,8 @@ pub struct IntegrationManager {
     app_handle: Option<AppHandle>,
     /// Focus context for current recording.
     recording_context: Arc<RwLock<Option<RecordingContext>>>,
+    /// Current active recording/transcription session for correlation.
+    current_session_id: Arc<RwLock<Option<String>>>,
     /// Configuration.
     config: IntegrationConfig,
     /// Current model status.
@@ -186,6 +202,7 @@ impl IntegrationManager {
             sidecar_process: Arc::new(RwLock::new(None)),
             app_handle: None,
             recording_context: Arc::new(RwLock::new(None)),
+            current_session_id: Arc::new(RwLock::new(None)),
             config: IntegrationConfig::default(),
             model_status: Arc::new(RwLock::new(ModelStatus::Unknown)),
             model_progress: Arc::new(RwLock::new(None)),
@@ -711,6 +728,7 @@ impl IntegrationManager {
         let recording_controller = Arc::clone(&self.recording_controller);
         let rpc_client = Arc::clone(&self.rpc_client);
         let recording_context = Arc::clone(&self.recording_context);
+        let current_session_id = Arc::clone(&self.current_session_id);
         let app_handle = self.app_handle.clone();
 
         tokio::spawn(async move {
@@ -752,6 +770,7 @@ impl IntegrationManager {
                                         focus_before: focus,
                                         session_id: session_id.clone(),
                                     });
+                                    *current_session_id.write().await = Some(session_id.clone());
 
                                     // Tell sidecar to start recording
                                     if let Some(client) = rpc_client.read().await.as_ref() {
@@ -765,6 +784,7 @@ impl IntegrationManager {
                                 }
                                 Err(e) => {
                                     log::warn!("Failed to start recording: {}", e);
+                                    *current_session_id.write().await = None;
                                 }
                             }
                         } else if let Some(RecordingAction::Stop) = recording_action {
@@ -773,6 +793,7 @@ impl IntegrationManager {
                                 &recording_controller,
                                 &rpc_client,
                                 &recording_context,
+                                &current_session_id,
                             )
                             .await;
                         }
@@ -786,6 +807,7 @@ impl IntegrationManager {
                                     &recording_controller,
                                     &rpc_client,
                                     &recording_context,
+                                    &current_session_id,
                                 )
                                 .await;
                             }
@@ -812,10 +834,18 @@ impl IntegrationManager {
         recording_controller: &Arc<RecordingController>,
         rpc_client: &Arc<RwLock<Option<RpcClient>>>,
         recording_context: &Arc<RwLock<Option<RecordingContext>>>,
+        current_session_id: &Arc<RwLock<Option<String>>>,
     ) {
         match recording_controller.stop().await {
             Ok(result) => {
                 log::info!("Recording stopped: {:?}", result);
+
+                // Too-short recordings don't produce transcription and should clear session context.
+                if matches!(result, StopResult::TooShort) {
+                    *current_session_id.write().await = None;
+                    *recording_context.write().await = None;
+                    return;
+                }
 
                 // Tell sidecar to stop recording (triggers async transcription)
                 if let Some(client) = rpc_client.read().await.as_ref() {
@@ -829,6 +859,7 @@ impl IntegrationManager {
             }
             Err(e) => {
                 log::warn!("Failed to stop recording: {}", e);
+                *current_session_id.write().await = None;
             }
         }
     }
@@ -879,6 +910,7 @@ impl IntegrationManager {
     fn start_recording_event_loop(&self) {
         let recording_controller = Arc::clone(&self.recording_controller);
         let recording_context = Arc::clone(&self.recording_context);
+        let current_session_id = Arc::clone(&self.current_session_id);
         let app_handle = self.app_handle.clone();
         let event_seq = Arc::clone(&self.event_seq);
 
@@ -971,6 +1003,7 @@ impl IntegrationManager {
                         // Clear context
                         drop(ctx);
                         *recording_context.write().await = None;
+                        *current_session_id.write().await = None;
                     }
                     RecordingEvent::TranscriptionFailed {
                         session_id, error, ..
@@ -995,6 +1028,11 @@ impl IntegrationManager {
 
                         // Clear context
                         *recording_context.write().await = None;
+                        *current_session_id.write().await = None;
+                    }
+                    RecordingEvent::Cancelled { .. } => {
+                        *recording_context.write().await = None;
+                        *current_session_id.write().await = None;
                     }
                     _ => {}
                 }
@@ -1014,6 +1052,7 @@ impl IntegrationManager {
         let model_progress = Arc::clone(&self.model_progress);
         let app_handle = self.app_handle.clone();
         let watchdog = Arc::clone(&self.watchdog);
+        let current_session_id = Arc::clone(&self.current_session_id);
         let event_seq = Arc::clone(&self.event_seq);
 
         tokio::spawn(async move {
@@ -1024,6 +1063,19 @@ impl IntegrationManager {
                 watchdog.mark_activity().await;
 
                 log::debug!("Sidecar notification: method={}", event.method);
+
+                // Drop stale session-scoped notifications from old sessions.
+                let incoming_session_id = extract_session_id(&event.params);
+                let active_session_id = current_session_id.read().await.clone();
+                if is_stale_session(incoming_session_id, active_session_id.as_deref()) {
+                    log::debug!(
+                        "Dropping stale notification: method={} incoming_session_id={:?} active_session_id={:?}",
+                        event.method,
+                        incoming_session_id,
+                        active_session_id
+                    );
+                    continue;
+                }
 
                 match event.method.as_str() {
                     "event.transcription_complete" => {
@@ -1269,6 +1321,27 @@ mod tests {
         let second = counter.fetch_add(1, Ordering::Relaxed);
         assert_eq!(first, 1);
         assert_eq!(second, 2);
+    }
+
+    #[test]
+    fn test_extract_session_id() {
+        let payload = json!({
+            "session_id": "11111111-1111-1111-1111-111111111111",
+            "text": "hello"
+        });
+        assert_eq!(
+            extract_session_id(&payload),
+            Some("11111111-1111-1111-1111-111111111111")
+        );
+        assert_eq!(extract_session_id(&json!({"text": "no-session"})), None);
+    }
+
+    #[test]
+    fn test_is_stale_session_logic() {
+        assert!(!is_stale_session(None, Some("active")));
+        assert!(!is_stale_session(Some("active"), Some("active")));
+        assert!(is_stale_session(Some("old"), Some("active")));
+        assert!(is_stale_session(Some("old"), None));
     }
 
     #[test]
