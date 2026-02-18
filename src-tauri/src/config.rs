@@ -122,13 +122,33 @@ impl AppConfig {
 
     /// Validate and clamp config values to valid ranges.
     pub fn validate_and_clamp(&mut self) {
-        // Clamp paste delay
+        let original_paste_delay_ms = self.injection.paste_delay_ms;
         self.injection.paste_delay_ms = self.injection.paste_delay_ms.clamp(10, 500);
+        if self.injection.paste_delay_ms != original_paste_delay_ms {
+            log::warn!(
+                "injection.paste_delay_ms clamped from {} to {}",
+                original_paste_delay_ms,
+                self.injection.paste_delay_ms
+            );
+        }
+
+        let invalid_override_keys: Vec<String> = self
+            .injection
+            .app_overrides
+            .keys()
+            .filter(|app_id| app_id.trim().is_empty())
+            .cloned()
+            .collect();
+        for invalid_key in invalid_override_keys {
+            self.injection.app_overrides.remove(&invalid_key);
+            log::warn!("Removed invalid injection.app_overrides entry with empty app id");
+        }
+
         for (app_id, override_config) in &mut self.injection.app_overrides {
             if let Some(delay) = override_config.paste_delay_ms {
                 let clamped = delay.clamp(10, 500);
                 if clamped != delay {
-                    log::info!(
+                    log::warn!(
                         "injection.app_overrides['{}'].paste_delay_ms clamped from {} to {}",
                         app_id,
                         delay,
@@ -142,7 +162,7 @@ impl AppConfig {
         let original_vad_silence_ms = self.audio.vad_silence_ms;
         self.audio.vad_silence_ms = self.audio.vad_silence_ms.clamp(400, 5000);
         if self.audio.vad_silence_ms != original_vad_silence_ms {
-            log::info!(
+            log::warn!(
                 "audio.vad_silence_ms clamped from {} to {}",
                 original_vad_silence_ms,
                 self.audio.vad_silence_ms
@@ -152,7 +172,7 @@ impl AppConfig {
         let original_vad_min_speech_ms = self.audio.vad_min_speech_ms;
         self.audio.vad_min_speech_ms = self.audio.vad_min_speech_ms.clamp(100, 2000);
         if self.audio.vad_min_speech_ms != original_vad_min_speech_ms {
-            log::info!(
+            log::warn!(
                 "audio.vad_min_speech_ms clamped from {} to {}",
                 original_vad_min_speech_ms,
                 self.audio.vad_min_speech_ms
@@ -161,19 +181,43 @@ impl AppConfig {
 
         // Validate hotkey format (basic check - ensure non-empty)
         if self.hotkeys.primary.is_empty() {
+            log::warn!(
+                "hotkeys.primary is empty; resetting to '{}'",
+                HotkeyConfig::default().primary
+            );
             self.hotkeys.primary = HotkeyConfig::default().primary;
         }
         if self.hotkeys.copy_last.is_empty() {
+            log::warn!(
+                "hotkeys.copy_last is empty; resetting to '{}'",
+                HotkeyConfig::default().copy_last
+            );
             self.hotkeys.copy_last = HotkeyConfig::default().copy_last;
         }
 
         // Validate window dimensions (minimum 200x200)
+        let original_window_width = self.ui.window_width;
+        let original_window_height = self.ui.window_height;
         self.ui.window_width = self.ui.window_width.max(200);
         self.ui.window_height = self.ui.window_height.max(200);
+        if self.ui.window_width != original_window_width {
+            log::warn!(
+                "ui.window_width clamped from {} to {}",
+                original_window_width,
+                self.ui.window_width
+            );
+        }
+        if self.ui.window_height != original_window_height {
+            log::warn!(
+                "ui.window_height clamped from {} to {}",
+                original_window_height,
+                self.ui.window_height
+            );
+        }
 
         if let Some(model) = self.model.as_mut() {
             if !matches!(model.preferred_device.as_str(), "auto" | "cpu" | "gpu") {
-                log::info!(
+                log::warn!(
                     "Invalid model.preferred_device value '{}', resetting to '{}'",
                     model.preferred_device,
                     default_preferred_device()
@@ -181,20 +225,50 @@ impl AppConfig {
                 model.preferred_device = default_preferred_device();
             }
 
-            // Validate model.language format (Phase 0: warn-only, preserve value)
+            // Validate model.language format
             if let Some(language) = model.language.as_deref() {
                 if language != "auto" && !is_iso_639_1_code(language) {
                     log::warn!(
-                        "Invalid model.language value '{}'; expected 'auto' or ISO 639-1 code",
+                        "Invalid model.language value '{}'; resetting to null",
                         language
                     );
+                    model.language = None;
+                }
+            }
+        }
+
+        let effective_model_device_pref = self.effective_model_device_pref();
+        log::info!(
+            "Effective model device preference resolved to '{}'",
+            effective_model_device_pref
+        );
+
+        for rule in &mut self.replacements {
+            if !matches!(rule.kind.as_str(), "literal" | "regex") {
+                log::warn!(
+                    "replacement rule '{}' has invalid kind '{}'; resetting to '{}'",
+                    rule.id,
+                    rule.kind,
+                    default_replacement_kind()
+                );
+                rule.kind = default_replacement_kind();
+            }
+
+            if let Some(origin) = rule.origin.as_deref() {
+                if !is_valid_replacement_origin(origin) {
+                    log::warn!(
+                        "replacement rule '{}' has invalid origin '{}'; clearing origin",
+                        rule.id,
+                        origin
+                    );
+                    rule.origin = None;
                 }
             }
         }
 
         // Validate theme selection
         if !matches!(self.ui.theme.as_str(), "system" | "light" | "dark") {
-            log::info!(
+            log::warn!(
                 "Invalid ui.theme value '{}', resetting to '{}'",
                 self.ui.theme,
                 default_theme()
@@ -204,7 +278,7 @@ impl AppConfig {
 
         // Validate history persistence mode
         if !matches!(self.history.persistence_mode.as_str(), "memory" | "disk") {
-            log::info!(
+            log::warn!(
                 "Invalid history.persistence_mode value '{}', resetting to '{}'",
                 self.history.persistence_mode,
                 default_persistence_mode()
@@ -215,10 +289,16 @@ impl AppConfig {
         let original_history_max_entries = self.history.max_entries;
         self.history.max_entries = self.history.max_entries.clamp(10, 2000);
         if self.history.max_entries != original_history_max_entries {
-            log::info!(
+            log::warn!(
                 "history.max_entries clamped from {} to {}",
                 original_history_max_entries,
                 self.history.max_entries
+            );
+        }
+
+        if self.history.persistence_mode == "disk" && !self.history.encrypt_at_rest {
+            log::warn!(
+                "history.encrypt_at_rest is disabled while persistence_mode is 'disk'; leaving explicit user setting"
             );
         }
     }
@@ -491,6 +571,14 @@ fn map_preferred_device_to_backend(preferred_device: &str) -> String {
 
 fn is_iso_639_1_code(language: &str) -> bool {
     language.len() == 2 && language.chars().all(|ch| ch.is_ascii_alphabetic())
+}
+
+fn is_valid_replacement_origin(origin: &str) -> bool {
+    origin == "user"
+        || origin == "preset"
+        || origin
+            .strip_prefix("preset:")
+            .is_some_and(|preset_name| !preset_name.trim().is_empty())
 }
 
 fn generate_replacement_rule_id() -> String {
@@ -943,6 +1031,184 @@ mod tests {
     }
 
     #[test]
+    fn test_legacy_config_roundtrip_applies_defaults_and_stays_stable() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        // Legacy/pre-phase-0 style config with old fields only.
+        fs::write(
+            &config_path,
+            r#"{
+                "audio": {
+                    "device_uid": "legacy-mic",
+                    "audio_cues_enabled": false
+                },
+                "hotkeys": {
+                    "primary": "Ctrl+Space",
+                    "copy_last": "Ctrl+Shift+V",
+                    "mode": "toggle"
+                },
+                "injection": {
+                    "paste_delay_ms": 80,
+                    "restore_clipboard": false,
+                    "suffix": "\n"
+                },
+                "model": {
+                    "model_id": "nvidia/parakeet-tdt-0.6b-v2",
+                    "device": "auto"
+                },
+                "replacements": [
+                    {
+                        "pattern": "BTW",
+                        "replacement": "by the way",
+                        "enabled": true
+                    }
+                ],
+                "ui": {
+                    "show_on_startup": false,
+                    "window_width": 800,
+                    "window_height": 640
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = load_config_from_path(&config_path);
+
+        // Existing values are preserved.
+        assert_eq!(loaded.schema_version, 1);
+        assert_eq!(loaded.audio.device_uid.as_deref(), Some("legacy-mic"));
+        assert!(!loaded.audio.audio_cues_enabled);
+        assert_eq!(loaded.hotkeys.primary, "Ctrl+Space");
+        assert_eq!(loaded.hotkeys.copy_last, "Ctrl+Shift+V");
+        assert_eq!(loaded.hotkeys.mode, HotkeyMode::Toggle);
+        assert_eq!(loaded.injection.paste_delay_ms, 80);
+        assert!(!loaded.injection.restore_clipboard);
+        assert_eq!(loaded.injection.suffix, "\n");
+        assert_eq!(
+            loaded.model.as_ref().and_then(|m| m.model_id.as_deref()),
+            Some("nvidia/parakeet-tdt-0.6b-v2")
+        );
+        assert_eq!(
+            loaded.model.as_ref().and_then(|m| m.device.as_deref()),
+            Some("auto")
+        );
+        assert!(!loaded.ui.show_on_startup);
+        assert_eq!(loaded.ui.window_width, 800);
+        assert_eq!(loaded.ui.window_height, 640);
+
+        // New defaults are applied.
+        assert!(loaded.audio.trim_silence);
+        assert!(!loaded.audio.vad_enabled);
+        assert_eq!(loaded.audio.vad_silence_ms, 1200);
+        assert_eq!(loaded.audio.vad_min_speech_ms, 250);
+        assert!(loaded.injection.focus_guard_enabled);
+        assert!(loaded.injection.app_overrides.is_empty());
+        assert_eq!(
+            loaded.model.as_ref().map(|m| m.preferred_device.as_str()),
+            Some("auto")
+        );
+        assert_eq!(
+            loaded.model.as_ref().and_then(|m| m.language.as_deref()),
+            None
+        );
+        assert_eq!(loaded.ui.theme, "system");
+        assert!(loaded.ui.onboarding_completed);
+        assert!(loaded.ui.overlay_enabled);
+        assert_eq!(loaded.ui.locale, None);
+        assert!(!loaded.ui.reduce_motion);
+        assert_eq!(loaded.history.persistence_mode, "memory");
+        assert_eq!(loaded.history.max_entries, 100);
+        assert!(loaded.history.encrypt_at_rest);
+        assert_eq!(loaded.presets.enabled_presets, Vec::<String>::new());
+
+        assert_eq!(loaded.replacements.len(), 1);
+        assert!(Uuid::parse_str(&loaded.replacements[0].id).is_ok());
+        assert_eq!(loaded.replacements[0].kind, "literal");
+        assert!(!loaded.replacements[0].word_boundary);
+        assert!(loaded.replacements[0].case_sensitive);
+        assert!(loaded.replacements[0].description.is_none());
+        assert!(loaded.replacements[0].origin.is_none());
+
+        // Save and verify defaults were materialized.
+        save_config_to_path(&loaded, &config_path).unwrap();
+        let saved_json = fs::read_to_string(&config_path).unwrap();
+        let saved_value: Value = serde_json::from_str(&saved_json).unwrap();
+        assert!(saved_value["audio"].get("trim_silence").is_some());
+        assert!(saved_value["audio"].get("vad_enabled").is_some());
+        assert!(saved_value["audio"].get("vad_silence_ms").is_some());
+        assert!(saved_value["audio"].get("vad_min_speech_ms").is_some());
+        assert!(saved_value["injection"].get("app_overrides").is_some());
+        assert!(saved_value["model"].get("preferred_device").is_some());
+        assert!(saved_value["history"].get("persistence_mode").is_some());
+        assert!(saved_value["history"].get("max_entries").is_some());
+        assert!(saved_value["history"].get("encrypt_at_rest").is_some());
+        assert!(saved_value["ui"].get("theme").is_some());
+        assert!(saved_value["ui"].get("onboarding_completed").is_some());
+        assert!(saved_value["ui"].get("overlay_enabled").is_some());
+        assert!(saved_value["replacements"][0].get("id").is_some());
+        assert!(saved_value["replacements"][0].get("kind").is_some());
+        assert!(saved_value["replacements"][0]
+            .get("word_boundary")
+            .is_some());
+        assert!(saved_value["replacements"][0]
+            .get("case_sensitive")
+            .is_some());
+
+        // Load again and ensure stable round-trip.
+        let reloaded = load_config_from_path(&config_path);
+        let loaded_value = serde_json::to_value(&loaded).unwrap();
+        let reloaded_value = serde_json::to_value(&reloaded).unwrap();
+        assert_eq!(loaded_value, reloaded_value);
+    }
+
+    #[test]
+    fn test_invalid_new_fields_in_file_fall_back_to_safe_defaults() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        fs::write(
+            &config_path,
+            r#"{
+                "schema_version": 1,
+                "audio": {
+                    "vad_silence_ms": 50,
+                    "vad_min_speech_ms": 50000
+                },
+                "model": {
+                    "model_id": "nvidia/parakeet-tdt-0.6b-v2",
+                    "device": "auto",
+                    "preferred_device": "tpu",
+                    "language": "english"
+                },
+                "ui": {
+                    "theme": "invalid-theme"
+                },
+                "history": {
+                    "persistence_mode": "remote",
+                    "max_entries": 50000
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = load_config_from_path(&config_path);
+        assert_eq!(loaded.audio.vad_silence_ms, 400);
+        assert_eq!(loaded.audio.vad_min_speech_ms, 2000);
+        assert_eq!(
+            loaded.model.as_ref().map(|m| m.preferred_device.as_str()),
+            Some("auto")
+        );
+        assert_eq!(
+            loaded.model.as_ref().and_then(|m| m.language.as_deref()),
+            None
+        );
+        assert_eq!(loaded.ui.theme, "system");
+        assert_eq!(loaded.history.persistence_mode, "memory");
+        assert_eq!(loaded.history.max_entries, 2000);
+    }
+
+    #[test]
     fn test_replacement_rules_without_id_get_generated_and_stable_ids() {
         use std::collections::HashSet;
 
@@ -1058,6 +1324,21 @@ mod tests {
                 .and_then(|ov| ov.paste_delay_ms),
             Some(500)
         );
+    }
+
+    #[test]
+    fn test_invalid_app_override_key_is_removed() {
+        let mut config = AppConfig::default();
+        config.injection.app_overrides.insert(
+            "".to_string(),
+            AppOverride {
+                paste_delay_ms: Some(120),
+                use_clipboard_only: Some(true),
+            },
+        );
+
+        config.validate_and_clamp();
+        assert!(config.injection.app_overrides.is_empty());
     }
 
     #[test]
@@ -1467,7 +1748,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_and_clamp_preserves_unknown_model_language_value() {
+    fn test_validate_and_clamp_resets_unknown_model_language_value_to_null() {
         let mut config = AppConfig::default();
         config.model = Some(ModelConfig {
             model_id: None,
@@ -1483,7 +1764,45 @@ mod tests {
                 .model
                 .as_ref()
                 .and_then(|model| model.language.as_deref()),
-            Some("english")
+            None
         );
+    }
+
+    #[test]
+    fn test_invalid_replacement_kind_gets_defaulted() {
+        let mut config = AppConfig::default();
+        config.replacements = vec![ReplacementRule {
+            id: "rule-invalid-kind".to_string(),
+            kind: "wildcard".to_string(),
+            pattern: "abc".to_string(),
+            replacement: "def".to_string(),
+            enabled: true,
+            word_boundary: false,
+            case_sensitive: true,
+            description: None,
+            origin: None,
+        }];
+
+        config.validate_and_clamp();
+        assert_eq!(config.replacements[0].kind, "literal");
+    }
+
+    #[test]
+    fn test_invalid_replacement_origin_gets_cleared() {
+        let mut config = AppConfig::default();
+        config.replacements = vec![ReplacementRule {
+            id: "rule-invalid-origin".to_string(),
+            kind: "literal".to_string(),
+            pattern: "abc".to_string(),
+            replacement: "def".to_string(),
+            enabled: true,
+            word_boundary: false,
+            case_sensitive: true,
+            description: None,
+            origin: Some("system".to_string()),
+        }];
+
+        config.validate_and_clamp();
+        assert_eq!(config.replacements[0].origin, None);
     }
 }

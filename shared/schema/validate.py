@@ -157,32 +157,88 @@ def self_test() -> bool:
     # Test 4: Valid AppConfig examples pass
     print("\n4. Testing valid AppConfig examples...")
     valid_configs = [
-        {"schema_version": 1},
-        {
-            "schema_version": 1,
-            "audio": {"device_uid": None, "audio_cues_enabled": True},
-            "hotkeys": {"primary": "Ctrl+Space", "copy_last": "Ctrl+V", "mode": "hold"},
-            "injection": {"paste_delay_ms": 40, "restore_clipboard": True, "suffix": " ", "focus_guard_enabled": True},
-            "replacements": [],
-            "ui": {"show_on_startup": True, "window_width": 600, "window_height": 500},
-            "presets": {"enabled_presets": []}
-        },
-        {
-            "schema_version": 1,
-            "audio": {"device_uid": "usb:123"},
-            "replacements": [
-                {"id": "r1", "enabled": True, "kind": "literal", "pattern": "x", "replacement": "y", "word_boundary": False, "case_sensitive": True}
-            ]
-        }
+        ("minimal-existing-fields", {"schema_version": 1}),
+        (
+            "all-new-fields-populated",
+            {
+                "schema_version": 1,
+                "audio": {
+                    "device_uid": None,
+                    "audio_cues_enabled": True,
+                    "trim_silence": True,
+                    "vad_enabled": True,
+                    "vad_silence_ms": 1200,
+                    "vad_min_speech_ms": 250,
+                },
+                "hotkeys": {
+                    "primary": "Ctrl+Shift+Space",
+                    "copy_last": "Ctrl+Shift+V",
+                    "mode": "hold",
+                },
+                "injection": {
+                    "paste_delay_ms": 40,
+                    "restore_clipboard": True,
+                    "suffix": " ",
+                    "focus_guard_enabled": True,
+                    "app_overrides": {
+                        "slack": {"paste_delay_ms": 120, "use_clipboard_only": True}
+                    },
+                },
+                "model": {
+                    "model_id": "nvidia/parakeet-tdt-0.6b-v2",
+                    "device": "auto",
+                    "preferred_device": "gpu",
+                    "language": "de",
+                },
+                "ui": {
+                    "show_on_startup": True,
+                    "window_width": 600,
+                    "window_height": 500,
+                    "theme": "dark",
+                    "onboarding_completed": False,
+                    "overlay_enabled": True,
+                    "locale": "en-US",
+                    "reduce_motion": True,
+                },
+                "history": {
+                    "persistence_mode": "disk",
+                    "max_entries": 100,
+                    "encrypt_at_rest": True,
+                },
+                "presets": {"enabled_presets": ["punctuation"]},
+            },
+        ),
+        (
+            "null-values-accepted",
+            {
+                "schema_version": 1,
+                "model": {
+                    "model_id": "nvidia/parakeet-tdt-0.6b-v2",
+                    "device": "auto",
+                    "preferred_device": "auto",
+                    "language": None,
+                },
+                "ui": {
+                    "show_on_startup": True,
+                    "window_width": 600,
+                    "window_height": 500,
+                    "theme": "system",
+                    "onboarding_completed": True,
+                    "overlay_enabled": True,
+                    "locale": None,
+                    "reduce_motion": False,
+                },
+            },
+        ),
     ]
 
-    for i, config in enumerate(valid_configs):
+    for case_name, config in valid_configs:
         errors = validate_document("AppConfig.schema.json", config)
         if errors:
-            print(f"   Config {i+1}: FAIL - {errors}")
+            print(f"   {case_name}: FAIL - {errors}")
             all_passed = False
         else:
-            print(f"   Config {i+1}: PASS")
+            print(f"   {case_name}: PASS")
 
     # Test 5: Invalid AppConfig examples fail
     print("\n5. Testing invalid AppConfig examples are rejected...")
@@ -192,8 +248,17 @@ def self_test() -> bool:
         ({"schema_version": 0}, "schema_version below minimum"),
         ({"schema_version": 1, "audio": {"device_uid": 123}}, "device_uid not string"),
         ({"schema_version": 1, "hotkeys": {"mode": "invalid"}}, "invalid hotkey mode"),
+        ({"schema_version": 1, "ui": {"theme": "invalid"}}, "invalid ui.theme enum"),
+        ({"schema_version": 1, "model": {"preferred_device": "tpu"}}, "invalid model.preferred_device enum"),
+        ({"schema_version": 1, "history": {"persistence_mode": "remote"}}, "invalid history.persistence_mode enum"),
         ({"schema_version": 1, "injection": {"paste_delay_ms": 5}}, "paste_delay below minimum"),
         ({"schema_version": 1, "injection": {"paste_delay_ms": 1000}}, "paste_delay above maximum"),
+        ({"schema_version": 1, "audio": {"vad_silence_ms": 50}}, "vad_silence below minimum"),
+        ({"schema_version": 1, "audio": {"vad_min_speech_ms": 50}}, "vad_min_speech below minimum"),
+        (
+            {"schema_version": 1, "injection": {"app_overrides": {"slack": {"use_clipboard_only": "yes"}}}},
+            "app_override use_clipboard_only not boolean",
+        ),
     ]
 
     for config, reason in invalid_configs:
