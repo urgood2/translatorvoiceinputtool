@@ -193,7 +193,7 @@ class AudioMeter:
                 if isinstance(host_apis, list) and host_api_index < len(host_apis):
                     host_api_name = host_apis[host_api_index].get("name", "unknown")
 
-                uid = _generate_stable_uid(device, host_api_name)
+                uid = _generate_stable_uid(device, host_api_name, idx)
                 if uid == device_uid:
                     return idx
 

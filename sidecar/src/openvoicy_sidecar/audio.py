@@ -57,14 +57,19 @@ class AudioDevice:
         }
 
 
-def _generate_stable_uid(device_info: dict[str, Any], host_api_name: str) -> str:
+def _generate_stable_uid(
+    device_info: dict[str, Any],
+    host_api_name: str,
+    device_discriminator: int | None = None,
+) -> str:
     """Generate a stable UID for a device.
 
     On most platforms, PortAudio provides stable device identifiers through
     the device name. We create a hash-based UID from the combination of:
     - Device name
     - Host API name
-    - Max input channels (for disambiguation)
+    - Max input channels
+    - Device discriminator (enumeration index) for same-model duplicates
 
     This provides stability across restarts while being unique enough to
     distinguish multiple devices with similar names.
@@ -77,6 +82,7 @@ def _generate_stable_uid(device_info: dict[str, Any], host_api_name: str) -> str
         name,
         host_api_name,
         str(max_input_channels),
+        "" if device_discriminator is None else str(device_discriminator),
     ]
     id_string = "|".join(id_parts)
 
@@ -156,7 +162,7 @@ def list_audio_devices() -> list[AudioDevice]:
         elif isinstance(host_apis, dict):
             host_api_name = host_apis.get("name", "unknown")
 
-        uid = _generate_stable_uid(device, host_api_name)
+        uid = _generate_stable_uid(device, host_api_name, idx)
         name = device.get("name", f"Device {idx}")
         sample_rate = int(device.get("default_samplerate", 48000))
 

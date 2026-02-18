@@ -140,6 +140,33 @@ class TestListAudioDevices:
             assert len(default_devices) == 1
             assert default_devices[0].name == "Built-in Microphone"
 
+    def test_identical_input_devices_get_distinct_uids(self, mock_host_apis: list[dict]):
+        """Same-model mics should get unique UIDs within one enumeration."""
+        mock_sd = MagicMock()
+        mock_sd.query_devices.return_value = [
+            {
+                "name": "USB Microphone",
+                "hostapi": 0,
+                "max_input_channels": 1,
+                "max_output_channels": 0,
+                "default_samplerate": 48000.0,
+            },
+            {
+                "name": "USB Microphone",
+                "hostapi": 0,
+                "max_input_channels": 1,
+                "max_output_channels": 0,
+                "default_samplerate": 48000.0,
+            },
+        ]
+        mock_sd.query_hostapis.return_value = mock_host_apis
+        mock_sd.default.device = (0, None)
+
+        with patch.dict("sys.modules", {"sounddevice": mock_sd}):
+            devices = list_audio_devices()
+            assert len(devices) == 2
+            assert len({d.uid for d in devices}) == 2
+
     def test_permission_error_raises_mic_permission(self):
         """Should raise PermissionError when access denied."""
         mock_sd = MagicMock()
@@ -182,6 +209,14 @@ class TestStableUIDs:
 
         uid1 = _generate_stable_uid(device, "CoreAudio")
         uid2 = _generate_stable_uid(device, "WASAPI")
+        assert uid1 != uid2
+
+    def test_uid_differs_by_device_discriminator(self):
+        """Identical devices should not collide when discriminator differs."""
+        device = {"name": "Identical USB Mic", "max_input_channels": 1}
+
+        uid1 = _generate_stable_uid(device, "CoreAudio", device_discriminator=0)
+        uid2 = _generate_stable_uid(device, "CoreAudio", device_discriminator=1)
         assert uid1 != uid2
 
     def test_uid_has_platform_prefix(self):
