@@ -165,7 +165,7 @@ impl ModelConfig {
     /// Resolve effective sidecar device preference from legacy and new fields.
     pub fn effective_device_pref(&self) -> String {
         if let Some(device) = self.device.as_deref() {
-            if matches!(device, "cuda" | "mps") {
+            if matches!(device, "cpu" | "cuda" | "mps") {
                 return device.to_string();
             }
         }
@@ -2027,10 +2027,7 @@ mod tests {
             preferred_device: "gpu".to_string(),
             language: None,
         });
-        assert_eq!(
-            config.effective_model_device_pref(),
-            preferred_gpu_backend()
-        );
+        assert_eq!(config.effective_model_device_pref(), "cpu");
     }
 
     #[test]
@@ -2082,10 +2079,10 @@ mod tests {
                 expected: "auto".to_string(),
             },
             Case {
-                name: "device_cpu_maps_preferred_gpu_to_best_gpu_backend",
+                name: "device_cpu_wins_over_preferred_gpu",
                 device: Some("cpu"),
                 preferred_device: Some("gpu"),
-                expected: gpu_backend.clone(),
+                expected: "cpu".to_string(),
             },
             Case {
                 name: "model_absent_defaults_to_auto",
@@ -2136,6 +2133,30 @@ mod tests {
             config.model.as_ref().map(|m| m.preferred_device.as_str()),
             Some("auto")
         );
+    }
+
+    #[test]
+    fn test_legacy_model_device_cpu_honored_when_preferred_device_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        fs::write(
+            &config_path,
+            r#"{
+                "schema_version": 1,
+                "model": {
+                    "device": "cpu"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config_from_path(&config_path);
+        assert_eq!(
+            config.model.as_ref().map(|m| m.preferred_device.as_str()),
+            Some("auto")
+        );
+        assert_eq!(config.effective_model_device_pref(), "cpu");
     }
 
     #[test]
