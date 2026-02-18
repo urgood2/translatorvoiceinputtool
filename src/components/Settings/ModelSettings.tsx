@@ -41,6 +41,9 @@ function getStatusConfig(state: ModelState): { color: string; icon: string; labe
     case 'error':
       return { color: 'text-red-600 dark:text-red-400', icon: '❌', label: 'Error' };
   }
+
+  // Exhaustive fallback for future enum extensions.
+  return { color: 'text-gray-600 dark:text-gray-400', icon: 'ℹ️', label: state };
 }
 
 /** Progress bar component. */
