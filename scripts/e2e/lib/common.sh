@@ -21,6 +21,89 @@ E2E_SIDECAR_STDOUT=""
 E2E_PLATFORM=""
 E2E_ARCH=""
 
+# Resolve timeout runner in a cross-platform way.
+# Order:
+#  1) Explicit override via E2E_TIMEOUT_RUNNER (timeout|gtimeout|python3)
+#  2) Auto-detect timeout, then gtimeout, then python3 fallback
+e2e_timeout_runner() {
+    local preferred="${E2E_TIMEOUT_RUNNER:-auto}"
+
+    case "$preferred" in
+        ""|auto)
+            if command -v timeout >/dev/null 2>&1; then
+                echo "timeout"
+                return 0
+            fi
+            if command -v gtimeout >/dev/null 2>&1; then
+                echo "gtimeout"
+                return 0
+            fi
+            if command -v python3 >/dev/null 2>&1; then
+                echo "python3"
+                return 0
+            fi
+            return 1
+            ;;
+        timeout|gtimeout|python3)
+            if command -v "$preferred" >/dev/null 2>&1; then
+                echo "$preferred"
+                return 0
+            fi
+            return 1
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+}
+
+# Run a command with timeout seconds, portable across Linux/macOS.
+# Args: timeout_seconds, command, [args...]
+e2e_timeout_run() {
+    local seconds="$1"
+    shift
+
+    local runner
+    runner="$(e2e_timeout_runner)" || {
+        echo "ERROR: No supported timeout runner found (timeout/gtimeout/python3)" >&2
+        return 127
+    }
+
+    case "$runner" in
+        timeout|gtimeout)
+            "$runner" "$seconds" "$@"
+            ;;
+        python3)
+            python3 - "$seconds" "$@" <<'PY'
+import subprocess
+import sys
+
+timeout_s = float(sys.argv[1])
+cmd = sys.argv[2:]
+
+try:
+    completed = subprocess.run(
+        cmd,
+        stdin=sys.stdin.buffer,
+        stdout=sys.stdout.buffer,
+        stderr=sys.stderr.buffer,
+        timeout=timeout_s,
+        check=False,
+    )
+except subprocess.TimeoutExpired:
+    # Match GNU timeout timeout exit code.
+    sys.exit(124)
+
+sys.exit(completed.returncode)
+PY
+            ;;
+        *)
+            echo "ERROR: Unsupported timeout runner: $runner" >&2
+            return 127
+            ;;
+    esac
+}
+
 # Initialize common paths and detect platform
 init_common() {
     # Find project root by looking for sidecar directory
@@ -160,7 +243,7 @@ sidecar_rpc() {
     log_debug "ipc" "request" "Sending RPC request" "{\"method\":\"$method\",\"id\":$request_id}"
 
     local raw_response
-    raw_response=$(echo "$request" | timeout "$timeout" "$E2E_SIDECAR_BIN" 2>/dev/null || echo '{"error":"timeout"}')
+    raw_response=$(echo "$request" | e2e_timeout_run "$timeout" "$E2E_SIDECAR_BIN" 2>/dev/null || echo '{"error":"timeout"}')
 
     # Extract only the JSON-RPC response line (contains "jsonrpc")
     # Use pure bash for portability (grep/awk may be aliased in some environments)

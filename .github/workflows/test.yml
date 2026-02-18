@@ -119,6 +119,9 @@ jobs:
       - name: Validate test vectors
         run: python shared/schema/validate.py --test-vectors
 
+      - name: Run E2E timeout portability regression tests
+        run: python -m unittest scripts/tests/test_e2e_common_timeout.py
+
   typescript-tests:
     name: TypeScript Tests
     runs-on: ubuntu-latest
