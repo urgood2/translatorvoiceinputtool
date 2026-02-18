@@ -12,6 +12,89 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SIDECAR_DIR="$PROJECT_ROOT/sidecar"
 DIST_DIR="$SIDECAR_DIR/dist"
 
+# Resolve timeout runner in a cross-platform way.
+# Order:
+#  1) Explicit override via SIDECAR_TIMEOUT_RUNNER (timeout|gtimeout|python3)
+#  2) Auto-detect timeout, then gtimeout, then python3 fallback
+sidecar_timeout_runner() {
+    local preferred="${SIDECAR_TIMEOUT_RUNNER:-auto}"
+
+    case "$preferred" in
+        ""|auto)
+            if command -v timeout >/dev/null 2>&1; then
+                echo "timeout"
+                return 0
+            fi
+            if command -v gtimeout >/dev/null 2>&1; then
+                echo "gtimeout"
+                return 0
+            fi
+            if command -v python3 >/dev/null 2>&1; then
+                echo "python3"
+                return 0
+            fi
+            return 1
+            ;;
+        timeout|gtimeout|python3)
+            if command -v "$preferred" >/dev/null 2>&1; then
+                echo "$preferred"
+                return 0
+            fi
+            return 1
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+}
+
+# Run a command with timeout seconds, portable across Linux/macOS.
+# Args: timeout_seconds, command, [args...]
+sidecar_timeout_run() {
+    local seconds="$1"
+    shift
+
+    local runner
+    runner="$(sidecar_timeout_runner)" || {
+        echo "ERROR: No supported timeout runner found (timeout/gtimeout/python3)" >&2
+        return 127
+    }
+
+    case "$runner" in
+        timeout|gtimeout)
+            "$runner" "$seconds" "$@"
+            ;;
+        python3)
+            python3 - "$seconds" "$@" <<'PY'
+import subprocess
+import sys
+
+timeout_s = float(sys.argv[1])
+cmd = sys.argv[2:]
+
+try:
+    completed = subprocess.run(
+        cmd,
+        stdin=sys.stdin.buffer,
+        stdout=sys.stdout.buffer,
+        stderr=sys.stderr.buffer,
+        timeout=timeout_s,
+        check=False,
+    )
+except subprocess.TimeoutExpired:
+    # Match GNU timeout timeout exit code.
+    sys.exit(124)
+
+sys.exit(completed.returncode)
+PY
+            ;;
+        *)
+            echo "ERROR: Unsupported timeout runner: $runner" >&2
+            return 127
+            ;;
+    esac
+}
+
 # Parse arguments
 CLEAN=false
 VERIFY=true
@@ -111,7 +194,7 @@ if [ "$VERIFY" = true ]; then
 
     # Test system.ping
     VERIFY_START=$(date +%s%3N 2>/dev/null || python3 -c "import time; print(int(time.time()*1000))")
-    PING_RESULT=$(echo '{"jsonrpc":"2.0","id":1,"method":"system.ping"}' | timeout 10 "$BINARY_PATH" 2>/dev/null || echo "FAILED")
+    PING_RESULT=$(echo '{"jsonrpc":"2.0","id":1,"method":"system.ping"}' | sidecar_timeout_run 10 "$BINARY_PATH" 2>/dev/null || echo "FAILED")
     VERIFY_END=$(date +%s%3N 2>/dev/null || python3 -c "import time; print(int(time.time()*1000))")
     STARTUP_TIME_MS=$((VERIFY_END - VERIFY_START))
 
@@ -124,7 +207,7 @@ if [ "$VERIFY" = true ]; then
     fi
 
     # Test audio.list_devices
-    DEVICES_RESULT=$(echo '{"jsonrpc":"2.0","id":2,"method":"audio.list_devices"}' | timeout 10 "$BINARY_PATH" 2>/dev/null || echo "FAILED")
+    DEVICES_RESULT=$(echo '{"jsonrpc":"2.0","id":2,"method":"audio.list_devices"}' | sidecar_timeout_run 10 "$BINARY_PATH" 2>/dev/null || echo "FAILED")
     if echo "$DEVICES_RESULT" | grep -q '"result"'; then
         echo "✓ audio.list_devices: OK"
     else
