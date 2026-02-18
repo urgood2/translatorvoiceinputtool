@@ -559,30 +559,91 @@ fn synthesize_paste_macos() -> Result<(), InjectionError> {
     }
 }
 
-// === Windows Implementation (placeholder) ===
+// === Windows Implementation ===
 
 #[cfg(target_os = "windows")]
 fn set_clipboard_windows(text: &str) -> Result<(), InjectionError> {
-    // TODO: Implement using Windows clipboard API
-    Err(InjectionError::UnsupportedPlatform(
-        "Windows clipboard not yet implemented".to_string(),
-    ))
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$inputText = [Console]::In.ReadToEnd(); Set-Clipboard -Value $inputText",
+        ])
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            InjectionError::Clipboard(format!("powershell Set-Clipboard failed: {}", e))
+        })?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| InjectionError::Clipboard(e.to_string()))?;
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| InjectionError::Clipboard(e.to_string()))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(InjectionError::Clipboard(
+            "Set-Clipboard returned non-zero exit code".to_string(),
+        ))
+    }
 }
 
 #[cfg(target_os = "windows")]
 fn get_clipboard_windows() -> Result<String, InjectionError> {
-    // TODO: Implement using Windows clipboard API
-    Err(InjectionError::UnsupportedPlatform(
-        "Windows clipboard not yet implemented".to_string(),
-    ))
+    use std::process::Command;
+
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-Clipboard -Raw",
+        ])
+        .output()
+        .map_err(|e| {
+            InjectionError::Clipboard(format!("powershell Get-Clipboard failed: {}", e))
+        })?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(InjectionError::Clipboard(
+            "Get-Clipboard returned non-zero exit code".to_string(),
+        ))
+    }
 }
 
 #[cfg(target_os = "windows")]
 fn synthesize_paste_windows() -> Result<(), InjectionError> {
-    // TODO: Implement using SendInput for Ctrl+V
-    Err(InjectionError::UnsupportedPlatform(
-        "Windows paste synthesis not yet implemented".to_string(),
-    ))
+    use std::process::Command;
+
+    let status = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$wshell = New-Object -ComObject WScript.Shell; $null = $wshell.SendKeys('^v')",
+        ])
+        .status()
+        .map_err(|e| InjectionError::PasteFailed(format!("powershell SendKeys failed: {}", e)))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(InjectionError::PasteFailed(
+            "Windows SendKeys returned non-zero exit code".to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]
