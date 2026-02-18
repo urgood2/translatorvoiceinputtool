@@ -115,6 +115,19 @@ bun run build
 bun run lint
 ```
 
+## Git Hook Compatibility
+
+Some local `bd` installs no longer expose `bd hook` / `bd hooks run`, while older
+installed git hooks still call those commands. If commits fail with hook command
+errors, run:
+
+```bash
+./scripts/repair-bd-hooks.sh
+```
+
+This rewrites `.git/hooks` shims to support both hook command variants and skip
+gracefully when unsupported.
+
 ## Platform Permissions
 
 ### macOS
