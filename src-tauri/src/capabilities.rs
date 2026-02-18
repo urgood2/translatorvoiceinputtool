@@ -339,14 +339,60 @@ fn check_xdotool_available() -> bool {
 }
 
 /// Check if Wayland portal GlobalShortcuts is available.
-///
-/// This is a simplified check. A full implementation would use zbus
-/// to query the portal service.
 #[cfg(target_os = "linux")]
 fn check_wayland_portal() -> bool {
-    // Check if XDG_DESKTOP_PORTAL is available
-    // This is a heuristic - actual portal availability requires D-Bus query
-    env::var("XDG_RUNTIME_DIR").is_ok()
+    query_wayland_global_shortcuts_portal().unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn query_wayland_global_shortcuts_portal() -> Result<bool, String> {
+    use zbus::blocking::fdo::{DBusProxy, IntrospectableProxy};
+    use zbus::blocking::Connection;
+    use zbus::names::BusName;
+
+    let connection = Connection::session().map_err(|e| format!("session bus connection failed: {e}"))?;
+
+    let dbus =
+        DBusProxy::new(&connection).map_err(|e| format!("dbus proxy creation failed: {e}"))?;
+    let portal_name: BusName<'_> = "org.freedesktop.portal.Desktop"
+        .try_into()
+        .map_err(|e| format!("invalid portal bus name: {e}"))?;
+    let has_portal = dbus
+        .name_has_owner(portal_name)
+        .map_err(|e| format!("name_has_owner call failed: {e}"))?;
+    if !has_portal {
+        return Ok(wayland_portal_support_from_probe(false, None));
+    }
+
+    let introspectable = IntrospectableProxy::builder(&connection)
+        .destination("org.freedesktop.portal.Desktop")
+        .map_err(|e| format!("invalid portal destination: {e}"))?
+        .path("/org/freedesktop/portal/desktop")
+        .map_err(|e| format!("invalid portal object path: {e}"))?
+        .build()
+        .map_err(|e| format!("introspectable proxy creation failed: {e}"))?;
+
+    let xml = introspectable
+        .introspect()
+        .map_err(|e| format!("portal introspection failed: {e}"))?;
+
+    Ok(wayland_portal_support_from_probe(true, Some(&xml)))
+}
+
+#[cfg(target_os = "linux")]
+fn wayland_portal_support_from_probe(
+    has_portal_owner: bool,
+    introspection_xml: Option<&str>,
+) -> bool {
+    has_portal_owner
+        && introspection_xml
+            .map(portal_introspection_has_global_shortcuts)
+            .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn portal_introspection_has_global_shortcuts(introspection_xml: &str) -> bool {
+    introspection_xml.contains(r#"interface name="org.freedesktop.portal.GlobalShortcuts""#)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -616,6 +662,27 @@ mod tests {
         // Should return a list (may be empty depending on platform)
         // Just verify it doesn't panic
         let _ = issues;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_wayland_portal_support_false_when_portal_missing() {
+        assert!(!wayland_portal_support_from_probe(false, None));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_wayland_portal_support_false_when_interface_missing() {
+        let xml = r#"<node><interface name="org.freedesktop.portal.ScreenCast"/></node>"#;
+        assert!(!wayland_portal_support_from_probe(true, Some(xml)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_wayland_portal_support_true_when_interface_present() {
+        let xml =
+            r#"<node><interface name="org.freedesktop.portal.GlobalShortcuts"/></node>"#;
+        assert!(wayland_portal_support_from_probe(true, Some(xml)));
     }
 
     #[test]
