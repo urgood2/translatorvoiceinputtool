@@ -60,6 +60,7 @@ const mockConfig: AppConfig = {
   audio: {
     device_uid: 'device-123',
     audio_cues_enabled: true,
+    trim_silence: true,
   },
   hotkeys: {
     primary: 'Ctrl+Shift+Space',
@@ -72,6 +73,12 @@ const mockConfig: AppConfig = {
     suffix: ' ',
     focus_guard_enabled: true,
   },
+  model: {
+    model_id: 'nvidia/parakeet-tdt-0.6b-v2',
+    device: 'cuda',
+    preferred_device: 'gpu',
+    language: 'de',
+  },
   replacements: [
     { id: '1', enabled: true, kind: 'literal', pattern: 'test', replacement: 'test', word_boundary: true, case_sensitive: false },
   ],
@@ -83,6 +90,7 @@ const mockConfig: AppConfig = {
     onboarding_completed: true,
     overlay_enabled: true,
     locale: 'de-DE',
+    reduce_motion: true,
   },
   presets: {
     enabled_presets: [],

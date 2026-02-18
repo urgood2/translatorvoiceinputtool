@@ -56,12 +56,18 @@
           "type": "boolean",
           "description": "Play audio cues on recording start/stop.",
           "default": true
+        },
+        "trim_silence": {
+          "type": "boolean",
+          "description": "Trim leading/trailing silence before ASR preprocessing.",
+          "default": true
         }
       },
       "additionalProperties": false,
       "default": {
         "device_uid": null,
-        "audio_cues_enabled": true
+        "audio_cues_enabled": true,
+        "trim_silence": true
       }
     },
     "HotkeyConfig": {
@@ -146,6 +152,17 @@
           "type": ["string", "null"],
           "description": "Compute device preference: 'auto', 'cpu', 'cuda', 'mps'.",
           "enum": ["auto", "cpu", "cuda", "mps", null]
+        },
+        "preferred_device": {
+          "type": "string",
+          "description": "Preferred compute tier: 'auto', 'cpu', or 'gpu'.",
+          "enum": ["auto", "cpu", "gpu"],
+          "default": "auto"
+        },
+        "language": {
+          "type": ["string", "null"],
+          "description": "ASR language hint: null (no preference), 'auto', or ISO 639-1 code (e.g., 'en').",
+          "default": null
         }
       },
       "additionalProperties": false,
@@ -194,6 +211,11 @@
           "type": ["string", "null"],
           "description": "Preferred UI locale tag (BCP 47), or null to use system locale.",
           "default": null
+        },
+        "reduce_motion": {
+          "type": "boolean",
+          "description": "Reduce UI animations and motion effects for accessibility.",
+          "default": false
         }
       },
       "additionalProperties": false,
@@ -204,7 +226,8 @@
         "theme": "system",
         "onboarding_completed": false,
         "overlay_enabled": true,
-        "locale": null
+        "locale": null,
+        "reduce_motion": false
       }
     },
     "PresetsConfig": {
@@ -234,7 +257,8 @@
       "schema_version": 1,
       "audio": {
         "device_uid": null,
-        "audio_cues_enabled": true
+        "audio_cues_enabled": true,
+        "trim_silence": true
       },
       "hotkeys": {
         "primary": "Ctrl+Shift+Space",
@@ -256,7 +280,8 @@
         "theme": "system",
         "onboarding_completed": false,
         "overlay_enabled": true,
-        "locale": null
+        "locale": null,
+        "reduce_motion": false
       },
       "presets": {
         "enabled_presets": []
@@ -266,7 +291,8 @@
       "schema_version": 1,
       "audio": {
         "device_uid": "usb:abc123",
-        "audio_cues_enabled": false
+        "audio_cues_enabled": false,
+        "trim_silence": false
       },
       "hotkeys": {
         "primary": "F9",
@@ -281,7 +307,9 @@
       },
       "model": {
         "model_id": "nvidia/parakeet-tdt-0.6b-v2",
-        "device": "cuda"
+        "device": "cuda",
+        "preferred_device": "gpu",
+        "language": "de"
       },
       "replacements": [
         {
@@ -301,7 +329,8 @@
         "theme": "dark",
         "onboarding_completed": true,
         "overlay_enabled": true,
-        "locale": "de-DE"
+        "locale": "de-DE",
+        "reduce_motion": true
       },
       "presets": {
         "enabled_presets": ["punctuation", "common-abbreviations"]

@@ -78,12 +78,41 @@ impl Default for AppConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     /// Model ID (e.g., "nvidia/parakeet-tdt-0.6b-v2").
+    #[serde(default)]
     pub model_id: Option<String>,
     /// Device preference ("auto", "cpu", "cuda", "mps").
+    #[serde(default)]
     pub device: Option<String>,
+    /// Preferred compute tier from UI ("auto", "cpu", "gpu").
+    #[serde(default = "default_preferred_device")]
+    pub preferred_device: String,
+    /// ASR language hint: None for sidecar default, "auto" for autodetect, or ISO 639-1 code.
+    #[serde(default)]
+    pub language: Option<String>,
+}
+
+impl ModelConfig {
+    /// Resolve effective sidecar device preference from legacy and new fields.
+    pub fn effective_device_pref(&self) -> String {
+        if let Some(device) = self.device.as_deref() {
+            if matches!(device, "cuda" | "mps") {
+                return device.to_string();
+            }
+        }
+
+        map_preferred_device_to_backend(&self.preferred_device)
+    }
 }
 
 impl AppConfig {
+    /// Resolve effective sidecar device preference for model initialization.
+    pub fn effective_model_device_pref(&self) -> String {
+        self.model
+            .as_ref()
+            .map(ModelConfig::effective_device_pref)
+            .unwrap_or_else(|| "auto".to_string())
+    }
+
     /// Validate and clamp config values to valid ranges.
     pub fn validate_and_clamp(&mut self) {
         // Clamp paste delay
@@ -100,6 +129,27 @@ impl AppConfig {
         // Validate window dimensions (minimum 200x200)
         self.ui.window_width = self.ui.window_width.max(200);
         self.ui.window_height = self.ui.window_height.max(200);
+
+        if let Some(model) = self.model.as_mut() {
+            if !matches!(model.preferred_device.as_str(), "auto" | "cpu" | "gpu") {
+                log::info!(
+                    "Invalid model.preferred_device value '{}', resetting to '{}'",
+                    model.preferred_device,
+                    default_preferred_device()
+                );
+                model.preferred_device = default_preferred_device();
+            }
+
+            // Validate model.language format (Phase 0: warn-only, preserve value)
+            if let Some(language) = model.language.as_deref() {
+                if language != "auto" && !is_iso_639_1_code(language) {
+                    log::warn!(
+                        "Invalid model.language value '{}'; expected 'auto' or ISO 639-1 code",
+                        language
+                    );
+                }
+            }
+        }
 
         // Validate theme selection
         if !matches!(self.ui.theme.as_str(), "system" | "light" | "dark") {
@@ -121,6 +171,9 @@ pub struct AudioConfig {
     pub device_uid: Option<String>,
     /// Whether to play audio cues.
     pub audio_cues_enabled: bool,
+    /// Whether to trim leading/trailing silence before ASR.
+    #[serde(default = "default_true")]
+    pub trim_silence: bool,
 }
 
 impl Default for AudioConfig {
@@ -128,6 +181,7 @@ impl Default for AudioConfig {
         Self {
             device_uid: None, // Use system default
             audio_cues_enabled: true,
+            trim_silence: true,
         }
     }
 }
@@ -228,6 +282,9 @@ pub struct UiConfig {
     /// Preferred UI locale (e.g., "en-US"), or None for system locale.
     #[serde(default)]
     pub locale: Option<String>,
+    /// Whether reduced-motion mode is enabled.
+    #[serde(default)]
+    pub reduce_motion: bool,
 }
 
 impl Default for UiConfig {
@@ -240,6 +297,7 @@ impl Default for UiConfig {
             onboarding_completed: default_onboarding_completed(),
             overlay_enabled: default_overlay_enabled(),
             locale: None,
+            reduce_motion: false,
         }
     }
 }
@@ -254,6 +312,38 @@ fn default_onboarding_completed() -> bool {
 
 fn default_overlay_enabled() -> bool {
     true
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_preferred_device() -> String {
+    "auto".to_string()
+}
+
+fn preferred_gpu_backend() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "mps"
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        "cuda"
+    }
+}
+
+fn map_preferred_device_to_backend(preferred_device: &str) -> String {
+    match preferred_device {
+        "cpu" => "cpu".to_string(),
+        "gpu" => preferred_gpu_backend().to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+fn is_iso_639_1_code(language: &str) -> bool {
+    language.len() == 2 && language.chars().all(|ch| ch.is_ascii_alphabetic())
 }
 
 /// Preset configurations.
@@ -443,18 +533,21 @@ mod tests {
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
         assert!(config.audio.device_uid.is_none());
         assert!(config.audio.audio_cues_enabled);
+        assert!(config.audio.trim_silence);
         assert_eq!(config.hotkeys.primary, "Ctrl+Shift+Space");
         assert_eq!(config.hotkeys.mode, HotkeyMode::Hold);
         assert_eq!(config.injection.paste_delay_ms, 40);
         assert!(config.injection.restore_clipboard);
         assert_eq!(config.injection.suffix, " ");
         assert!(config.injection.focus_guard_enabled);
+        assert!(config.model.is_none());
         assert!(config.replacements.is_empty());
         assert!(config.ui.show_on_startup);
         assert_eq!(config.ui.theme, "system");
         assert!(!config.ui.onboarding_completed);
         assert!(config.ui.overlay_enabled);
         assert_eq!(config.ui.locale, None);
+        assert!(!config.ui.reduce_motion);
     }
 
     #[test]
@@ -464,9 +557,17 @@ mod tests {
 
         let mut config = AppConfig::default();
         config.audio.device_uid = Some("test-device-uid".to_string());
+        config.audio.trim_silence = false;
         config.hotkeys.primary = "Ctrl+Space".to_string();
         config.injection.paste_delay_ms = 100;
+        config.model = Some(ModelConfig {
+            model_id: Some("nvidia/parakeet-tdt-0.6b-v2".to_string()),
+            device: Some("cuda".to_string()),
+            preferred_device: "gpu".to_string(),
+            language: Some("auto".to_string()),
+        });
         config.ui.locale = Some("en-US".to_string());
+        config.ui.reduce_motion = true;
 
         // Save
         save_config_to_path(&config, &config_path).unwrap();
@@ -477,9 +578,18 @@ mod tests {
         // Load
         let loaded = load_config_from_path(&config_path);
         assert_eq!(loaded.audio.device_uid, Some("test-device-uid".to_string()));
+        assert!(!loaded.audio.trim_silence);
         assert_eq!(loaded.hotkeys.primary, "Ctrl+Space");
         assert_eq!(loaded.injection.paste_delay_ms, 100);
+        assert_eq!(
+            loaded
+                .model
+                .as_ref()
+                .and_then(|model| model.language.as_deref()),
+            Some("auto")
+        );
         assert_eq!(loaded.ui.locale, Some("en-US".to_string()));
+        assert!(loaded.ui.reduce_motion);
     }
 
     #[test]
@@ -543,6 +653,7 @@ mod tests {
         assert!(!config.ui.onboarding_completed);
         assert!(config.ui.overlay_enabled);
         assert_eq!(config.ui.locale, None);
+        assert!(!config.ui.reduce_motion);
     }
 
     #[test]
@@ -563,6 +674,7 @@ mod tests {
         let config = load_config_from_path(&config_path);
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.audio.device_uid, Some("my-device".to_string()));
+        assert!(config.audio.trim_silence);
         assert!(config.injection.focus_guard_enabled); // Should be added by migration
         assert!(config.ui.onboarding_completed); // Existing users should skip onboarding
     }
@@ -580,12 +692,14 @@ mod tests {
         // All optional fields should have defaults
         assert!(config.audio.device_uid.is_none());
         assert!(config.audio.audio_cues_enabled);
+        assert!(config.audio.trim_silence);
         assert_eq!(config.hotkeys.primary, "Ctrl+Shift+Space");
         assert_eq!(config.injection.paste_delay_ms, 40);
         assert_eq!(config.ui.theme, "system");
         assert!(config.ui.onboarding_completed); // Existing config file should skip onboarding
         assert!(config.ui.overlay_enabled);
         assert_eq!(config.ui.locale, None);
+        assert!(!config.ui.reduce_motion);
     }
 
     #[test]
@@ -624,6 +738,7 @@ mod tests {
             loaded.audio.device_uid,
             Some("usb:abc123def456".to_string())
         );
+        assert!(loaded.audio.trim_silence);
     }
 
     #[test]
@@ -646,11 +761,13 @@ mod tests {
         // Verify key fields are present
         assert!(json.contains("schema_version"));
         assert!(json.contains("audio"));
+        assert!(json.contains("trim_silence"));
         assert!(json.contains("hotkeys"));
         assert!(json.contains("injection"));
         assert!(json.contains("onboarding_completed"));
         assert!(json.contains("overlay_enabled"));
         assert!(json.contains("locale"));
+        assert!(json.contains("reduce_motion"));
     }
 
     #[test]
@@ -725,6 +842,7 @@ mod tests {
         assert!(config.ui.onboarding_completed);
         assert!(config.ui.overlay_enabled);
         assert_eq!(config.ui.locale, None);
+        assert!(!config.ui.reduce_motion);
     }
 
     #[test]
@@ -747,6 +865,7 @@ mod tests {
         assert!(!config.ui.onboarding_completed);
         assert!(config.ui.overlay_enabled);
         assert_eq!(config.ui.locale, None);
+        assert!(!config.ui.reduce_motion);
     }
 
     #[test]
@@ -768,6 +887,7 @@ mod tests {
         let config = load_config_from_path(&config_path);
         assert!(!config.ui.overlay_enabled);
         assert_eq!(config.ui.locale, None);
+        assert!(!config.ui.reduce_motion);
     }
 
     #[test]
@@ -788,6 +908,7 @@ mod tests {
 
         let config = load_config_from_path(&config_path);
         assert_eq!(config.ui.locale, Some("ja-JP".to_string()));
+        assert!(!config.ui.reduce_motion);
     }
 
     #[test]
@@ -808,5 +929,151 @@ mod tests {
 
         let config = load_config_from_path(&config_path);
         assert_eq!(config.ui.locale, None);
+        assert!(!config.ui.reduce_motion);
+    }
+
+    #[test]
+    fn test_existing_config_preserves_explicit_reduce_motion_true() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        fs::write(
+            &config_path,
+            r#"{
+                "schema_version": 1,
+                "ui": {
+                    "reduce_motion": true
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config_from_path(&config_path);
+        assert!(config.ui.reduce_motion);
+    }
+
+    #[test]
+    fn test_model_preferred_device_defaults_to_auto_when_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        fs::write(
+            &config_path,
+            r#"{
+                "schema_version": 1,
+                "model": {
+                    "model_id": "nvidia/parakeet-tdt-0.6b-v2"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config_from_path(&config_path);
+        assert_eq!(
+            config.model.as_ref().map(|m| m.preferred_device.as_str()),
+            Some("auto")
+        );
+    }
+
+    #[test]
+    fn test_effective_model_device_pref_uses_concrete_model_device() {
+        let mut config = AppConfig::default();
+        config.model = Some(ModelConfig {
+            model_id: None,
+            device: Some("cuda".to_string()),
+            preferred_device: "cpu".to_string(),
+            language: None,
+        });
+
+        assert_eq!(config.effective_model_device_pref(), "cuda");
+    }
+
+    #[test]
+    fn test_effective_model_device_pref_maps_preferred_device_for_non_concrete_device() {
+        let mut config = AppConfig::default();
+        config.model = Some(ModelConfig {
+            model_id: None,
+            device: Some("auto".to_string()),
+            preferred_device: "cpu".to_string(),
+            language: None,
+        });
+        assert_eq!(config.effective_model_device_pref(), "cpu");
+
+        config.model = Some(ModelConfig {
+            model_id: None,
+            device: Some("cpu".to_string()),
+            preferred_device: "gpu".to_string(),
+            language: None,
+        });
+        assert_eq!(
+            config.effective_model_device_pref(),
+            preferred_gpu_backend()
+        );
+    }
+
+    #[test]
+    fn test_invalid_model_preferred_device_gets_reset_to_auto() {
+        let mut config = AppConfig::default();
+        config.model = Some(ModelConfig {
+            model_id: None,
+            device: Some("auto".to_string()),
+            preferred_device: "tpu".to_string(),
+            language: None,
+        });
+
+        config.validate_and_clamp();
+
+        assert_eq!(
+            config.model.as_ref().map(|m| m.preferred_device.as_str()),
+            Some("auto")
+        );
+    }
+
+    #[test]
+    fn test_model_language_roundtrip_null_auto_iso() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        for language in [None, Some("auto"), Some("ja")] {
+            let mut config = AppConfig::default();
+            config.model = Some(ModelConfig {
+                model_id: Some("nvidia/parakeet-tdt-0.6b-v2".to_string()),
+                device: Some("auto".to_string()),
+                preferred_device: "auto".to_string(),
+                language: language.map(std::string::ToString::to_string),
+            });
+
+            save_config_to_path(&config, &config_path).unwrap();
+            let loaded = load_config_from_path(&config_path);
+
+            assert_eq!(
+                loaded
+                    .model
+                    .as_ref()
+                    .and_then(|model| model.language.as_deref()),
+                language
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_and_clamp_preserves_unknown_model_language_value() {
+        let mut config = AppConfig::default();
+        config.model = Some(ModelConfig {
+            model_id: None,
+            device: Some("auto".to_string()),
+            preferred_device: "auto".to_string(),
+            language: Some("english".to_string()),
+        });
+
+        config.validate_and_clamp();
+
+        assert_eq!(
+            config
+                .model
+                .as_ref()
+                .and_then(|model| model.language.as_deref()),
+            Some("english")
+        );
     }
 }

@@ -622,11 +622,20 @@ impl IntegrationManager {
             .and_then(|m| m.model_id.clone())
             .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string());
 
-        let device_pref = config
+        let raw_device = config.model.as_ref().and_then(|m| m.device.as_deref());
+        let raw_preferred = config
             .model
             .as_ref()
-            .and_then(|m| m.device.clone())
-            .unwrap_or_else(|| "auto".to_string());
+            .map(|m| m.preferred_device.as_str())
+            .unwrap_or("auto");
+        let device_pref = config.effective_model_device_pref();
+
+        log::info!(
+            "Resolved model device preference: model.device={:?}, model.preferred_device='{}', effective='{}'",
+            raw_device,
+            raw_preferred,
+            device_pref
+        );
 
         log::info!(
             "Initializing ASR model: model={}, device={}",

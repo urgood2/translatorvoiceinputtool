@@ -99,6 +99,7 @@ export type HotkeyMode = 'hold' | 'toggle';
 export interface AudioConfig {
   device_uid?: string;
   audio_cues_enabled: boolean;
+  trim_silence: boolean;
 }
 
 /** Hotkey configuration. */
@@ -116,6 +117,14 @@ export interface InjectionConfig {
   focus_guard_enabled: boolean;
 }
 
+/** Model configuration. */
+export interface ModelConfig {
+  model_id: string | null;
+  device: 'auto' | 'cpu' | 'cuda' | 'mps' | null;
+  preferred_device: 'auto' | 'cpu' | 'gpu';
+  language: string | null;
+}
+
 /** UI configuration. */
 export interface UiConfig {
   show_on_startup: boolean;
@@ -125,6 +134,7 @@ export interface UiConfig {
   onboarding_completed: boolean;
   overlay_enabled: boolean;
   locale: string | null;
+  reduce_motion: boolean;
 }
 
 /** Text replacement rule kind. */
@@ -157,6 +167,7 @@ export interface AppConfig {
   audio: AudioConfig;
   hotkeys: HotkeyConfig;
   injection: InjectionConfig;
+  model: ModelConfig | null;
   replacements: ReplacementRule[];
   ui: UiConfig;
   presets: PresetsConfig;
