@@ -61,6 +61,9 @@ const mockConfig: AppConfig = {
     device_uid: 'device-123',
     audio_cues_enabled: true,
     trim_silence: true,
+    vad_enabled: false,
+    vad_silence_ms: 1200,
+    vad_min_speech_ms: 250,
   },
   hotkeys: {
     primary: 'Ctrl+Shift+Space',
@@ -91,6 +94,9 @@ const mockConfig: AppConfig = {
     overlay_enabled: true,
     locale: 'de-DE',
     reduce_motion: true,
+  },
+  history: {
+    persistence_mode: 'memory',
   },
   presets: {
     enabled_presets: [],

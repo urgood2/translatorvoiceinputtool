@@ -25,7 +25,14 @@ const mockInjectionConfig: InjectionConfig = {
 
 const mockConfig: AppConfig = {
   schema_version: 1,
-  audio: { device_uid: 'device-1', audio_cues_enabled: true, trim_silence: true },
+  audio: {
+    device_uid: 'device-1',
+    audio_cues_enabled: true,
+    trim_silence: true,
+    vad_enabled: false,
+    vad_silence_ms: 1200,
+    vad_min_speech_ms: 250,
+  },
   hotkeys: { primary: 'Ctrl+Shift+A', copy_last: 'Ctrl+Shift+C', mode: 'hold' },
   injection: mockInjectionConfig,
   model: null,
@@ -39,6 +46,9 @@ const mockConfig: AppConfig = {
     overlay_enabled: true,
     locale: null,
     reduce_motion: false,
+  },
+  history: {
+    persistence_mode: 'memory',
   },
   presets: { enabled_presets: [] },
 };

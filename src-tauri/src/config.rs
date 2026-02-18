@@ -54,6 +54,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub ui: UiConfig,
 
+    /// History settings.
+    #[serde(default)]
+    pub history: HistoryConfig,
+
     /// Preset configurations.
     #[serde(default)]
     pub presets: PresetsConfig,
@@ -69,6 +73,7 @@ impl Default for AppConfig {
             model: None, // Use defaults from sidecar
             replacements: Vec::new(),
             ui: UiConfig::default(),
+            history: HistoryConfig::default(),
             presets: PresetsConfig::default(),
         }
     }
@@ -118,6 +123,26 @@ impl AppConfig {
         // Clamp paste delay
         self.injection.paste_delay_ms = self.injection.paste_delay_ms.clamp(10, 500);
 
+        let original_vad_silence_ms = self.audio.vad_silence_ms;
+        self.audio.vad_silence_ms = self.audio.vad_silence_ms.clamp(400, 5000);
+        if self.audio.vad_silence_ms != original_vad_silence_ms {
+            log::info!(
+                "audio.vad_silence_ms clamped from {} to {}",
+                original_vad_silence_ms,
+                self.audio.vad_silence_ms
+            );
+        }
+
+        let original_vad_min_speech_ms = self.audio.vad_min_speech_ms;
+        self.audio.vad_min_speech_ms = self.audio.vad_min_speech_ms.clamp(100, 2000);
+        if self.audio.vad_min_speech_ms != original_vad_min_speech_ms {
+            log::info!(
+                "audio.vad_min_speech_ms clamped from {} to {}",
+                original_vad_min_speech_ms,
+                self.audio.vad_min_speech_ms
+            );
+        }
+
         // Validate hotkey format (basic check - ensure non-empty)
         if self.hotkeys.primary.is_empty() {
             self.hotkeys.primary = HotkeyConfig::default().primary;
@@ -160,6 +185,16 @@ impl AppConfig {
             );
             self.ui.theme = default_theme();
         }
+
+        // Validate history persistence mode
+        if !matches!(self.history.persistence_mode.as_str(), "memory" | "disk") {
+            log::info!(
+                "Invalid history.persistence_mode value '{}', resetting to '{}'",
+                self.history.persistence_mode,
+                default_persistence_mode()
+            );
+            self.history.persistence_mode = default_persistence_mode();
+        }
     }
 }
 
@@ -174,6 +209,15 @@ pub struct AudioConfig {
     /// Whether to trim leading/trailing silence before ASR.
     #[serde(default = "default_true")]
     pub trim_silence: bool,
+    /// Whether Voice Activity Detection auto-stop is enabled.
+    #[serde(default)]
+    pub vad_enabled: bool,
+    /// Silence duration threshold before VAD auto-stop triggers.
+    #[serde(default = "default_vad_silence_ms")]
+    pub vad_silence_ms: u32,
+    /// Minimum speech duration before VAD can auto-stop.
+    #[serde(default = "default_vad_min_speech_ms")]
+    pub vad_min_speech_ms: u32,
 }
 
 impl Default for AudioConfig {
@@ -182,6 +226,9 @@ impl Default for AudioConfig {
             device_uid: None, // Use system default
             audio_cues_enabled: true,
             trim_silence: true,
+            vad_enabled: false,
+            vad_silence_ms: default_vad_silence_ms(),
+            vad_min_speech_ms: default_vad_min_speech_ms(),
         }
     }
 }
@@ -302,6 +349,23 @@ impl Default for UiConfig {
     }
 }
 
+/// History configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistoryConfig {
+    /// Transcript history persistence mode: "memory" or "disk".
+    #[serde(default = "default_persistence_mode")]
+    pub persistence_mode: String,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            persistence_mode: default_persistence_mode(),
+        }
+    }
+}
+
 fn default_theme() -> String {
     "system".to_string()
 }
@@ -314,8 +378,20 @@ fn default_overlay_enabled() -> bool {
     true
 }
 
+fn default_persistence_mode() -> String {
+    "memory".to_string()
+}
+
 fn default_true() -> bool {
     true
+}
+
+fn default_vad_silence_ms() -> u32 {
+    1200
+}
+
+fn default_vad_min_speech_ms() -> u32 {
+    250
 }
 
 fn default_preferred_device() -> String {
@@ -534,6 +610,9 @@ mod tests {
         assert!(config.audio.device_uid.is_none());
         assert!(config.audio.audio_cues_enabled);
         assert!(config.audio.trim_silence);
+        assert!(!config.audio.vad_enabled);
+        assert_eq!(config.audio.vad_silence_ms, 1200);
+        assert_eq!(config.audio.vad_min_speech_ms, 250);
         assert_eq!(config.hotkeys.primary, "Ctrl+Shift+Space");
         assert_eq!(config.hotkeys.mode, HotkeyMode::Hold);
         assert_eq!(config.injection.paste_delay_ms, 40);
@@ -548,6 +627,7 @@ mod tests {
         assert!(config.ui.overlay_enabled);
         assert_eq!(config.ui.locale, None);
         assert!(!config.ui.reduce_motion);
+        assert_eq!(config.history.persistence_mode, "memory");
     }
 
     #[test]
@@ -558,6 +638,9 @@ mod tests {
         let mut config = AppConfig::default();
         config.audio.device_uid = Some("test-device-uid".to_string());
         config.audio.trim_silence = false;
+        config.audio.vad_enabled = true;
+        config.audio.vad_silence_ms = 1500;
+        config.audio.vad_min_speech_ms = 300;
         config.hotkeys.primary = "Ctrl+Space".to_string();
         config.injection.paste_delay_ms = 100;
         config.model = Some(ModelConfig {
@@ -568,6 +651,7 @@ mod tests {
         });
         config.ui.locale = Some("en-US".to_string());
         config.ui.reduce_motion = true;
+        config.history.persistence_mode = "disk".to_string();
 
         // Save
         save_config_to_path(&config, &config_path).unwrap();
@@ -579,6 +663,9 @@ mod tests {
         let loaded = load_config_from_path(&config_path);
         assert_eq!(loaded.audio.device_uid, Some("test-device-uid".to_string()));
         assert!(!loaded.audio.trim_silence);
+        assert!(loaded.audio.vad_enabled);
+        assert_eq!(loaded.audio.vad_silence_ms, 1500);
+        assert_eq!(loaded.audio.vad_min_speech_ms, 300);
         assert_eq!(loaded.hotkeys.primary, "Ctrl+Space");
         assert_eq!(loaded.injection.paste_delay_ms, 100);
         assert_eq!(
@@ -590,6 +677,7 @@ mod tests {
         );
         assert_eq!(loaded.ui.locale, Some("en-US".to_string()));
         assert!(loaded.ui.reduce_motion);
+        assert_eq!(loaded.history.persistence_mode, "disk");
     }
 
     #[test]
@@ -654,6 +742,7 @@ mod tests {
         assert!(config.ui.overlay_enabled);
         assert_eq!(config.ui.locale, None);
         assert!(!config.ui.reduce_motion);
+        assert_eq!(config.history.persistence_mode, "memory");
     }
 
     #[test]
@@ -675,8 +764,12 @@ mod tests {
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.audio.device_uid, Some("my-device".to_string()));
         assert!(config.audio.trim_silence);
+        assert!(!config.audio.vad_enabled);
+        assert_eq!(config.audio.vad_silence_ms, 1200);
+        assert_eq!(config.audio.vad_min_speech_ms, 250);
         assert!(config.injection.focus_guard_enabled); // Should be added by migration
         assert!(config.ui.onboarding_completed); // Existing users should skip onboarding
+        assert_eq!(config.history.persistence_mode, "memory");
     }
 
     #[test]
@@ -693,6 +786,9 @@ mod tests {
         assert!(config.audio.device_uid.is_none());
         assert!(config.audio.audio_cues_enabled);
         assert!(config.audio.trim_silence);
+        assert!(!config.audio.vad_enabled);
+        assert_eq!(config.audio.vad_silence_ms, 1200);
+        assert_eq!(config.audio.vad_min_speech_ms, 250);
         assert_eq!(config.hotkeys.primary, "Ctrl+Shift+Space");
         assert_eq!(config.injection.paste_delay_ms, 40);
         assert_eq!(config.ui.theme, "system");
@@ -700,6 +796,7 @@ mod tests {
         assert!(config.ui.overlay_enabled);
         assert_eq!(config.ui.locale, None);
         assert!(!config.ui.reduce_motion);
+        assert_eq!(config.history.persistence_mode, "memory");
     }
 
     #[test]
@@ -723,6 +820,23 @@ mod tests {
     }
 
     #[test]
+    fn test_vad_timing_clamping() {
+        let mut config = AppConfig::default();
+
+        config.audio.vad_silence_ms = 100;
+        config.audio.vad_min_speech_ms = 50;
+        config.validate_and_clamp();
+        assert_eq!(config.audio.vad_silence_ms, 400);
+        assert_eq!(config.audio.vad_min_speech_ms, 100);
+
+        config.audio.vad_silence_ms = 10000;
+        config.audio.vad_min_speech_ms = 5000;
+        config.validate_and_clamp();
+        assert_eq!(config.audio.vad_silence_ms, 5000);
+        assert_eq!(config.audio.vad_min_speech_ms, 2000);
+    }
+
+    #[test]
     fn test_device_uid_persists() {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("config.json");
@@ -739,6 +853,9 @@ mod tests {
             Some("usb:abc123def456".to_string())
         );
         assert!(loaded.audio.trim_silence);
+        assert!(!loaded.audio.vad_enabled);
+        assert_eq!(loaded.audio.vad_silence_ms, 1200);
+        assert_eq!(loaded.audio.vad_min_speech_ms, 250);
     }
 
     #[test]
@@ -762,12 +879,17 @@ mod tests {
         assert!(json.contains("schema_version"));
         assert!(json.contains("audio"));
         assert!(json.contains("trim_silence"));
+        assert!(json.contains("vad_enabled"));
+        assert!(json.contains("vad_silence_ms"));
+        assert!(json.contains("vad_min_speech_ms"));
         assert!(json.contains("hotkeys"));
         assert!(json.contains("injection"));
         assert!(json.contains("onboarding_completed"));
         assert!(json.contains("overlay_enabled"));
         assert!(json.contains("locale"));
         assert!(json.contains("reduce_motion"));
+        assert!(json.contains("history"));
+        assert!(json.contains("persistence_mode"));
     }
 
     #[test]
@@ -817,6 +939,16 @@ mod tests {
         config.validate_and_clamp();
 
         assert_eq!(config.ui.theme, "system");
+    }
+
+    #[test]
+    fn test_invalid_history_persistence_mode_gets_default() {
+        let mut config = AppConfig::default();
+        config.history.persistence_mode = "remote".to_string();
+
+        config.validate_and_clamp();
+
+        assert_eq!(config.history.persistence_mode, "memory");
     }
 
     #[test]
@@ -950,6 +1082,26 @@ mod tests {
 
         let config = load_config_from_path(&config_path);
         assert!(config.ui.reduce_motion);
+    }
+
+    #[test]
+    fn test_existing_config_preserves_explicit_history_persistence_mode_disk() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        fs::write(
+            &config_path,
+            r#"{
+                "schema_version": 1,
+                "history": {
+                    "persistence_mode": "disk"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let config = load_config_from_path(&config_path);
+        assert_eq!(config.history.persistence_mode, "disk");
     }
 
     #[test]

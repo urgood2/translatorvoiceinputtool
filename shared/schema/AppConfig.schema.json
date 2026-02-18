@@ -36,6 +36,9 @@
     "ui": {
       "$ref": "#/$defs/UiConfig"
     },
+    "history": {
+      "$ref": "#/$defs/HistoryConfig"
+    },
     "presets": {
       "$ref": "#/$defs/PresetsConfig"
     }
@@ -61,13 +64,35 @@
           "type": "boolean",
           "description": "Trim leading/trailing silence before ASR preprocessing.",
           "default": true
+        },
+        "vad_enabled": {
+          "type": "boolean",
+          "description": "Enable voice activity detection auto-stop during recording.",
+          "default": false
+        },
+        "vad_silence_ms": {
+          "type": "integer",
+          "description": "Silence duration (ms) before VAD triggers auto-stop.",
+          "minimum": 400,
+          "maximum": 5000,
+          "default": 1200
+        },
+        "vad_min_speech_ms": {
+          "type": "integer",
+          "description": "Minimum speech duration (ms) required before VAD can auto-stop.",
+          "minimum": 100,
+          "maximum": 2000,
+          "default": 250
         }
       },
       "additionalProperties": false,
       "default": {
         "device_uid": null,
         "audio_cues_enabled": true,
-        "trim_silence": true
+        "trim_silence": true,
+        "vad_enabled": false,
+        "vad_silence_ms": 1200,
+        "vad_min_speech_ms": 250
       }
     },
     "HotkeyConfig": {
@@ -250,6 +275,22 @@
       "default": {
         "enabled_presets": []
       }
+    },
+    "HistoryConfig": {
+      "type": "object",
+      "description": "Transcript history persistence configuration.",
+      "properties": {
+        "persistence_mode": {
+          "type": "string",
+          "description": "History persistence mode: memory (privacy-first) or disk.",
+          "enum": ["memory", "disk"],
+          "default": "memory"
+        }
+      },
+      "additionalProperties": false,
+      "default": {
+        "persistence_mode": "memory"
+      }
     }
   },
   "examples": [
@@ -258,7 +299,10 @@
       "audio": {
         "device_uid": null,
         "audio_cues_enabled": true,
-        "trim_silence": true
+        "trim_silence": true,
+        "vad_enabled": false,
+        "vad_silence_ms": 1200,
+        "vad_min_speech_ms": 250
       },
       "hotkeys": {
         "primary": "Ctrl+Shift+Space",
@@ -283,6 +327,9 @@
         "locale": null,
         "reduce_motion": false
       },
+      "history": {
+        "persistence_mode": "memory"
+      },
       "presets": {
         "enabled_presets": []
       }
@@ -292,7 +339,10 @@
       "audio": {
         "device_uid": "usb:abc123",
         "audio_cues_enabled": false,
-        "trim_silence": false
+        "trim_silence": false,
+        "vad_enabled": true,
+        "vad_silence_ms": 1500,
+        "vad_min_speech_ms": 300
       },
       "hotkeys": {
         "primary": "F9",
@@ -331,6 +381,9 @@
         "overlay_enabled": true,
         "locale": "de-DE",
         "reduce_motion": true
+      },
+      "history": {
+        "persistence_mode": "disk"
       },
       "presets": {
         "enabled_presets": ["punctuation", "common-abbreviations"]

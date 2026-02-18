@@ -100,6 +100,9 @@ export interface AudioConfig {
   device_uid?: string;
   audio_cues_enabled: boolean;
   trim_silence: boolean;
+  vad_enabled: boolean;
+  vad_silence_ms: number;
+  vad_min_speech_ms: number;
 }
 
 /** Hotkey configuration. */
@@ -161,6 +164,11 @@ export interface PresetsConfig {
   enabled_presets: string[];
 }
 
+/** Transcript history configuration. */
+export interface HistoryConfig {
+  persistence_mode: 'memory' | 'disk';
+}
+
 /** Complete application configuration. */
 export interface AppConfig {
   schema_version: number;
@@ -170,6 +178,7 @@ export interface AppConfig {
   model: ModelConfig | null;
   replacements: ReplacementRule[];
   ui: UiConfig;
+  history: HistoryConfig;
   presets: PresetsConfig;
 }
 
