@@ -1,199 +1,197 @@
-//! Error kind definitions matching the sidecar protocol.
+//! Canonical app error code catalog.
 //!
-//! These error kinds correspond to the `E_*` codes returned by the
-//! Python sidecar in JSON-RPC error responses.
+//! `ErrorKind` provides stable `E_*` identifiers used by the backend/frontend
+//! contract. Legacy sidecar-specific codes are accepted as aliases by
+//! [`ErrorKind::from_sidecar`] so older sidecars continue to interoperate.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Error kinds that can occur in the application.
-///
-/// These are stable identifiers that can be used for:
-/// - Logging and diagnostics
-/// - Error tracking/analytics
-/// - Matching errors to remediation text
-///
-/// The string representation matches the sidecar's `E_*` codes.
+pub const E_SIDECAR_SPAWN: &str = "E_SIDECAR_SPAWN";
+pub const E_SIDECAR_IPC: &str = "E_SIDECAR_IPC";
+pub const E_SIDECAR_CRASH: &str = "E_SIDECAR_CRASH";
+pub const E_SIDECAR_CIRCUIT_BREAKER: &str = "E_SIDECAR_CIRCUIT_BREAKER";
+pub const E_MIC_PERMISSION: &str = "E_MIC_PERMISSION";
+pub const E_DEVICE_REMOVED: &str = "E_DEVICE_REMOVED";
+pub const E_NO_AUDIO_DEVICE: &str = "E_NO_AUDIO_DEVICE";
+pub const E_RECORDING_FAILED: &str = "E_RECORDING_FAILED";
+pub const E_TRANSCRIPTION_FAILED: &str = "E_TRANSCRIPTION_FAILED";
+pub const E_TRANSCRIPTION_TIMEOUT: &str = "E_TRANSCRIPTION_TIMEOUT";
+pub const E_MODEL_NOT_READY: &str = "E_MODEL_NOT_READY";
+pub const E_MODEL_DOWNLOAD: &str = "E_MODEL_DOWNLOAD";
+pub const E_DISK_FULL: &str = "E_DISK_FULL";
+pub const E_CACHE_CORRUPT: &str = "E_CACHE_CORRUPT";
+pub const E_NETWORK: &str = "E_NETWORK";
+pub const E_INJECTION_FAILED: &str = "E_INJECTION_FAILED";
+pub const E_OVERLAY_FAILED: &str = "E_OVERLAY_FAILED";
+pub const E_METHOD_NOT_FOUND: &str = "E_METHOD_NOT_FOUND";
+pub const E_LANGUAGE_UNSUPPORTED: &str = "E_LANGUAGE_UNSUPPORTED";
+pub const E_INTERNAL: &str = "E_INTERNAL";
+
+/// Stable list of app error codes.
+#[allow(dead_code)]
+pub const ALL_ERROR_CODES: [&str; 20] = [
+    E_SIDECAR_SPAWN,
+    E_SIDECAR_IPC,
+    E_SIDECAR_CRASH,
+    E_SIDECAR_CIRCUIT_BREAKER,
+    E_MIC_PERMISSION,
+    E_DEVICE_REMOVED,
+    E_NO_AUDIO_DEVICE,
+    E_RECORDING_FAILED,
+    E_TRANSCRIPTION_FAILED,
+    E_TRANSCRIPTION_TIMEOUT,
+    E_MODEL_NOT_READY,
+    E_MODEL_DOWNLOAD,
+    E_DISK_FULL,
+    E_CACHE_CORRUPT,
+    E_NETWORK,
+    E_INJECTION_FAILED,
+    E_OVERLAY_FAILED,
+    E_METHOD_NOT_FOUND,
+    E_LANGUAGE_UNSUPPORTED,
+    E_INTERNAL,
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorKind {
-    // === Hardware/Device Errors ===
-    /// Microphone permission denied by OS.
+    SidecarSpawn,
+    SidecarIpc,
+    SidecarCrash,
+    SidecarCircuitBreaker,
     MicPermission,
-    /// Audio device not found.
-    DeviceNotFound,
-    /// Audio I/O error.
-    AudioIO,
-    /// Audio device unavailable (in use, etc.).
-    DeviceUnavailable,
-
-    // === Recording Errors ===
-    /// Already recording.
-    AlreadyRecording,
-    /// Not currently recording.
-    NotRecording,
-    /// Invalid session ID.
-    InvalidSession,
-    /// Recording error (generic).
-    Recording,
-
-    // === Audio Meter Errors ===
-    /// Meter already running.
-    MeterRunning,
-    /// Meter not running.
-    MeterNotRunning,
-    /// Meter error (generic).
-    Meter,
-
-    // === Model Errors ===
-    /// Model not found.
-    ModelNotFound,
-    /// Model failed to load.
-    ModelLoad,
-    /// Model not initialized.
-    NotInitialized,
-    /// Model not ready (e.g., busy).
-    NotReady,
-    /// Model error (generic).
-    Model,
-    /// ASR error (generic).
-    Asr,
-
-    // === Cache/Storage Errors ===
-    /// Not enough disk space.
+    DeviceRemoved,
+    NoAudioDevice,
+    RecordingFailed,
+    TranscriptionFailed,
+    TranscriptionTimeout,
+    ModelNotReady,
+    ModelDownload,
     DiskFull,
-    /// Cache corrupted.
     CacheCorrupt,
-    /// Lock acquisition failed.
-    Lock,
-
-    // === Network Errors ===
-    /// Network error.
     Network,
-
-    // === Transcription Errors ===
-    /// Transcription failed.
-    Transcription,
-
-    // === Protocol Errors ===
-    /// Method not found.
+    InjectionFailed,
+    OverlayFailed,
     MethodNotFound,
-    /// Invalid parameters.
-    InvalidParams,
-    /// Parse error.
-    ParseError,
-
-    // === Replacement Errors ===
-    /// Replacement rule error.
-    Replacement,
-    /// Resource not found.
-    NotFound,
-
-    // === Internal Errors ===
-    /// Internal error.
+    LanguageUnsupported,
     Internal,
 }
 
 impl ErrorKind {
-    /// Convert a sidecar error kind string to an ErrorKind.
-    ///
-    /// Returns `None` if the string is not a recognized error kind.
+    /// Parse canonical app error codes and legacy sidecar aliases.
     pub fn from_sidecar(kind: &str) -> Option<Self> {
         match kind {
-            "E_MIC_PERMISSION" => Some(Self::MicPermission),
-            "E_DEVICE_NOT_FOUND" => Some(Self::DeviceNotFound),
-            "E_AUDIO_IO" => Some(Self::AudioIO),
-            "E_DEVICE_UNAVAILABLE" => Some(Self::DeviceUnavailable),
-            "E_ALREADY_RECORDING" => Some(Self::AlreadyRecording),
-            "E_NOT_RECORDING" => Some(Self::NotRecording),
-            "E_INVALID_SESSION" => Some(Self::InvalidSession),
-            "E_RECORDING" => Some(Self::Recording),
-            "E_METER_RUNNING" => Some(Self::MeterRunning),
-            "E_METER_NOT_RUNNING" => Some(Self::MeterNotRunning),
-            "E_METER" => Some(Self::Meter),
-            "E_MODEL_NOT_FOUND" => Some(Self::ModelNotFound),
-            "E_MODEL_LOAD" => Some(Self::ModelLoad),
-            "E_NOT_INITIALIZED" => Some(Self::NotInitialized),
-            "E_NOT_READY" => Some(Self::NotReady),
-            "E_MODEL" => Some(Self::Model),
-            "E_ASR" => Some(Self::Asr),
-            "E_DISK_FULL" => Some(Self::DiskFull),
-            "E_CACHE_CORRUPT" => Some(Self::CacheCorrupt),
-            "E_LOCK" => Some(Self::Lock),
-            "E_NETWORK" => Some(Self::Network),
-            "E_TRANSCRIPTION" | "E_TRANSCRIBE" => Some(Self::Transcription),
-            "E_METHOD_NOT_FOUND" => Some(Self::MethodNotFound),
-            "E_INVALID_PARAMS" => Some(Self::InvalidParams),
-            "E_PARSE_ERROR" => Some(Self::ParseError),
-            "E_REPLACEMENT" => Some(Self::Replacement),
-            "E_NOT_FOUND" => Some(Self::NotFound),
-            "E_INTERNAL" => Some(Self::Internal),
+            // Canonical catalog
+            E_SIDECAR_SPAWN => Some(Self::SidecarSpawn),
+            E_SIDECAR_IPC => Some(Self::SidecarIpc),
+            E_SIDECAR_CRASH => Some(Self::SidecarCrash),
+            E_SIDECAR_CIRCUIT_BREAKER => Some(Self::SidecarCircuitBreaker),
+            E_MIC_PERMISSION => Some(Self::MicPermission),
+            E_DEVICE_REMOVED => Some(Self::DeviceRemoved),
+            E_NO_AUDIO_DEVICE => Some(Self::NoAudioDevice),
+            E_RECORDING_FAILED => Some(Self::RecordingFailed),
+            E_TRANSCRIPTION_FAILED => Some(Self::TranscriptionFailed),
+            E_TRANSCRIPTION_TIMEOUT => Some(Self::TranscriptionTimeout),
+            E_MODEL_NOT_READY => Some(Self::ModelNotReady),
+            E_MODEL_DOWNLOAD => Some(Self::ModelDownload),
+            E_DISK_FULL => Some(Self::DiskFull),
+            E_CACHE_CORRUPT => Some(Self::CacheCorrupt),
+            E_NETWORK => Some(Self::Network),
+            E_INJECTION_FAILED => Some(Self::InjectionFailed),
+            E_OVERLAY_FAILED => Some(Self::OverlayFailed),
+            E_METHOD_NOT_FOUND => Some(Self::MethodNotFound),
+            E_LANGUAGE_UNSUPPORTED => Some(Self::LanguageUnsupported),
+            E_INTERNAL => Some(Self::Internal),
+
+            // Backward-compatible aliases from older sidecars
+            "E_SIDECAR_RESTARTING" => Some(Self::SidecarCrash),
+            "E_SIDECAR_FAILED" => Some(Self::SidecarCircuitBreaker),
+            "E_DEVICE_NOT_FOUND" | "E_DEVICE_UNAVAILABLE" => Some(Self::NoAudioDevice),
+            "E_AUDIO_IO"
+            | "E_RECORDING"
+            | "E_ALREADY_RECORDING"
+            | "E_NOT_RECORDING"
+            | "E_INVALID_SESSION" => Some(Self::RecordingFailed),
+            "E_MODEL_NOT_FOUND" | "E_MODEL_LOAD" | "E_NOT_INITIALIZED" | "E_NOT_READY"
+            | "E_MODEL" => Some(Self::ModelNotReady),
+            "E_TRANSCRIPTION" | "E_TRANSCRIBE" | "E_ASR" => Some(Self::TranscriptionFailed),
+            "E_INVALID_PARAMS"
+            | "E_PARSE_ERROR"
+            | "E_METER"
+            | "E_METER_RUNNING"
+            | "E_METER_NOT_RUNNING"
+            | "E_LOCK" => Some(Self::SidecarIpc),
             _ => None,
         }
     }
 
-    /// Convert to the sidecar error kind string (E_* format).
+    /// Convert to canonical app error code.
     pub fn to_sidecar(&self) -> &'static str {
         match self {
-            Self::MicPermission => "E_MIC_PERMISSION",
-            Self::DeviceNotFound => "E_DEVICE_NOT_FOUND",
-            Self::AudioIO => "E_AUDIO_IO",
-            Self::DeviceUnavailable => "E_DEVICE_UNAVAILABLE",
-            Self::AlreadyRecording => "E_ALREADY_RECORDING",
-            Self::NotRecording => "E_NOT_RECORDING",
-            Self::InvalidSession => "E_INVALID_SESSION",
-            Self::Recording => "E_RECORDING",
-            Self::MeterRunning => "E_METER_RUNNING",
-            Self::MeterNotRunning => "E_METER_NOT_RUNNING",
-            Self::Meter => "E_METER",
-            Self::ModelNotFound => "E_MODEL_NOT_FOUND",
-            Self::ModelLoad => "E_MODEL_LOAD",
-            Self::NotInitialized => "E_NOT_INITIALIZED",
-            Self::NotReady => "E_NOT_READY",
-            Self::Model => "E_MODEL",
-            Self::Asr => "E_ASR",
-            Self::DiskFull => "E_DISK_FULL",
-            Self::CacheCorrupt => "E_CACHE_CORRUPT",
-            Self::Lock => "E_LOCK",
-            Self::Network => "E_NETWORK",
-            Self::Transcription => "E_TRANSCRIPTION",
-            Self::MethodNotFound => "E_METHOD_NOT_FOUND",
-            Self::InvalidParams => "E_INVALID_PARAMS",
-            Self::ParseError => "E_PARSE_ERROR",
-            Self::Replacement => "E_REPLACEMENT",
-            Self::NotFound => "E_NOT_FOUND",
-            Self::Internal => "E_INTERNAL",
+            Self::SidecarSpawn => E_SIDECAR_SPAWN,
+            Self::SidecarIpc => E_SIDECAR_IPC,
+            Self::SidecarCrash => E_SIDECAR_CRASH,
+            Self::SidecarCircuitBreaker => E_SIDECAR_CIRCUIT_BREAKER,
+            Self::MicPermission => E_MIC_PERMISSION,
+            Self::DeviceRemoved => E_DEVICE_REMOVED,
+            Self::NoAudioDevice => E_NO_AUDIO_DEVICE,
+            Self::RecordingFailed => E_RECORDING_FAILED,
+            Self::TranscriptionFailed => E_TRANSCRIPTION_FAILED,
+            Self::TranscriptionTimeout => E_TRANSCRIPTION_TIMEOUT,
+            Self::ModelNotReady => E_MODEL_NOT_READY,
+            Self::ModelDownload => E_MODEL_DOWNLOAD,
+            Self::DiskFull => E_DISK_FULL,
+            Self::CacheCorrupt => E_CACHE_CORRUPT,
+            Self::Network => E_NETWORK,
+            Self::InjectionFailed => E_INJECTION_FAILED,
+            Self::OverlayFailed => E_OVERLAY_FAILED,
+            Self::MethodNotFound => E_METHOD_NOT_FOUND,
+            Self::LanguageUnsupported => E_LANGUAGE_UNSUPPORTED,
+            Self::Internal => E_INTERNAL,
         }
     }
 
-    /// Check if this error kind is recoverable (user can retry).
+    /// Whether user can usually recover with retry/degraded operation.
     pub fn is_recoverable(&self) -> bool {
         matches!(
             self,
-            Self::Network
-                | Self::DeviceNotFound
-                | Self::AudioIO
+            Self::SidecarIpc
+                | Self::SidecarCrash
+                | Self::DeviceRemoved
+                | Self::NoAudioDevice
+                | Self::RecordingFailed
+                | Self::TranscriptionFailed
+                | Self::TranscriptionTimeout
+                | Self::ModelNotReady
+                | Self::ModelDownload
                 | Self::CacheCorrupt
-                | Self::AlreadyRecording
-                | Self::NotRecording
-                | Self::Transcription
+                | Self::Network
+                | Self::InjectionFailed
+                | Self::OverlayFailed
+                | Self::MethodNotFound
+                | Self::LanguageUnsupported
         )
     }
 
-    /// Check if this error kind requires user action (permissions, settings).
+    /// Whether user likely needs to change settings/environment.
     pub fn requires_user_action(&self) -> bool {
-        matches!(self, Self::MicPermission | Self::DiskFull)
+        matches!(
+            self,
+            Self::MicPermission
+                | Self::NoAudioDevice
+                | Self::SidecarSpawn
+                | Self::SidecarCircuitBreaker
+                | Self::DiskFull
+                | Self::CacheCorrupt
+        )
     }
 
-    /// Check if this error kind is internal (should be logged, not shown to user).
+    /// Whether this should mainly be treated as internal diagnostics.
     pub fn is_internal(&self) -> bool {
         matches!(
             self,
-            Self::Internal
-                | Self::ParseError
-                | Self::MethodNotFound
-                | Self::InvalidParams
-                | Self::Lock
+            Self::Internal | Self::SidecarIpc | Self::SidecarSpawn | Self::SidecarCircuitBreaker
         )
     }
 }
@@ -210,50 +208,58 @@ mod tests {
 
     #[test]
     fn test_from_sidecar_roundtrip() {
-        // All variants should roundtrip through from_sidecar/to_sidecar
         let variants = vec![
+            ErrorKind::SidecarSpawn,
+            ErrorKind::SidecarIpc,
+            ErrorKind::SidecarCrash,
+            ErrorKind::SidecarCircuitBreaker,
             ErrorKind::MicPermission,
-            ErrorKind::DeviceNotFound,
-            ErrorKind::AudioIO,
-            ErrorKind::DeviceUnavailable,
-            ErrorKind::AlreadyRecording,
-            ErrorKind::NotRecording,
-            ErrorKind::InvalidSession,
-            ErrorKind::Recording,
-            ErrorKind::MeterRunning,
-            ErrorKind::MeterNotRunning,
-            ErrorKind::Meter,
-            ErrorKind::ModelNotFound,
-            ErrorKind::ModelLoad,
-            ErrorKind::NotInitialized,
-            ErrorKind::NotReady,
-            ErrorKind::Model,
-            ErrorKind::Asr,
+            ErrorKind::DeviceRemoved,
+            ErrorKind::NoAudioDevice,
+            ErrorKind::RecordingFailed,
+            ErrorKind::TranscriptionFailed,
+            ErrorKind::TranscriptionTimeout,
+            ErrorKind::ModelNotReady,
+            ErrorKind::ModelDownload,
             ErrorKind::DiskFull,
             ErrorKind::CacheCorrupt,
-            ErrorKind::Lock,
             ErrorKind::Network,
-            ErrorKind::Transcription,
+            ErrorKind::InjectionFailed,
+            ErrorKind::OverlayFailed,
             ErrorKind::MethodNotFound,
-            ErrorKind::InvalidParams,
-            ErrorKind::ParseError,
-            ErrorKind::Replacement,
-            ErrorKind::NotFound,
+            ErrorKind::LanguageUnsupported,
             ErrorKind::Internal,
         ];
 
         for variant in variants {
-            let sidecar_str = variant.to_sidecar();
-            let parsed = ErrorKind::from_sidecar(sidecar_str);
-            assert_eq!(
-                parsed,
-                Some(variant),
-                "Roundtrip failed for {:?} -> {} -> {:?}",
-                variant,
-                sidecar_str,
-                parsed
-            );
+            let code = variant.to_sidecar();
+            let parsed = ErrorKind::from_sidecar(code);
+            assert_eq!(parsed, Some(variant));
         }
+    }
+
+    #[test]
+    fn test_legacy_aliases_remain_supported() {
+        assert_eq!(
+            ErrorKind::from_sidecar("E_TRANSCRIPTION"),
+            Some(ErrorKind::TranscriptionFailed)
+        );
+        assert_eq!(
+            ErrorKind::from_sidecar("E_AUDIO_IO"),
+            Some(ErrorKind::RecordingFailed)
+        );
+        assert_eq!(
+            ErrorKind::from_sidecar("E_DEVICE_NOT_FOUND"),
+            Some(ErrorKind::NoAudioDevice)
+        );
+        assert_eq!(
+            ErrorKind::from_sidecar("E_MODEL_LOAD"),
+            Some(ErrorKind::ModelNotReady)
+        );
+        assert_eq!(
+            ErrorKind::from_sidecar("E_SIDECAR_FAILED"),
+            Some(ErrorKind::SidecarCircuitBreaker)
+        );
     }
 
     #[test]
@@ -274,14 +280,14 @@ mod tests {
 
     #[test]
     fn test_display() {
-        assert_eq!(format!("{}", ErrorKind::MicPermission), "E_MIC_PERMISSION");
-        assert_eq!(format!("{}", ErrorKind::Internal), "E_INTERNAL");
+        assert_eq!(format!("{}", ErrorKind::MicPermission), E_MIC_PERMISSION);
+        assert_eq!(format!("{}", ErrorKind::Internal), E_INTERNAL);
     }
 
     #[test]
     fn test_is_recoverable() {
         assert!(ErrorKind::Network.is_recoverable());
-        assert!(ErrorKind::DeviceNotFound.is_recoverable());
+        assert!(ErrorKind::NoAudioDevice.is_recoverable());
         assert!(!ErrorKind::MicPermission.is_recoverable());
         assert!(!ErrorKind::DiskFull.is_recoverable());
     }
@@ -296,8 +302,17 @@ mod tests {
     #[test]
     fn test_is_internal() {
         assert!(ErrorKind::Internal.is_internal());
-        assert!(ErrorKind::ParseError.is_internal());
+        assert!(ErrorKind::SidecarIpc.is_internal());
         assert!(!ErrorKind::MicPermission.is_internal());
         assert!(!ErrorKind::Network.is_internal());
+    }
+
+    #[test]
+    fn test_all_error_codes_list_is_unique() {
+        let mut unique = std::collections::HashSet::new();
+        for code in ALL_ERROR_CODES {
+            assert!(unique.insert(code), "duplicate error code: {}", code);
+            assert!(code.starts_with("E_"));
+        }
     }
 }

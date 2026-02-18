@@ -327,9 +327,32 @@ export interface DiagnosticsReport {
 // ERROR TYPES
 // ============================================================================
 
+/** Stable backend error code catalog (shared/contracts/error.codes.v1.json). */
+export type ErrorCode =
+  | 'E_SIDECAR_SPAWN'
+  | 'E_SIDECAR_IPC'
+  | 'E_SIDECAR_CRASH'
+  | 'E_SIDECAR_CIRCUIT_BREAKER'
+  | 'E_MIC_PERMISSION'
+  | 'E_DEVICE_REMOVED'
+  | 'E_NO_AUDIO_DEVICE'
+  | 'E_RECORDING_FAILED'
+  | 'E_TRANSCRIPTION_FAILED'
+  | 'E_TRANSCRIPTION_TIMEOUT'
+  | 'E_MODEL_NOT_READY'
+  | 'E_MODEL_DOWNLOAD'
+  | 'E_DISK_FULL'
+  | 'E_CACHE_CORRUPT'
+  | 'E_NETWORK'
+  | 'E_INJECTION_FAILED'
+  | 'E_OVERLAY_FAILED'
+  | 'E_METHOD_NOT_FOUND'
+  | 'E_LANGUAGE_UNSUPPORTED'
+  | 'E_INTERNAL';
+
 /** Standardized app error payload emitted by backend events. */
 export interface AppError {
-  code: string;
+  code: ErrorCode;
   message: string;
   details?: unknown;
   recoverable: boolean;

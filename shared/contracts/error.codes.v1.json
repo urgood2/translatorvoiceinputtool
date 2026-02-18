@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "id": "app.error_codes.v1",
+  "version": 1,
+  "type": "error_code_catalog",
+  "codes": [
+    {
+      "code": "E_SIDECAR_SPAWN",
+      "category": "sidecar",
+      "recoverable": false,
+      "description": "Sidecar failed to start (missing binary, permissions, or spawn error)."
+    },
+    {
+      "code": "E_SIDECAR_IPC",
+      "category": "sidecar",
+      "recoverable": true,
+      "description": "Sidecar JSON-RPC communication failure or protocol mismatch."
+    },
+    {
+      "code": "E_SIDECAR_CRASH",
+      "category": "sidecar",
+      "recoverable": true,
+      "description": "Sidecar process exited unexpectedly but restart is being attempted."
+    },
+    {
+      "code": "E_SIDECAR_CIRCUIT_BREAKER",
+      "category": "sidecar",
+      "recoverable": false,
+      "description": "Sidecar restart attempts exceeded threshold; automatic restart disabled."
+    },
+    {
+      "code": "E_MIC_PERMISSION",
+      "category": "audio",
+      "recoverable": false,
+      "description": "Microphone permission denied by the operating system."
+    },
+    {
+      "code": "E_DEVICE_REMOVED",
+      "category": "audio",
+      "recoverable": true,
+      "description": "Active audio device was disconnected during use."
+    },
+    {
+      "code": "E_NO_AUDIO_DEVICE",
+      "category": "audio",
+      "recoverable": true,
+      "description": "No audio input devices are available."
+    },
+    {
+      "code": "E_RECORDING_FAILED",
+      "category": "audio",
+      "recoverable": true,
+      "description": "Recording failed to start or failed during capture."
+    },
+    {
+      "code": "E_TRANSCRIPTION_FAILED",
+      "category": "transcription",
+      "recoverable": true,
+      "description": "ASR transcription failed; details may include sidecar error kind/message."
+    },
+    {
+      "code": "E_TRANSCRIPTION_TIMEOUT",
+      "category": "transcription",
+      "recoverable": true,
+      "description": "Transcription exceeded timeout threshold."
+    },
+    {
+      "code": "E_MODEL_NOT_READY",
+      "category": "model",
+      "recoverable": true,
+      "description": "Model is not loaded, unavailable, or still initializing."
+    },
+    {
+      "code": "E_MODEL_DOWNLOAD",
+      "category": "model",
+      "recoverable": true,
+      "description": "Model download/install failed (non-network generic failure)."
+    },
+    {
+      "code": "E_DISK_FULL",
+      "category": "model",
+      "recoverable": false,
+      "description": "Insufficient disk space for model installation or cache operations."
+    },
+    {
+      "code": "E_CACHE_CORRUPT",
+      "category": "model",
+      "recoverable": true,
+      "description": "Model cache validation failed (hash mismatch/corrupt files)."
+    },
+    {
+      "code": "E_NETWORK",
+      "category": "model",
+      "recoverable": true,
+      "description": "Network error during model download or related remote operation."
+    },
+    {
+      "code": "E_INJECTION_FAILED",
+      "category": "injection",
+      "recoverable": true,
+      "description": "Text injection failed; transcript should still be preserved for clipboard/history."
+    },
+    {
+      "code": "E_OVERLAY_FAILED",
+      "category": "overlay",
+      "recoverable": true,
+      "description": "Overlay window failed to create or display."
+    },
+    {
+      "code": "E_METHOD_NOT_FOUND",
+      "category": "ipc",
+      "recoverable": true,
+      "description": "Requested IPC method is unsupported by current sidecar version."
+    },
+    {
+      "code": "E_LANGUAGE_UNSUPPORTED",
+      "category": "ipc",
+      "recoverable": true,
+      "description": "Requested language is unsupported by current model/sidecar capability set."
+    },
+    {
+      "code": "E_INTERNAL",
+      "category": "internal",
+      "recoverable": false,
+      "description": "Unexpected internal fallback error when no specific catalog code is available."
+    }
+  ]
+}

@@ -19,7 +19,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
 
 use crate::config::{self, HotkeyMode};
-use crate::errors::AppError;
+use crate::errors::{AppError, ErrorKind};
 use crate::focus::{capture_focus, FocusSignature};
 use crate::history::{HistoryInjectionResult, TranscriptEntry, TranscriptHistory};
 use crate::hotkey::{HotkeyAction, HotkeyManager, RecordingAction};
@@ -1187,11 +1187,12 @@ impl IntegrationManager {
 
                         if let Some(ref handle) = app_handle {
                             let app_error = AppError::new(
-                                "E_TRANSCRIPTION",
+                                ErrorKind::TranscriptionFailed.to_sidecar(),
                                 "Transcription failed",
                                 Some(json!({
                                     "session_id": session_id,
-                                    "details": error
+                                    "error_kind": ErrorKind::TranscriptionFailed.to_sidecar(),
+                                    "sidecar_message": error
                                 })),
                                 true,
                             );

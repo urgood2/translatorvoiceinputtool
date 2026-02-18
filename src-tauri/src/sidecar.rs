@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::errors::AppError;
+use crate::errors::{AppError, ErrorKind};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
@@ -174,7 +174,7 @@ impl SidecarManager {
     fn status_error(state: SidecarState, restart_count: u32, message: &str) -> Option<AppError> {
         match state {
             SidecarState::Restarting => Some(AppError::new(
-                "E_SIDECAR_RESTARTING",
+                ErrorKind::SidecarCrash.to_sidecar(),
                 "Background service restarted after an error",
                 Some(json!({
                     "restart_count": restart_count,
@@ -183,7 +183,7 @@ impl SidecarManager {
                 true,
             )),
             SidecarState::Failed => Some(AppError::new(
-                "E_SIDECAR_FAILED",
+                ErrorKind::SidecarCircuitBreaker.to_sidecar(),
                 "Background service failed after multiple restart attempts",
                 Some(json!({
                     "restart_count": restart_count,
@@ -453,7 +453,7 @@ impl SidecarManager {
                     restart_count: inner.restart_count,
                     message: Some("Sidecar failed after multiple restart attempts".to_string()),
                     error: Some(AppError::new(
-                        "E_SIDECAR_FAILED",
+                        ErrorKind::SidecarCircuitBreaker.to_sidecar(),
                         "Background service failed after multiple restart attempts",
                         Some(json!({
                             "restart_count": inner.restart_count
@@ -493,7 +493,7 @@ impl SidecarManager {
                 delay_ms, restart_count, MAX_RESTART_ATTEMPTS
             )),
             error: Some(AppError::new(
-                "E_SIDECAR_RESTARTING",
+                ErrorKind::SidecarCrash.to_sidecar(),
                 "Background service restarted after an error",
                 Some(json!({
                     "restart_count": restart_count,

@@ -7,13 +7,13 @@
 //!
 //! # Error Categories
 //!
-//! | Category       | Error Kinds                        | Typical Remediation       |
-//! |----------------|-----------------------------------|---------------------------|
-//! | Hardware       | E_DEVICE_NOT_FOUND, E_AUDIO_IO    | Check connections         |
-//! | Permissions    | E_MIC_PERMISSION                  | Open system settings      |
-//! | Model          | E_MODEL_*, E_DISK_FULL, E_NETWORK | Retry, free disk space    |
-//! | Recording      | E_ALREADY_RECORDING, E_NOT_RECORDING | Wait, retry            |
-//! | Sidecar        | E_INTERNAL, crashes               | Restart sidecar           |
+//! | Category       | Error Kinds                                             | Typical Remediation |
+//! |----------------|---------------------------------------------------------|---------------------|
+//! | Sidecar        | E_SIDECAR_*                                             | Restart sidecar     |
+//! | Audio          | E_MIC_PERMISSION, E_NO_AUDIO_DEVICE, E_RECORDING_FAILED | Fix device/settings |
+//! | Model          | E_MODEL_*, E_DISK_FULL, E_CACHE_CORRUPT, E_NETWORK      | Retry, free disk    |
+//! | Transcription  | E_TRANSCRIPTION_FAILED, E_TRANSCRIPTION_TIMEOUT          | Retry               |
+//! | Injection/UI   | E_INJECTION_FAILED, E_OVERLAY_FAILED                    | Fallback UX         |
 
 mod kinds;
 mod remediation;
@@ -138,7 +138,7 @@ impl AppError {
         let kind_code = user_error
             .error_kind
             .map(|k| k.to_sidecar().to_string())
-            .unwrap_or_else(|| "E_INTERNAL".to_string());
+            .unwrap_or_else(|| ErrorKind::Internal.to_sidecar().to_string());
         let recoverable = user_error.error_kind.is_some_and(|k| k.is_recoverable())
             || matches!(user_error.remediation, Some(Remediation::Retry));
         let merged_details = match (details, user_error.details) {
@@ -272,7 +272,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::NoMicrophone => UserError::new(
             "No Microphone",
             "No microphone found. Connect a microphone and restart the application.",
-            Some(ErrorKind::DeviceNotFound),
+            Some(ErrorKind::NoAudioDevice),
             Some(Remediation::OpenUrl(
                 "https://docs.openvoicy.app/troubleshooting/no-mic".to_string(),
             )),
@@ -292,7 +292,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
                 UserError::new(
                     "Microphone Disconnected",
                     "Microphone was disconnected during recording. Recording cancelled.",
-                    Some(ErrorKind::AudioIO),
+                    Some(ErrorKind::DeviceRemoved),
                     None,
                     None,
                 )
@@ -300,7 +300,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
                 UserError::new(
                     "Microphone Disconnected",
                     "The selected microphone was disconnected.",
-                    Some(ErrorKind::DeviceNotFound),
+                    Some(ErrorKind::DeviceRemoved),
                     None,
                     None,
                 )
@@ -319,7 +319,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
             UserError::new(
                 "Microphone Not Found",
                 message,
-                Some(ErrorKind::DeviceNotFound),
+                Some(ErrorKind::NoAudioDevice),
                 Some(Remediation::OpenSettings(SettingsPage::AudioDevice)),
                 device_uid.clone(),
             )
@@ -328,7 +328,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::AudioIO { message } => UserError::new(
             "Audio Error",
             "Failed to access audio device. Check connections and try again.",
-            Some(ErrorKind::AudioIO),
+            Some(ErrorKind::RecordingFailed),
             Some(Remediation::Retry),
             Some(message.clone()),
         ),
@@ -341,7 +341,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
             } else {
                 "Background service crashed. Restarting...".to_string()
             },
-            Some(ErrorKind::Internal),
+            Some(ErrorKind::SidecarCrash),
             Some(Remediation::RestartSidecar),
             Some(format!("restart_count={}", restart_count)),
         ),
@@ -349,7 +349,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::SidecarHang => UserError::new(
             "Background Service Not Responding",
             "Background service is not responding. Restarting...",
-            Some(ErrorKind::Internal),
+            Some(ErrorKind::SidecarIpc),
             Some(Remediation::RestartSidecar),
             None,
         ),
@@ -357,7 +357,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::SidecarMaxRetries { retry_count } => UserError::new(
             "Background Service Failed",
             "Background service failed repeatedly. Click to retry or restart the application.",
-            Some(ErrorKind::Internal),
+            Some(ErrorKind::SidecarCircuitBreaker),
             Some(Remediation::RestartApp),
             Some(format!("retry_count={}", retry_count)),
         ),
@@ -365,7 +365,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::SidecarNotFound => UserError::new(
             "Application Files Missing",
             "Required application files are missing. Please reinstall the application.",
-            Some(ErrorKind::Internal),
+            Some(ErrorKind::SidecarSpawn),
             Some(Remediation::Reinstall),
             None,
         ),
@@ -373,7 +373,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::SidecarQuarantined => UserError::new(
             "Background Service Blocked",
             "Background service is blocked by macOS Gatekeeper. Open Security settings to allow.",
-            Some(ErrorKind::Internal),
+            Some(ErrorKind::SidecarSpawn),
             Some(Remediation::OpenSettings(SettingsPage::MacOSSecurity)),
             None,
         ),
@@ -419,7 +419,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::ModelLoadFailed { model_id } => UserError::new(
             "Model Load Failed",
             "Failed to load the speech recognition model. Click to re-download.",
-            Some(ErrorKind::ModelLoad),
+            Some(ErrorKind::ModelDownload),
             Some(Remediation::Retry),
             Some(model_id.clone()),
         ),
@@ -427,7 +427,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::ModelNotFound { model_id } => UserError::new(
             "Model Not Found",
             "Speech recognition model not found. Downloading...",
-            Some(ErrorKind::ModelNotFound),
+            Some(ErrorKind::ModelNotReady),
             Some(Remediation::Retry),
             Some(model_id.clone()),
         ),
@@ -435,7 +435,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::ModelPurgeRejected => UserError::new(
             "Cannot Clear Model Cache",
             "Cannot clear model cache while transcription is in progress. Try again later.",
-            Some(ErrorKind::NotReady),
+            Some(ErrorKind::ModelNotReady),
             None,
             None,
         ),
@@ -443,7 +443,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::ModelNotInitialized => UserError::new(
             "Model Not Ready",
             "Speech recognition model is still loading. Please wait.",
-            Some(ErrorKind::NotInitialized),
+            Some(ErrorKind::ModelNotReady),
             None,
             None,
         ),
@@ -460,7 +460,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::AlreadyRecording => UserError::new(
             "Already Recording",
             "Recording is already in progress.",
-            Some(ErrorKind::AlreadyRecording),
+            Some(ErrorKind::RecordingFailed),
             None,
             None,
         ),
@@ -468,7 +468,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::NotRecording => UserError::new(
             "Not Recording",
             "No recording in progress.",
-            Some(ErrorKind::NotRecording),
+            Some(ErrorKind::RecordingFailed),
             None,
             None,
         ),
@@ -476,7 +476,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::InvalidSession { expected, actual } => UserError::new(
             "Session Mismatch",
             "Recording session mismatch. Please try again.",
-            Some(ErrorKind::InvalidSession),
+            Some(ErrorKind::RecordingFailed),
             Some(Remediation::Retry),
             Some(format!("expected={}, actual={}", expected, actual)),
         ),
@@ -499,7 +499,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
                 "Transcription timed out after {} seconds. Click to restart the service.",
                 timeout_secs
             ),
-            Some(ErrorKind::Internal),
+            Some(ErrorKind::TranscriptionTimeout),
             Some(Remediation::RestartSidecar),
             None,
         ),
@@ -507,7 +507,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::TranscriptionFailed { message } => UserError::new(
             "Transcription Failed",
             "Transcription failed. Recording discarded.",
-            Some(ErrorKind::Transcription),
+            Some(ErrorKind::TranscriptionFailed),
             Some(Remediation::Retry),
             Some(message.clone()),
         ),
@@ -552,7 +552,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
         AppErrorKind::AccessibilityPermissionDenied => UserError::new(
             "Accessibility Permission Required",
             "Accessibility permission is required for text injection. Click to open settings.",
-            None, // Rust-side detection
+            Some(ErrorKind::InjectionFailed),
             Some(Remediation::OpenSettings(SettingsPage::MacOSAccessibility)),
             None,
         ),
@@ -589,18 +589,47 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
 /// This function is used when receiving errors from the sidecar via JSON-RPC.
 pub fn from_sidecar_error(kind: &str, message: &str, details: Option<&str>) -> AppErrorKind {
     match kind {
+        // Canonical catalog
+        "E_SIDECAR_SPAWN" => AppErrorKind::SidecarNotFound,
+        "E_SIDECAR_IPC" => AppErrorKind::SidecarHang,
+        "E_SIDECAR_CRASH" => AppErrorKind::SidecarCrash { restart_count: 0 },
+        "E_SIDECAR_CIRCUIT_BREAKER" => AppErrorKind::SidecarMaxRetries { retry_count: 0 },
         "E_MIC_PERMISSION" => AppErrorKind::MicrophonePermissionDenied,
+        "E_DEVICE_REMOVED" => AppErrorKind::DeviceDisconnected {
+            during_recording: true,
+        },
+        "E_NO_AUDIO_DEVICE" => AppErrorKind::NoMicrophone,
+        "E_RECORDING_FAILED" => AppErrorKind::AudioIO {
+            message: message.to_string(),
+        },
+        "E_TRANSCRIPTION_TIMEOUT" => AppErrorKind::TranscriptionTimeout { timeout_secs: 0 },
+        "E_TRANSCRIPTION_FAILED" => AppErrorKind::TranscriptionFailed {
+            message: message.to_string(),
+        },
+        "E_MODEL_NOT_READY" => AppErrorKind::ModelNotInitialized,
+        "E_MODEL_DOWNLOAD" => AppErrorKind::ModelLoadFailed {
+            model_id: details.unwrap_or("unknown").to_string(),
+        },
+        "E_METHOD_NOT_FOUND" => AppErrorKind::Internal {
+            message: format!("Unsupported IPC method: {}", message),
+        },
+        "E_LANGUAGE_UNSUPPORTED" => AppErrorKind::Internal {
+            message: format!("Language unsupported: {}", message),
+        },
+        "E_INJECTION_FAILED" | "E_OVERLAY_FAILED" => AppErrorKind::Internal {
+            message: message.to_string(),
+        },
+
+        // Backward-compatible sidecar aliases
         "E_DEVICE_NOT_FOUND" => AppErrorKind::DeviceNotFound {
             device_uid: details.map(|s| s.to_string()),
         },
+        "E_DEVICE_UNAVAILABLE" => AppErrorKind::NoMicrophone,
         "E_AUDIO_IO" => AppErrorKind::AudioIO {
             message: message.to_string(),
         },
-        "E_ALREADY_RECORDING" => AppErrorKind::AlreadyRecording,
-        "E_NOT_RECORDING" => AppErrorKind::NotRecording,
-        "E_INVALID_SESSION" => AppErrorKind::InvalidSession {
-            expected: "unknown".to_string(),
-            actual: details.unwrap_or("unknown").to_string(),
+        "E_ALREADY_RECORDING" | "E_NOT_RECORDING" | "E_INVALID_SESSION" => AppErrorKind::AudioIO {
+            message: message.to_string(),
         },
         "E_DISK_FULL" => {
             // Parse bytes from details if available
@@ -624,6 +653,8 @@ pub fn from_sidecar_error(kind: &str, message: &str, details: Option<&str>) -> A
         "E_TRANSCRIPTION" | "E_TRANSCRIBE" => AppErrorKind::TranscriptionFailed {
             message: message.to_string(),
         },
+        "E_SIDECAR_RESTARTING" => AppErrorKind::SidecarCrash { restart_count: 0 },
+        "E_SIDECAR_FAILED" => AppErrorKind::SidecarMaxRetries { retry_count: 0 },
         "E_INTERNAL" | "E_MODEL" | "E_ASR" | "E_METER" => AppErrorKind::Internal {
             message: message.to_string(),
         },
@@ -751,14 +782,14 @@ mod tests {
     #[test]
     fn test_app_error_serialization_shape() {
         let error = AppError::new(
-            "E_TRANSCRIPTION",
+            "E_TRANSCRIPTION_FAILED",
             "Transcription failed",
             Some(json!({"session_id": "abc-123"})),
             true,
         );
 
         let json = serde_json::to_string(&error).unwrap();
-        assert!(json.contains("\"code\":\"E_TRANSCRIPTION\""));
+        assert!(json.contains("\"code\":\"E_TRANSCRIPTION_FAILED\""));
         assert!(json.contains("\"message\":\"Transcription failed\""));
         assert!(json.contains("\"recoverable\":true"));
         assert!(json.contains("session_id"));
