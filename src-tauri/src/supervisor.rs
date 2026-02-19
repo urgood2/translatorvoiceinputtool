@@ -17,6 +17,9 @@ use tauri::{AppHandle, Emitter};
 use crate::sidecar::SidecarManager;
 
 const EVENT_SIDECAR_STATUS: &str = "sidecar:status";
+const DEFAULT_CAPTURED_LOG_MAX_LINES: usize = 1000;
+const STATUS_LOG_EXCERPT_LINES: usize = 8;
+const STATUS_LOG_LINE_MAX_CHARS: usize = 180;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,6 +70,8 @@ pub struct SidecarSupervisorConfig {
     pub circuit_breaker_window_ms: u64,
     /// Master switch for auto-restart policy.
     pub auto_restart_enabled: bool,
+    /// Maximum sidecar log lines retained in supervisor memory.
+    pub captured_log_max_lines: usize,
 }
 
 impl Default for SidecarSupervisorConfig {
@@ -78,6 +83,7 @@ impl Default for SidecarSupervisorConfig {
             backoff_max_ms: 30_000,
             circuit_breaker_window_ms: 60_000,
             auto_restart_enabled: true,
+            captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
         }
     }
 }
@@ -100,6 +106,9 @@ pub trait SidecarController: Send + Sync {
     fn start(&self) -> Result<(), String>;
     fn stop(&self) -> Result<(), String>;
     fn self_check(&self) -> Result<String, String>;
+    fn drain_captured_logs(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 impl SidecarController for SidecarManager {
@@ -113,6 +122,10 @@ impl SidecarController for SidecarManager {
 
     fn self_check(&self) -> Result<String, String> {
         Self::self_check(self)
+    }
+
+    fn drain_captured_logs(&self) -> Vec<String> {
+        Self::drain_captured_logs(self)
     }
 }
 
@@ -182,13 +195,33 @@ where
             line: line.into(),
             captured_at: Instant::now(),
         });
+        let max_lines = self.config.captured_log_max_lines.max(1);
+        while self.captured_logs.len() > max_lines {
+            self.captured_logs.pop_front();
+        }
     }
 
     pub fn drain_captured_logs(&mut self) -> Vec<SidecarLogRecord> {
+        self.capture_controller_logs();
         self.captured_logs.drain(..).collect()
     }
 
+    pub fn recent_captured_log_lines(&mut self, count: usize) -> Vec<String> {
+        self.capture_controller_logs();
+        if count == 0 {
+            return Vec::new();
+        }
+        let len = self.captured_logs.len();
+        let skip = len.saturating_sub(count);
+        self.captured_logs
+            .iter()
+            .skip(skip)
+            .map(|entry| entry.line.clone())
+            .collect()
+    }
+
     pub async fn start(&mut self) -> Result<(), String> {
+        self.capture_controller_logs();
         self.state = SidecarState::Starting;
         self.emit_status(Some("starting sidecar"));
 
@@ -214,6 +247,7 @@ where
     }
 
     pub async fn stop(&mut self) -> Result<(), String> {
+        self.capture_controller_logs();
         self.controller.stop()?;
         self.state = SidecarState::Stopped;
         self.emit_status(Some("sidecar stopped"));
@@ -232,19 +266,33 @@ where
 
     pub async fn handle_crash(&mut self) -> Result<(), String> {
         let now = Instant::now();
+        self.capture_controller_logs();
         self.register_failure(now);
+        let recent_excerpt = self.recent_log_excerpt(STATUS_LOG_EXCERPT_LINES);
 
         if !self.config.auto_restart_enabled {
             self.state = SidecarState::Failed;
-            self.emit_status(Some("automatic restart disabled by configuration"));
+            let message = match recent_excerpt {
+                Some(excerpt) => format!(
+                    "automatic restart disabled by configuration | recent sidecar logs: {}",
+                    excerpt
+                ),
+                None => "automatic restart disabled by configuration".to_string(),
+            };
+            self.emit_status(Some(&message));
             return Ok(());
         }
 
         if self.circuit_breaker.is_open {
             self.state = SidecarState::Failed;
-            self.emit_status(Some(
-                "sidecar failed after rapid restart attempts; circuit breaker tripped (manual restart required)",
-            ));
+            let message = match recent_excerpt {
+                Some(excerpt) => format!(
+                    "sidecar failed after rapid restart attempts; circuit breaker tripped (manual restart required) | recent sidecar logs: {}",
+                    excerpt
+                ),
+                None => "sidecar failed after rapid restart attempts; circuit breaker tripped (manual restart required)".to_string(),
+            };
+            self.emit_status(Some(&message));
             return Ok(());
         }
 
@@ -253,11 +301,20 @@ where
         let delay = self.backoff_delay_for_attempt(self.restart_count);
 
         self.state = SidecarState::Restarting;
-        self.emit_status(Some(&format!(
-            "sidecar crash detected; restarting in {}ms (attempt {})",
-            delay.as_millis(),
-            self.restart_count
-        )));
+        let message = match recent_excerpt {
+            Some(excerpt) => format!(
+                "sidecar crash detected; restarting in {}ms (attempt {}) | recent sidecar logs: {}",
+                delay.as_millis(),
+                self.restart_count,
+                excerpt
+            ),
+            None => format!(
+                "sidecar crash detected; restarting in {}ms (attempt {})",
+                delay.as_millis(),
+                self.restart_count
+            ),
+        };
+        self.emit_status(Some(&message));
 
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
@@ -318,6 +375,47 @@ where
         Duration::from_millis(delay_u64)
     }
 
+    fn capture_controller_logs(&mut self) {
+        for line in self.controller.drain_captured_logs() {
+            self.record_log_line(SidecarLogStream::Stderr, line);
+        }
+    }
+
+    fn recent_log_excerpt(&self, count: usize) -> Option<String> {
+        if self.captured_logs.is_empty() || count == 0 {
+            return None;
+        }
+
+        let len = self.captured_logs.len();
+        let skip = len.saturating_sub(count);
+        let joined = self
+            .captured_logs
+            .iter()
+            .skip(skip)
+            .map(|entry| Self::shorten_log_line(&entry.line))
+            .collect::<Vec<_>>()
+            .join(" || ");
+
+        if joined.is_empty() {
+            None
+        } else {
+            Some(joined)
+        }
+    }
+
+    fn shorten_log_line(line: &str) -> String {
+        let trimmed = line.trim();
+        if trimmed.chars().count() <= STATUS_LOG_LINE_MAX_CHARS {
+            return trimmed.to_string();
+        }
+
+        let shortened = trimmed
+            .chars()
+            .take(STATUS_LOG_LINE_MAX_CHARS.saturating_sub(3))
+            .collect::<String>();
+        format!("{}...", shortened)
+    }
+
     fn emit_status(&self, message: Option<&str>) {
         let payload = self.status_payload(message);
         if let Some(app_handle) = &self.app_handle {
@@ -360,6 +458,7 @@ mod tests {
         ping_calls: u32,
         fail_start: bool,
         fail_ping: bool,
+        captured_logs: Vec<String>,
     }
 
     #[derive(Clone, Default)]
@@ -376,6 +475,7 @@ mod tests {
                 ping_calls: locked.ping_calls,
                 fail_start: locked.fail_start,
                 fail_ping: locked.fail_ping,
+                captured_logs: locked.captured_logs.clone(),
             }
         }
 
@@ -391,6 +491,14 @@ mod tests {
                 .lock()
                 .expect("controller state lock poisoned")
                 .fail_ping = fail_ping;
+        }
+
+        fn push_captured_log(&self, line: impl Into<String>) {
+            self.inner
+                .lock()
+                .expect("controller state lock poisoned")
+                .captured_logs
+                .push(line.into());
         }
     }
 
@@ -418,6 +526,11 @@ mod tests {
             }
             Ok("0.1.0".to_string())
         }
+
+        fn drain_captured_logs(&self) -> Vec<String> {
+            let mut state = self.inner.lock().expect("controller state lock poisoned");
+            std::mem::take(&mut state.captured_logs)
+        }
     }
 
     #[test]
@@ -432,6 +545,7 @@ mod tests {
                 backoff_max_ms: 500,
                 circuit_breaker_window_ms: 30_000,
                 auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
             },
         );
 
@@ -468,6 +582,7 @@ mod tests {
                 backoff_max_ms: 200,
                 circuit_breaker_window_ms: 60_000,
                 auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
             },
         );
 
@@ -543,6 +658,7 @@ mod tests {
                 backoff_max_ms: 250,
                 circuit_breaker_window_ms: 60_000,
                 auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
             },
         );
 
@@ -571,6 +687,7 @@ mod tests {
                 backoff_max_ms: 0,
                 circuit_breaker_window_ms: 60_000,
                 auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
             },
         );
 
@@ -606,6 +723,7 @@ mod tests {
                 backoff_max_ms: 0,
                 circuit_breaker_window_ms: 60_000,
                 auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
             },
         );
 
@@ -648,6 +766,7 @@ mod tests {
                 backoff_max_ms: 0,
                 circuit_breaker_window_ms: 20,
                 auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
             },
         );
 
@@ -675,6 +794,7 @@ mod tests {
                 backoff_max_ms: 0,
                 circuit_breaker_window_ms: 60_000,
                 auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
             },
         );
 
@@ -705,6 +825,7 @@ mod tests {
                 backoff_max_ms: 0,
                 circuit_breaker_window_ms: 60_000,
                 auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
             },
         );
 
@@ -739,6 +860,7 @@ mod tests {
                 backoff_max_ms: 0,
                 circuit_breaker_window_ms: 60_000,
                 auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
             },
         );
 
@@ -772,6 +894,7 @@ mod tests {
                 backoff_max_ms: 0,
                 circuit_breaker_window_ms: 60_000,
                 auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
             },
         );
 
@@ -850,6 +973,44 @@ mod tests {
         assert_eq!(config.backoff_max_ms, 30_000);
         assert_eq!(config.circuit_breaker_window_ms, 60_000);
         assert!(config.auto_restart_enabled);
+        assert_eq!(
+            config.captured_log_max_lines,
+            DEFAULT_CAPTURED_LOG_MAX_LINES
+        );
+    }
+
+    #[test]
+    fn supervisor_ingests_controller_captured_logs() {
+        let controller = FakeController::default();
+        controller.push_captured_log("line-one");
+        controller.push_captured_log("{\"json\":true}");
+
+        let mut supervisor = SidecarSupervisor::new(controller, SidecarSupervisorConfig::default());
+        let logs = supervisor.recent_captured_log_lines(10);
+
+        assert_eq!(
+            logs,
+            vec!["line-one".to_string(), "{\"json\":true}".to_string()]
+        );
+    }
+
+    #[test]
+    fn captured_log_ring_buffer_respects_configured_max() {
+        let controller = FakeController::default();
+        let mut supervisor = SidecarSupervisor::new(
+            controller,
+            SidecarSupervisorConfig {
+                captured_log_max_lines: 2,
+                ..SidecarSupervisorConfig::default()
+            },
+        );
+
+        supervisor.record_log_line(SidecarLogStream::Stderr, "one");
+        supervisor.record_log_line(SidecarLogStream::Stderr, "two");
+        supervisor.record_log_line(SidecarLogStream::Stderr, "three");
+
+        let logs = supervisor.recent_captured_log_lines(10);
+        assert_eq!(logs, vec!["two".to_string(), "three".to_string()]);
     }
 
     #[tokio::test]
@@ -887,6 +1048,7 @@ mod tests {
                 backoff_max_ms: 30_000,
                 circuit_breaker_window_ms: 60_000,
                 auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
             },
         );
 
@@ -918,6 +1080,7 @@ mod tests {
                 backoff_max_ms: 0,
                 circuit_breaker_window_ms: 60_000,
                 auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
             },
         );
 

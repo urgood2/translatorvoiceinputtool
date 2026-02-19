@@ -876,6 +876,8 @@ pub struct DiagnosticsReport {
     pub config: AppConfig,
     pub self_check: SelfCheckResult,
     pub recent_logs: Vec<LogEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub recent_sidecar_logs: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, String>,
 }
@@ -885,7 +887,15 @@ pub use crate::log_buffer::LogEntry;
 
 /// Generate diagnostics report.
 #[tauri::command]
-pub fn generate_diagnostics() -> DiagnosticsReport {
+pub async fn generate_diagnostics(
+    integration_state: tauri::State<'_, IntegrationState>,
+) -> Result<DiagnosticsReport, CommandError> {
+    let manager = integration_state.0.read().await;
+    let recent_sidecar_logs = manager.recent_sidecar_logs(100).await;
+    Ok(diagnostics_report_with_sidecar_logs(recent_sidecar_logs))
+}
+
+fn diagnostics_report_with_sidecar_logs(recent_sidecar_logs: Vec<String>) -> DiagnosticsReport {
     DiagnosticsReport {
         version: env!("CARGO_PKG_VERSION").to_string(),
         platform: std::env::consts::OS.to_string(),
@@ -893,6 +903,7 @@ pub fn generate_diagnostics() -> DiagnosticsReport {
         config: config::load_config(),
         self_check: run_self_check(),
         recent_logs: get_recent_logs(100),
+        recent_sidecar_logs,
         environment: diagnostics_environment(),
     }
 }
@@ -1221,7 +1232,7 @@ mod tests {
 
     #[test]
     fn test_diagnostics_report_serialization() {
-        let report = generate_diagnostics();
+        let report = diagnostics_report_with_sidecar_logs(Vec::new());
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("version"));
         assert!(json.contains("platform"));
@@ -1235,12 +1246,13 @@ mod tests {
         buffer.clear();
         crate::log_buffer::log_to_buffer(log::Level::Info, "commands::tests", "diagnostics-log");
 
-        let report = generate_diagnostics();
+        let report = diagnostics_report_with_sidecar_logs(vec!["sidecar-line".to_string()]);
         assert!(report
             .recent_logs
             .iter()
             .any(|entry| entry.target == "commands::tests"
                 && entry.message.contains("diagnostics-log")));
+        assert_eq!(report.recent_sidecar_logs, vec!["sidecar-line".to_string()]);
     }
 
     #[test]

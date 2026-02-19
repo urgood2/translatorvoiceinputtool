@@ -8,6 +8,7 @@
 
 #![allow(dead_code)] // Methods will be used in future RPC client implementation
 
+use std::collections::VecDeque;
 use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
@@ -26,6 +27,7 @@ const MAX_RESTART_ATTEMPTS: u32 = 5;
 
 /// Backoff delays in milliseconds: 250 → 500 → 1000 → 2000 → 10000
 const BACKOFF_DELAYS_MS: [u64; 5] = [250, 500, 1000, 2000, 10000];
+const SIDECAR_CAPTURED_LOG_MAX_LINES: usize = 1000;
 
 /// Event name for sidecar status changes
 const EVENT_SIDECAR_STATUS: &str = "sidecar:status";
@@ -82,6 +84,7 @@ struct SidecarInner {
     child: Option<Child>,
     stdout_reader: Option<BufReader<ChildStdout>>,
     last_error: Option<String>,
+    captured_logs: VecDeque<String>,
 }
 
 /// Sidecar spawn mode
@@ -133,6 +136,7 @@ impl SidecarManager {
                 child: None,
                 stdout_reader: None,
                 last_error: None,
+                captured_logs: VecDeque::new(),
             })),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
             app_handle: None,
@@ -182,6 +186,12 @@ impl SidecarManager {
             message: inner.last_error.clone(),
             error,
         }
+    }
+
+    /// Drain captured sidecar stderr logs.
+    pub fn drain_captured_logs(&self) -> Vec<String> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.captured_logs.drain(..).collect()
     }
 
     fn status_error(state: SidecarState, restart_count: u32, message: &str) -> Option<AppError> {
@@ -631,6 +641,13 @@ impl SidecarManager {
                         }
 
                         log::warn!("Sidecar stderr: {}", text);
+                        {
+                            let mut inner_guard = inner.lock().unwrap();
+                            inner_guard.captured_logs.push_back(text.to_string());
+                            while inner_guard.captured_logs.len() > SIDECAR_CAPTURED_LOG_MAX_LINES {
+                                inner_guard.captured_logs.pop_front();
+                            }
+                        }
 
                         if shutdown_flag.load(Ordering::SeqCst) {
                             continue;

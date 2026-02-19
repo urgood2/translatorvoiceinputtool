@@ -3120,6 +3120,12 @@ impl IntegrationManager {
         log::info!("Integration manager shutdown complete");
     }
 
+    /// Return recent sidecar logs captured by the supervisor.
+    pub async fn recent_sidecar_logs(&self, count: usize) -> Vec<String> {
+        let mut supervisor = self.supervisor.lock().await;
+        supervisor.recent_captured_log_lines(count)
+    }
+
     /// Get the watchdog for external monitoring.
     pub fn watchdog(&self) -> &Arc<Watchdog> {
         &self.watchdog
