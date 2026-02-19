@@ -14,7 +14,9 @@ use std::sync::Arc;
 use crate::capabilities::{Capabilities, CapabilityIssue};
 use crate::config::{self, AppConfig, ReplacementRule};
 use crate::history::{TranscriptEntry, TranscriptHistory};
-use crate::integration::{SidecarAudioDevice, SidecarModelStatus, SidecarPresetInfo};
+use crate::integration::{
+    SidecarAudioDevice, SidecarModelStatus, SidecarPresetInfo, SidecarReplacementPreviewResult,
+};
 use crate::state::{AppStateManager, CannotRecordReason, StateEvent};
 use crate::IntegrationState;
 
@@ -600,26 +602,20 @@ pub struct PresetInfo {
     pub rule_count: usize,
 }
 
-/// Get current replacement rules.
-#[tauri::command]
-pub fn get_replacement_rules() -> Vec<ReplacementRule> {
-    let config = config::load_config();
-    config.replacements
+/// Replacement preview payload returned to UI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplacementPreviewResult {
+    pub result: String,
+    pub truncated: bool,
+    pub applied_rules_count: usize,
 }
 
-/// Set replacement rules.
-#[tauri::command]
-pub async fn set_replacement_rules(rules: Vec<ReplacementRule>) -> Result<(), CommandError> {
-    let mut config = config::load_config();
-    config.replacements = rules;
-    config::save_config(&config)?;
-    Ok(())
-}
-
-/// Preview replacement result without saving.
-#[tauri::command]
-pub fn preview_replacement(input: String, rules: Vec<ReplacementRule>) -> String {
+fn preview_replacement_local(
+    input: String,
+    rules: Vec<ReplacementRule>,
+) -> ReplacementPreviewResult {
     let mut result = input;
+    let mut applied_rules_count = 0usize;
     for rule in rules {
         if rule.enabled {
             let pattern = if rule.word_boundary {
@@ -639,7 +635,7 @@ pub fn preview_replacement(input: String, rules: Vec<ReplacementRule>) -> String
                 .build()
             {
                 Ok(compiled) => {
-                    result = if rule.kind == "regex" {
+                    let next = if rule.kind == "regex" {
                         compiled
                             .replace_all(&result, rule.replacement.as_str())
                             .into_owned()
@@ -648,6 +644,10 @@ pub fn preview_replacement(input: String, rules: Vec<ReplacementRule>) -> String
                             .replace_all(&result, NoExpand(rule.replacement.as_str()))
                             .into_owned()
                     };
+                    if next != result {
+                        applied_rules_count += 1;
+                    }
+                    result = next;
                 }
                 Err(error) => {
                     log::warn!(
@@ -660,7 +660,58 @@ pub fn preview_replacement(input: String, rules: Vec<ReplacementRule>) -> String
             }
         }
     }
-    result
+    ReplacementPreviewResult {
+        result,
+        truncated: false,
+        applied_rules_count,
+    }
+}
+
+/// Get current replacement rules.
+#[tauri::command]
+pub fn get_replacement_rules() -> Vec<ReplacementRule> {
+    let config = config::load_config();
+    config.replacements
+}
+
+/// Set replacement rules.
+#[tauri::command]
+pub async fn set_replacement_rules(rules: Vec<ReplacementRule>) -> Result<(), CommandError> {
+    let mut config = config::load_config();
+    config.replacements = rules;
+    config::save_config(&config)?;
+    Ok(())
+}
+
+/// Preview replacement result without saving.
+#[tauri::command]
+pub async fn preview_replacement(
+    integration_state: tauri::State<'_, IntegrationState>,
+    input: String,
+    rules: Vec<ReplacementRule>,
+) -> Result<ReplacementPreviewResult, CommandError> {
+    let manager = integration_state.0.read().await;
+    match manager
+        .preview_replacement(input.clone(), rules.clone())
+        .await
+    {
+        Ok(SidecarReplacementPreviewResult {
+            result,
+            truncated,
+            applied_rules_count,
+        }) => Ok(ReplacementPreviewResult {
+            result,
+            truncated,
+            applied_rules_count: applied_rules_count.unwrap_or_default(),
+        }),
+        Err(message) => {
+            log::warn!(
+                "Sidecar replacements.preview unavailable ({}); falling back to local preview, which may differ from injected output",
+                message
+            );
+            Ok(preview_replacement_local(input, rules))
+        }
+    }
 }
 
 /// Get available presets.
@@ -981,11 +1032,13 @@ mod tests {
             },
         ];
 
-        let result = preview_replacement(
+        let result = preview_replacement_local(
             "Hello period how are you comma I am fine".to_string(),
             rules,
         );
-        assert_eq!(result, "Hello. how are you, I am fine");
+        assert_eq!(result.result, "Hello. how are you, I am fine");
+        assert!(!result.truncated);
+        assert_eq!(result.applied_rules_count, 2);
     }
 
     #[test]
@@ -1002,8 +1055,10 @@ mod tests {
             origin: None,
         }];
 
-        let result = preview_replacement("ASAPly ASAP".to_string(), rules);
-        assert_eq!(result, "ASAPly as soon as possible");
+        let result = preview_replacement_local("ASAPly ASAP".to_string(), rules);
+        assert_eq!(result.result, "ASAPly as soon as possible");
+        assert!(!result.truncated);
+        assert_eq!(result.applied_rules_count, 1);
     }
 
     #[test]
@@ -1020,8 +1075,10 @@ mod tests {
             origin: None,
         }];
 
-        let result = preview_replacement("Total: $42.50".to_string(), rules);
-        assert_eq!(result, "Total: [PRICE]");
+        let result = preview_replacement_local("Total: $42.50".to_string(), rules);
+        assert_eq!(result.result, "Total: [PRICE]");
+        assert!(!result.truncated);
+        assert_eq!(result.applied_rules_count, 1);
     }
 
     #[test]

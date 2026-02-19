@@ -281,7 +281,16 @@
         },
         "additionalProperties": false
       },
-      "result_schema": { "type": "string" }
+      "result_schema": {
+        "type": "object",
+        "required": ["result", "truncated", "applied_rules_count"],
+        "properties": {
+          "result": { "type": "string" },
+          "truncated": { "type": "boolean" },
+          "applied_rules_count": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
     },
     {
       "type": "command",

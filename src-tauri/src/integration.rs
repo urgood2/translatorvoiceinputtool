@@ -327,6 +327,15 @@ pub struct SidecarPresetInfo {
     pub rule_count: usize,
 }
 
+/// Replacement preview payload returned by sidecar `replacements.preview`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SidecarReplacementPreviewResult {
+    pub result: String,
+    pub truncated: bool,
+    #[serde(default)]
+    pub applied_rules_count: Option<usize>,
+}
+
 fn is_configured_device_available(
     configured_device_uid: Option<&str>,
     devices: &[AudioDeviceSummary],
@@ -1652,6 +1661,28 @@ impl IntegrationManager {
             .map_err(|e| format!("Failed to set active replacement rules: {}", e))?;
 
         Ok(())
+    }
+
+    /// Preview text using sidecar's replacements pipeline.
+    pub async fn preview_replacement(
+        &self,
+        text: String,
+        rules: Vec<ReplacementRule>,
+    ) -> Result<SidecarReplacementPreviewResult, String> {
+        let client = self.rpc_client.read().await;
+        let client = client
+            .as_ref()
+            .ok_or_else(|| "Sidecar not connected".to_string())?;
+
+        let params = json!({
+            "text": text,
+            "rules": rules,
+        });
+
+        client
+            .call::<SidecarReplacementPreviewResult>("replacements.preview", Some(params))
+            .await
+            .map_err(|e| format!("Failed to preview replacements: {}", e))
     }
 
     /// Stop microphone level meter via sidecar.
@@ -3913,6 +3944,18 @@ mod tests {
             .set_active_replacement_rules(Vec::new())
             .await
             .expect_err("set_active_replacement_rules should fail without sidecar");
+        assert!(error.contains("Sidecar not connected"));
+    }
+
+    #[tokio::test]
+    async fn test_preview_replacement_requires_sidecar_connection() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+
+        let error = manager
+            .preview_replacement("hello".to_string(), Vec::new())
+            .await
+            .expect_err("preview_replacement should fail without sidecar");
         assert!(error.contains("Sidecar not connected"));
     }
 }

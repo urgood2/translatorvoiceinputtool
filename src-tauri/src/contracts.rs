@@ -498,7 +498,12 @@ pub struct CommandPreviewReplacementParams {
     pub rules: Vec<TauriCommandDefOpenObject>,
 }
 
-pub type CommandPreviewReplacementResult = String;
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct CommandPreviewReplacementResult {
+    pub applied_rules_count: i64,
+    pub result: String,
+    pub truncated: bool,
+}
 
 pub type CommandPurgeModelCacheParams = TauriCommandDefEmptyParams;
 

@@ -322,7 +322,11 @@ export type TauriCommandPreviewReplacementParams = {
   input: string;
   rules: Array<TauriCommandDefOpenObject>;
 };
-export type TauriCommandPreviewReplacementResult = string;
+export type TauriCommandPreviewReplacementResult = {
+  applied_rules_count: number;
+  result: string;
+  truncated: boolean;
+};
 
 export type TauriCommandPurgeModelCacheParams = TauriCommandDefEmptyParams;
 export type TauriCommandPurgeModelCacheResult = TauriCommandDefVoidResult;
