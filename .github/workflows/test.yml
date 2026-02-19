@@ -118,6 +118,9 @@ jobs:
       - name: Verify derived fixture corpus generation (if present)
         run: python scripts/gen_contract_examples.py --check
 
+      - name: Check generated contract files are not manually edited
+        run: ./scripts/check_generated_contracts.sh
+
       - name: Validate contracts and generated artifacts
         run: python scripts/validate_contracts.py
 

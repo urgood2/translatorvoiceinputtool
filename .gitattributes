@@ -1,3 +1,7 @@
 
 # Use bd merge for beads JSONL files
 .beads/issues.jsonl merge=beads
+
+# Generated contract artifacts
+src/types.contracts.ts linguist-generated=true
+src-tauri/src/contracts.rs linguist-generated=true
