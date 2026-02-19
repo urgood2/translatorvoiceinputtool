@@ -11,6 +11,7 @@ use tokio::sync::RwLock;
 mod capabilities;
 mod commands;
 mod config;
+pub mod contracts;
 mod errors;
 mod event_seq;
 mod focus;
