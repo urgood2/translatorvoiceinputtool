@@ -25,6 +25,7 @@ mod model_defaults;
 mod recording;
 mod sidecar;
 mod state;
+mod supervisor;
 mod tray;
 mod watchdog;
 
