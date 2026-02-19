@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { TabPanel } from '../components/Layout/TabPanel';
+import { TabPanel } from './TabPanel';
 
 describe('TabPanel', () => {
   it('renders content only when panel id matches active tab', () => {
