@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAppStore, selectAppState, selectIsRecording } from './store';
 import { useTauriEvents } from './hooks';
-import { SelfCheck, Diagnostics } from './components';
+import { SelfCheck, Diagnostics, SettingsPanel } from './components';
 import type { DiagnosticsReport } from './types';
 
 function App() {
@@ -18,11 +18,16 @@ function App() {
   const history = useAppStore((state) => state.history);
   const modelStatus = useAppStore((state) => state.modelStatus);
   const selfCheckResult = useAppStore((state) => state.selfCheckResult);
+  const config = useAppStore((state) => state.config);
+  const capabilities = useAppStore((state) => state.capabilities);
 
   const initialize = useAppStore((state) => state.initialize);
   const refreshDevices = useAppStore((state) => state.refreshDevices);
   const runSelfCheck = useAppStore((state) => state.runSelfCheck);
   const generateDiagnostics = useAppStore((state) => state.generateDiagnostics);
+  const updateAudioConfig = useAppStore((state) => state.updateAudioConfig);
+  const updateHotkeyConfig = useAppStore((state) => state.updateHotkeyConfig);
+  const updateInjectionConfig = useAppStore((state) => state.updateInjectionConfig);
 
   const [isSelfCheckLoading, setIsSelfCheckLoading] = useState(false);
   const [isDiagnosticsLoading, setIsDiagnosticsLoading] = useState(false);
@@ -51,6 +56,23 @@ function App() {
       setIsDiagnosticsLoading(false);
     }
   }, [generateDiagnostics]);
+
+  const handleSettingsChange = useCallback(async (path: string[], value: any) => {
+    const [section, key] = path;
+    if (!section || !key) return;
+
+    if (section === 'audio') {
+      await updateAudioConfig({ [key]: value });
+      return;
+    }
+    if (section === 'hotkeys') {
+      await updateHotkeyConfig({ [key]: value });
+      return;
+    }
+    if (section === 'injection') {
+      await updateInjectionConfig({ [key]: value });
+    }
+  }, [updateAudioConfig, updateHotkeyConfig, updateInjectionConfig]);
 
   useEffect(() => {
     if (!isInitialized) {
@@ -155,6 +177,20 @@ function App() {
             )}
           </div>
         </div>
+
+        {/* Settings */}
+        {config && (
+          <div className="bg-gray-800 rounded-lg p-6">
+            <h2 className="text-xl font-semibold mb-4">Settings</h2>
+            <SettingsPanel
+              config={config}
+              devices={devices}
+              effectiveHotkeyMode={capabilities?.hotkey_mode}
+              onConfigChange={handleSettingsChange}
+              isLoading={isLoading}
+            />
+          </div>
+        )}
 
         {/* Recent Transcripts */}
         <div className="bg-gray-800 rounded-lg p-6">

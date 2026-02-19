@@ -181,6 +181,8 @@ describe('App diagnostics panels', () => {
 
     expect(screen.getByText('System Health Check')).toBeDefined();
     expect(screen.getAllByText('Diagnostics').length).toBeGreaterThan(0);
+    expect(screen.getByText('Settings')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Hotkeys' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Injection' })).toBeDefined();
   });
 });
-
