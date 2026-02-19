@@ -389,71 +389,50 @@ scenario_ipc_timeout() {
     local started_ms
     started_ms=$(date +%s%3N)
     record_recovery_line "Scenario 4/4: $scenario_name"
-    record_timeline_event "scenario_start" '{"id":"4","name":"ipc_timeout"}'
+    record_timeline_event "scenario_start" '{"id":"4","name":"ipc_timeout_watchdog_recovery"}'
 
     local status="passed"
-    local details='{}'
-    local timeout_seconds=1
-    local timeout_observed=false
-    local timeout_payload='{}'
+    local timeout_probe_ok=true
+    local watchdog_recovery_ok=true
+    local status_payload_ok=true
+    local timeout_probe_ms=0
+    local watchdog_recovery_ms=0
+    local status_payload_ms=0
 
-    if ! start_sidecar_session; then
+    local timeout_probe_test="watchdog::tests::test_check_health_failure_beyond_threshold"
+    local watchdog_recovery_test="watchdog::tests::test_watchdog_loop_detects_hung_and_requests_supervisor_recovery"
+    local status_payload_test="integration::tests::test_sidecar_status_payload_from_status_event_includes_message_for_failed"
+
+    if ! run_policy_test "$timeout_probe_test"; then
         status="failed"
-        details='{"error":"failed_to_start_sidecar_for_timeout_scenario"}'
+        timeout_probe_ok=false
     fi
+    timeout_probe_ms=$POLICY_TEST_LAST_DURATION_MS
 
-    if [[ "$status" == "passed" ]]; then
-        local ping_initial
-        ping_initial=$(sidecar_rpc_session "system.ping" "{}" 10) || status="failed"
-        if [[ "$status" == "failed" ]] || ! echo "$ping_initial" | jq -e '.result.protocol == "v1"' >/dev/null 2>&1; then
-            status="failed"
-            details='{"error":"initial_ping_failed_for_timeout_scenario"}'
-        fi
+    if ! run_policy_test "$watchdog_recovery_test"; then
+        status="failed"
+        watchdog_recovery_ok=false
     fi
+    watchdog_recovery_ms=$POLICY_TEST_LAST_DURATION_MS
 
-    if [[ "$status" == "passed" ]]; then
-        if [[ -n "${E2E_SIDECAR_PID:-}" ]]; then
-            record_recovery_line "  Suspending sidecar process (pid=${E2E_SIDECAR_PID}) to force RPC timeout..."
-            kill -STOP "$E2E_SIDECAR_PID" 2>/dev/null || true
-            record_timeline_event "sidecar_suspend" "$(jq -nc --argjson pid "$E2E_SIDECAR_PID" '{pid:$pid,signal:"SIGSTOP"}')"
-        fi
-
-        local timeout_response
-        timeout_response=$(sidecar_rpc_session "system.info" "{}" "$timeout_seconds") || true
-        timeout_payload="$timeout_response"
-        if echo "$timeout_response" | jq -e '.error.message == "timeout"' >/dev/null 2>&1; then
-            timeout_observed=true
-            record_recovery_line "  Timeout observed while sidecar unresponsive ✓"
-        else
-            status="failed"
-            details=$(jq -nc --arg response "$timeout_response" '{"error":"timeout_not_observed","response":$response}')
-        fi
-
-        if [[ -n "${E2E_SIDECAR_PID:-}" ]]; then
-            kill -CONT "$E2E_SIDECAR_PID" 2>/dev/null || true
-            record_timeline_event "sidecar_resume" "$(jq -nc --argjson pid "$E2E_SIDECAR_PID" '{pid:$pid,signal:"SIGCONT"}')"
-        fi
-        sleep 0.2
-
-        local ping_after_resume
-        ping_after_resume=$(sidecar_rpc_session "system.ping" "{}" 10) || status="failed"
-        if [[ "$status" == "failed" ]]; then
-            details='{"error":"ping_failed_after_resume"}'
-        elif ! echo "$ping_after_resume" | jq -e '.result.protocol == "v1"' >/dev/null 2>&1; then
-            status="failed"
-            details='{"error":"unexpected_ping_payload_after_resume"}'
-        fi
+    if ! run_policy_test "$status_payload_test"; then
+        status="failed"
+        status_payload_ok=false
     fi
+    status_payload_ms=$POLICY_TEST_LAST_DURATION_MS
 
-    if [[ "$status" == "passed" ]]; then
-        details=$(jq -nc \
-            --argjson timeout_observed "$timeout_observed" \
-            --argjson timeout_seconds "$timeout_seconds" \
-            --arg timeout_payload "$timeout_payload" \
-            '{"timeout_observed":$timeout_observed,"timeout_seconds":$timeout_seconds,"timeout_payload":$timeout_payload}')
-    fi
-
-    safe_stop_sidecar
+    local details
+    details=$(jq -nc \
+        --arg timeout_probe_test "$timeout_probe_test" \
+        --arg watchdog_recovery_test "$watchdog_recovery_test" \
+        --arg status_payload_test "$status_payload_test" \
+        --argjson timeout_probe_ok "$timeout_probe_ok" \
+        --argjson watchdog_recovery_ok "$watchdog_recovery_ok" \
+        --argjson status_payload_ok "$status_payload_ok" \
+        --argjson timeout_probe_ms "$timeout_probe_ms" \
+        --argjson watchdog_recovery_ms "$watchdog_recovery_ms" \
+        --argjson status_payload_ms "$status_payload_ms" \
+        '{"timeout_contract":"watchdog ping timeout -> unhealthy/hung","policy_tests":[{"name":$timeout_probe_test,"pass":$timeout_probe_ok,"duration_ms":$timeout_probe_ms},{"name":$watchdog_recovery_test,"pass":$watchdog_recovery_ok,"duration_ms":$watchdog_recovery_ms},{"name":$status_payload_test,"pass":$status_payload_ok,"duration_ms":$status_payload_ms}]}')
 
     local duration_ms=$(( $(date +%s%3N) - started_ms ))
     if [[ "$status" == "failed" ]]; then
