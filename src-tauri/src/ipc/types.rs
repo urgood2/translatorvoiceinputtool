@@ -132,6 +132,8 @@ impl TimeoutConfig {
             "audio.meter_start" => 2,
             "audio.meter_stop" => 2,
             "model.get_status" => 2,
+            "model.download" => 1200, // up to 20 minutes for large first-run download
+            "model.install" => 1200,  // legacy alias compatibility
             "model.purge_cache" => 10,
             "asr.initialize" => 1200, // 20 minutes for first-run download
             "recording.start" => 2,

@@ -371,11 +371,16 @@ fn map_sidecar_model_status(status: SidecarModelStatus) -> ModelStatus {
 
 /// Download the ASR model.
 #[tauri::command]
-pub async fn download_model() -> Result<(), CommandError> {
-    // TODO: Implement via sidecar
-    Err(CommandError::NotImplemented {
-        message: "Model download requires sidecar connection".to_string(),
-    })
+pub async fn download_model(
+    integration_state: tauri::State<'_, IntegrationState>,
+    model_id: Option<String>,
+    force: Option<bool>,
+) -> Result<(), CommandError> {
+    let manager = integration_state.0.read().await;
+    manager
+        .download_model(model_id, force)
+        .await
+        .map_err(|message| CommandError::Model { message })
 }
 
 /// Purge model cache.

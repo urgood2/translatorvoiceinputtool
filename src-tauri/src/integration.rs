@@ -185,6 +185,71 @@ fn resolve_model_id(model_id: Option<String>) -> String {
         .unwrap_or_else(configured_model_id)
 }
 
+fn model_download_params(model_id: Option<String>, force: Option<bool>) -> Option<Value> {
+    let mut params = serde_json::Map::new();
+    if let Some(model_id) = model_id {
+        let trimmed = model_id.trim();
+        if !trimmed.is_empty() {
+            params.insert("model_id".to_string(), json!(trimmed));
+        }
+    }
+    if let Some(force) = force {
+        params.insert("force".to_string(), json!(force));
+    }
+
+    if params.is_empty() {
+        None
+    } else {
+        Some(Value::Object(params))
+    }
+}
+
+fn map_download_response_status(status: &SidecarModelStatus) -> ModelStatus {
+    match status.status.as_str() {
+        "missing" => ModelStatus::Missing,
+        "downloading" => ModelStatus::Downloading,
+        "loading" | "verifying" => ModelStatus::Loading,
+        "ready" => ModelStatus::Ready,
+        "error" => ModelStatus::Error(
+            status
+                .error
+                .clone()
+                .or_else(|| status.error_message.clone())
+                .unwrap_or_else(|| "model download failed".to_string()),
+        ),
+        _ => ModelStatus::Unknown,
+    }
+}
+
+fn model_download_method_unsupported_message() -> String {
+    "E_METHOD_NOT_FOUND: Sidecar does not support model.download or model.install".to_string()
+}
+
+fn map_model_download_rpc_error(error: RpcError) -> String {
+    match error {
+        RpcError::Remote { kind, message, .. } => match kind.as_str() {
+            "E_NETWORK" => {
+                format!("E_NETWORK: {message}. Check your network connection and retry.")
+            }
+            "E_DISK_FULL" => {
+                format!("E_DISK_FULL: {message}. Free disk space and retry the download.")
+            }
+            "E_CACHE_CORRUPT" => {
+                format!("E_CACHE_CORRUPT: {message}. Purge model cache, then retry.")
+            }
+            "E_METHOD_NOT_FOUND" => model_download_method_unsupported_message(),
+            _ if !kind.is_empty() => format!("{kind}: {message}"),
+            _ => format!("E_MODEL_DOWNLOAD: {message}"),
+        },
+        RpcError::Timeout { .. } => {
+            "E_MODEL_DOWNLOAD: Model download timed out. Retry and keep the app running while the model installs."
+                .to_string()
+        }
+        RpcError::Disconnected => "E_SIDECAR_IPC: Sidecar not connected".to_string(),
+        other => format!("E_MODEL_DOWNLOAD: Failed to download model: {other}"),
+    }
+}
+
 fn model_status_to_event_fields(status: ModelStatus) -> (String, Option<String>) {
     match status {
         ModelStatus::Unknown => ("unknown".to_string(), None),
@@ -1071,23 +1136,100 @@ impl IntegrationManager {
     }
 
     /// Manually trigger model download.
-    pub async fn download_model(&self) -> Result<(), String> {
+    pub async fn download_model(
+        &self,
+        model_id: Option<String>,
+        force: Option<bool>,
+    ) -> Result<(), String> {
         let client = self.rpc_client.read().await;
         let client = client
             .as_ref()
-            .ok_or_else(|| "Sidecar not connected".to_string())?;
+            .ok_or_else(|| "E_SIDECAR_IPC: Sidecar not connected".to_string())?;
 
-        Self::trigger_model_init(
-            client,
-            &self.state_manager,
-            &self.recording_controller,
-            &self.model_status,
-            &self.app_handle,
-            &self.event_seq,
-        )
-        .await;
+        let _ = self.state_manager.transition(AppState::LoadingModel);
+        *self.model_status.write().await = ModelStatus::Downloading;
+        self.recording_controller.set_model_ready(false).await;
+        Self::emit_model_status(&self.app_handle, ModelStatus::Downloading, &self.event_seq);
 
-        Ok(())
+        let params = model_download_params(model_id, force);
+        let status_result = match client
+            .call::<SidecarModelStatus>("model.download", params.clone())
+            .await
+        {
+            Ok(status) => Ok(status),
+            Err(RpcError::Remote { kind, .. }) if kind == "E_METHOD_NOT_FOUND" => {
+                match client
+                    .call::<SidecarModelStatus>("model.install", params.clone())
+                    .await
+                {
+                    Ok(status) => Ok(status),
+                    Err(RpcError::Remote { kind, .. }) if kind == "E_METHOD_NOT_FOUND" => {
+                        Err(model_download_method_unsupported_message())
+                    }
+                    Err(err) => Err(map_model_download_rpc_error(err)),
+                }
+            }
+            Err(err) => Err(map_model_download_rpc_error(err)),
+        };
+
+        match status_result {
+            Ok(status) => {
+                let mapped_status = map_download_response_status(&status);
+                *self.model_status.write().await = mapped_status.clone();
+                self.recording_controller
+                    .set_model_ready(matches!(mapped_status, ModelStatus::Ready))
+                    .await;
+
+                if matches!(mapped_status, ModelStatus::Ready) {
+                    let _ = self.state_manager.transition(AppState::Idle);
+                }
+
+                let status_progress = status.progress.as_ref().map(|progress| {
+                    status_progress_from_parts(
+                        progress.current,
+                        progress.total,
+                        progress.unit.clone(),
+                        None,
+                    )
+                });
+
+                Self::emit_model_status_with_details(
+                    &self.app_handle,
+                    mapped_status,
+                    &self.event_seq,
+                    Some(resolve_model_id(Some(status.model_id.clone()))),
+                    status.revision.clone(),
+                    status.cache_path.clone(),
+                    status_progress.clone(),
+                );
+
+                if let (Some(progress), Some(handle)) = (status.progress, self.app_handle.as_ref())
+                {
+                    let model_progress_data = ModelProgress {
+                        current: progress.current,
+                        total: progress.total,
+                        stage: progress.unit.unwrap_or_else(|| "bytes".to_string()),
+                    };
+                    *self.model_progress.write().await = Some(model_progress_data.clone());
+                    emit_with_shared_seq(
+                        handle,
+                        &[EVENT_MODEL_PROGRESS],
+                        json!(model_progress_data),
+                        &self.event_seq,
+                    );
+                }
+
+                Ok(())
+            }
+            Err(message) => {
+                let error_status = ModelStatus::Error(message.clone());
+                *self.model_status.write().await = error_status.clone();
+                self.recording_controller.set_model_ready(false).await;
+                self.state_manager.transition_to_error(message.clone());
+                Self::emit_model_status(&self.app_handle, error_status, &self.event_seq);
+                Err(message)
+            }
+        }
     }
 
     /// Purge model cache.
@@ -2464,6 +2606,45 @@ mod tests {
     }
 
     #[test]
+    fn test_model_download_params_omits_empty_model_id_and_optional_force() {
+        assert!(model_download_params(None, None).is_none());
+        assert_eq!(model_download_params(Some("   ".to_string()), None), None);
+        assert_eq!(
+            model_download_params(Some("parakeet".to_string()), Some(true)),
+            Some(json!({
+                "model_id": "parakeet",
+                "force": true
+            }))
+        );
+    }
+
+    #[test]
+    fn test_map_model_download_rpc_error_network_is_actionable() {
+        let error = RpcError::Remote {
+            code: -32011,
+            message: "download failed".to_string(),
+            kind: "E_NETWORK".to_string(),
+        };
+
+        let mapped = map_model_download_rpc_error(error);
+        assert!(mapped.contains("E_NETWORK"));
+        assert!(mapped.contains("network connection"));
+    }
+
+    #[test]
+    fn test_map_model_download_rpc_error_disk_full_is_actionable() {
+        let error = RpcError::Remote {
+            code: -32013,
+            message: "not enough disk".to_string(),
+            kind: "E_DISK_FULL".to_string(),
+        };
+
+        let mapped = map_model_download_rpc_error(error);
+        assert!(mapped.contains("E_DISK_FULL"));
+        assert!(mapped.contains("Free disk space"));
+    }
+
+    #[test]
     fn test_pipeline_timings_from_marks() {
         let base = Instant::now();
         let marks = PipelineTimingMarks {
@@ -2782,6 +2963,18 @@ mod tests {
             .query_model_status(None)
             .await
             .expect_err("query_model_status should fail without sidecar");
+        assert!(error.contains("E_SIDECAR_IPC"));
+    }
+
+    #[tokio::test]
+    async fn test_download_model_requires_sidecar_connection() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+
+        let error = manager
+            .download_model(None, None)
+            .await
+            .expect_err("download_model should fail without sidecar");
         assert!(error.contains("E_SIDECAR_IPC"));
     }
 
