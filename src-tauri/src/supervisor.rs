@@ -229,9 +229,17 @@ where
         let now = Instant::now();
         self.register_failure(now);
 
-        if !self.should_auto_restart() {
-            self.state = SidecarState::Stopped;
-            self.emit_status(Some("automatic restart disabled by circuit breaker"));
+        if !self.config.auto_restart_enabled {
+            self.state = SidecarState::Failed;
+            self.emit_status(Some("automatic restart disabled by configuration"));
+            return Ok(());
+        }
+
+        if self.circuit_breaker.is_open {
+            self.state = SidecarState::Failed;
+            self.emit_status(Some(
+                "sidecar failed after rapid restart attempts; circuit breaker tripped (manual restart required)",
+            ));
             return Ok(());
         }
 
@@ -251,10 +259,6 @@ where
         }
 
         self.start().await
-    }
-
-    fn should_auto_restart(&self) -> bool {
-        self.config.auto_restart_enabled && !self.circuit_breaker.is_open
     }
 
     fn reset_circuit_breaker(&mut self) {
@@ -475,7 +479,7 @@ mod tests {
             .handle_crash()
             .await
             .expect("second rapid crash should trip breaker");
-        assert_eq!(supervisor.state(), SidecarState::Stopped);
+        assert_eq!(supervisor.state(), SidecarState::Failed);
         assert!(supervisor.circuit_breaker_open());
 
         let state = controller.state();
@@ -502,7 +506,7 @@ mod tests {
             .await
             .expect("breaker opens on first rapid failure");
         assert!(supervisor.circuit_breaker_open());
-        assert_eq!(supervisor.state(), SidecarState::Stopped);
+        assert_eq!(supervisor.state(), SidecarState::Failed);
 
         supervisor
             .restart()
@@ -577,7 +581,7 @@ mod tests {
             .await
             .expect("crash handling should still complete");
 
-        assert_eq!(supervisor.state(), SidecarState::Stopped);
+        assert_eq!(supervisor.state(), SidecarState::Failed);
         assert_eq!(supervisor.restart_count(), 0);
         assert!(!supervisor.circuit_breaker_open());
         assert_eq!(controller.state().start_calls, 0);
