@@ -129,6 +129,9 @@ jobs:
       - name: Validate contracts and generated artifacts
         run: python scripts/validate_contracts.py
 
+      - name: Run comprehensive contract validation suite
+        run: python scripts/test_contract_validation.py
+
       - name: Validate schemas
         run: python shared/schema/validate.py --self-test
 

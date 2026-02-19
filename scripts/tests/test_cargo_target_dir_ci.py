@@ -29,6 +29,8 @@ class CargoTargetDirWorkflowTests(unittest.TestCase):
 
         self.assertIn("Validate contracts and generated artifacts", test_workflow)
         self.assertIn("python scripts/validate_contracts.py", test_workflow)
+        self.assertIn("Run comprehensive contract validation suite", test_workflow)
+        self.assertIn("python scripts/test_contract_validation.py", test_workflow)
 
     def test_python_workflow_runs_sidecar_self_test_after_pytest(self) -> None:
         test_workflow = TEST_WORKFLOW.read_text()

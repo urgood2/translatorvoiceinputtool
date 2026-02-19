@@ -529,6 +529,43 @@ listen('sidecar:status', () => {});
             self.assertEqual(len(errors), 1)
             self.assertIn("status.get", errors[0])
 
+    def test_validate_sidecar_handler_dispatch_reports_undeclared_handler_method(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            server_file = root / "sidecar" / "src" / "openvoicy_sidecar" / "server.py"
+            server_file.parent.mkdir(parents=True, exist_ok=True)
+            server_file.write_text(
+                "\n".join(
+                    [
+                        "def handle_ping(request):",
+                        "    return {}",
+                        "def handle_shadow(request):",
+                        "    return {}",
+                        "HANDLERS: dict[str, object] = {",
+                        "  'system.ping': handle_ping,",
+                        "  'shadow.method': handle_shadow,",
+                        "}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            sidecar_contract = {
+                "items": [
+                    {
+                        "type": "method",
+                        "name": "system.ping",
+                        "required": True,
+                        "params_schema": {"type": "object"},
+                        "result_schema": {"type": "object"},
+                    }
+                ]
+            }
+
+            errors = MODULE.validate_sidecar_handler_dispatch(root, sidecar_contract)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("shadow.method", errors[0])
+
     def test_validate_generator_determinism_accepts_stable_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

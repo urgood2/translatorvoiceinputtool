@@ -1202,12 +1202,16 @@ def validate_sidecar_handler_dispatch(repo_root: Path, sidecar_contract: dict[st
     unknown_handlers = sorted(name for name in registered_methods if name not in methods)
     for unknown in unknown_handlers:
         log(
-            f"WARN: sidecar HANDLERS includes method '{unknown}' not declared in sidecar.rpc contract"
+            f"FAIL: sidecar HANDLERS includes method '{unknown}' not declared in sidecar.rpc contract"
+        )
+        errors.append(
+            f"{server_file.relative_to(repo_root)}: HANDLERS method '{unknown}' not declared in sidecar.rpc contract"
         )
 
     log(
         "Sidecar handler dispatch summary: "
-        f"{len(required_sorted)} required methods, {found} found, {len(required_sorted) - found} missing"
+        f"{len(required_sorted)} required methods, {found} found, {len(required_sorted) - found} missing, "
+        f"{len(unknown_handlers)} undeclared"
     )
     return errors
 
