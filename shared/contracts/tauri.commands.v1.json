@@ -1,0 +1,559 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "./tauri.commands.v1.json",
+  "id": "tauri.commands.v1",
+  "version": 1,
+  "items": [
+    {
+      "type": "command",
+      "name": "get_app_state",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "$ref": "#/$defs/state_event" }
+    },
+    {
+      "type": "command",
+      "name": "get_capabilities",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "$ref": "#/$defs/open_object" }
+    },
+    {
+      "type": "command",
+      "name": "get_capability_issues",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/open_object" }
+      }
+    },
+    {
+      "type": "command",
+      "name": "can_start_recording",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "$ref": "#/$defs/void_result" }
+    },
+    {
+      "type": "command",
+      "name": "run_self_check",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": {
+        "type": "object",
+        "required": ["hotkey", "injection", "microphone", "sidecar", "model"],
+        "properties": {
+          "hotkey": { "$ref": "#/$defs/check_item" },
+          "injection": { "$ref": "#/$defs/check_item" },
+          "microphone": { "$ref": "#/$defs/check_item" },
+          "sidecar": { "$ref": "#/$defs/check_item" },
+          "model": { "$ref": "#/$defs/check_item" }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "command",
+      "name": "get_config",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "$ref": "#/$defs/open_object" }
+    },
+    {
+      "type": "command",
+      "name": "update_config",
+      "deprecated_aliases": [],
+      "params_schema": {
+        "type": "object",
+        "required": ["config"],
+        "properties": {
+          "config": { "$ref": "#/$defs/open_object" }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": { "$ref": "#/$defs/void_result" }
+    },
+    {
+      "type": "command",
+      "name": "reset_config_to_defaults",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "$ref": "#/$defs/open_object" }
+    },
+    {
+      "type": "command",
+      "name": "list_audio_devices",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/audio_device" }
+      }
+    },
+    {
+      "type": "command",
+      "name": "set_audio_device",
+      "deprecated_aliases": [],
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "deviceUid": { "type": ["string", "null"] },
+          "device_uid": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "string"
+      }
+    },
+    {
+      "type": "command",
+      "name": "start_mic_test",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "$ref": "#/$defs/void_result" }
+    },
+    {
+      "type": "command",
+      "name": "stop_mic_test",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "$ref": "#/$defs/void_result" }
+    },
+    {
+      "type": "command",
+      "name": "get_model_status",
+      "deprecated_aliases": [],
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "modelId": { "type": ["string", "null"] },
+          "model_id": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": { "$ref": "#/$defs/model_status" }
+    },
+    {
+      "type": "command",
+      "name": "download_model",
+      "deprecated_aliases": [],
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "modelId": { "type": ["string", "null"] },
+          "model_id": { "type": ["string", "null"] },
+          "force": { "type": ["boolean", "null"] }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": { "$ref": "#/$defs/void_result" }
+    },
+    {
+      "type": "command",
+      "name": "purge_model_cache",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "$ref": "#/$defs/void_result" }
+    },
+    {
+      "type": "command",
+      "name": "get_model_catalog",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/model_catalog_entry" }
+      }
+    },
+    {
+      "type": "command",
+      "name": "get_transcript_history",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/open_object" }
+      }
+    },
+    {
+      "type": "command",
+      "name": "copy_transcript",
+      "deprecated_aliases": [],
+      "params_schema": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": { "$ref": "#/$defs/void_result" }
+    },
+    {
+      "type": "command",
+      "name": "copy_last_transcript",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "type": ["string", "null"] }
+    },
+    {
+      "type": "command",
+      "name": "clear_history",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "$ref": "#/$defs/void_result" }
+    },
+    {
+      "type": "command",
+      "name": "get_hotkey_status",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": {
+        "type": "object",
+        "required": ["primary", "copy_last", "mode", "registered"],
+        "properties": {
+          "primary": { "type": "string" },
+          "copy_last": { "type": "string" },
+          "mode": { "type": "string" },
+          "registered": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "command",
+      "name": "set_hotkey",
+      "deprecated_aliases": [],
+      "params_schema": {
+        "type": "object",
+        "required": ["primary", "copyLast"],
+        "properties": {
+          "primary": { "type": "string" },
+          "copyLast": { "type": "string" },
+          "copy_last": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": { "$ref": "#/$defs/void_result" }
+    },
+    {
+      "type": "command",
+      "name": "get_replacement_rules",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/open_object" }
+      }
+    },
+    {
+      "type": "command",
+      "name": "set_replacement_rules",
+      "deprecated_aliases": [],
+      "params_schema": {
+        "type": "object",
+        "required": ["rules"],
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/open_object" }
+          }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": { "$ref": "#/$defs/void_result" }
+    },
+    {
+      "type": "command",
+      "name": "preview_replacement",
+      "deprecated_aliases": [],
+      "params_schema": {
+        "type": "object",
+        "required": ["input", "rules"],
+        "properties": {
+          "input": { "type": "string" },
+          "rules": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/open_object" }
+          }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": { "type": "string" }
+    },
+    {
+      "type": "command",
+      "name": "get_available_presets",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/preset_info" }
+      }
+    },
+    {
+      "type": "command",
+      "name": "load_preset",
+      "deprecated_aliases": [],
+      "params_schema": {
+        "type": "object",
+        "required": ["presetId"],
+        "properties": {
+          "presetId": { "type": "string" },
+          "preset_id": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/open_object" }
+      }
+    },
+    {
+      "type": "command",
+      "name": "toggle_enabled",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "type": "boolean" }
+    },
+    {
+      "type": "command",
+      "name": "is_enabled",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "type": "boolean" }
+    },
+    {
+      "type": "command",
+      "name": "set_enabled",
+      "deprecated_aliases": [],
+      "params_schema": {
+        "type": "object",
+        "required": ["enabled"],
+        "properties": {
+          "enabled": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": { "$ref": "#/$defs/void_result" }
+    },
+    {
+      "type": "command",
+      "name": "generate_diagnostics",
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "$ref": "#/$defs/diagnostics_report" }
+    },
+    {
+      "type": "command",
+      "name": "get_recent_logs",
+      "deprecated_aliases": [],
+      "params_schema": {
+        "type": "object",
+        "required": ["count"],
+        "properties": {
+          "count": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/log_entry" }
+      }
+    },
+    {
+      "type": "command",
+      "name": "start_recording",
+      "implemented": false,
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "$ref": "#/$defs/open_object" }
+    },
+    {
+      "type": "command",
+      "name": "stop_recording",
+      "implemented": false,
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "$ref": "#/$defs/open_object" }
+    },
+    {
+      "type": "command",
+      "name": "cancel_recording",
+      "implemented": false,
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "$ref": "#/$defs/open_object" }
+    },
+    {
+      "type": "command",
+      "name": "restart_sidecar",
+      "implemented": false,
+      "deprecated_aliases": [],
+      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "result_schema": { "$ref": "#/$defs/open_object" }
+    },
+    {
+      "type": "command",
+      "name": "export_history",
+      "implemented": false,
+      "deprecated_aliases": [],
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "format": { "type": "string", "enum": ["json", "csv"] },
+          "path": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "result_schema": { "$ref": "#/$defs/open_object" }
+    }
+  ],
+  "$defs": {
+    "empty_params": {
+      "$id": "./tauri.commands.v1.json#/$defs/empty_params",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "void_result": {
+      "$id": "./tauri.commands.v1.json#/$defs/void_result",
+      "type": ["null", "object"],
+      "additionalProperties": true
+    },
+    "open_object": {
+      "$id": "./tauri.commands.v1.json#/$defs/open_object",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "state_event": {
+      "$id": "./tauri.commands.v1.json#/$defs/state_event",
+      "type": "object",
+      "required": ["state", "enabled"],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": ["idle", "loading_model", "recording", "transcribing", "error"]
+        },
+        "enabled": { "type": "boolean" },
+        "detail": { "type": ["string", "null"] },
+        "timestamp": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "check_item": {
+      "$id": "./tauri.commands.v1.json#/$defs/check_item",
+      "type": "object",
+      "required": ["status", "message"],
+      "properties": {
+        "status": { "type": "string", "enum": ["ok", "warning", "error"] },
+        "message": { "type": "string" },
+        "detail": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "audio_device": {
+      "$id": "./tauri.commands.v1.json#/$defs/audio_device",
+      "type": "object",
+      "required": ["uid", "name", "is_default", "sample_rate", "channels"],
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "is_default": { "type": "boolean" },
+        "sample_rate": { "type": "integer", "minimum": 0 },
+        "channels": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "model_status": {
+      "$id": "./tauri.commands.v1.json#/$defs/model_status",
+      "type": "object",
+      "required": ["model_id", "status"],
+      "properties": {
+        "model_id": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["missing", "downloading", "loading", "verifying", "ready", "error", "unknown"]
+        },
+        "revision": { "type": ["string", "null"] },
+        "cache_path": { "type": ["string", "null"] },
+        "progress": {
+          "type": ["object", "null"],
+          "properties": {
+            "current": { "type": "integer", "minimum": 0 },
+            "total": { "type": ["integer", "null"], "minimum": 0 },
+            "unit": { "type": "string" }
+          },
+          "required": ["current", "unit"],
+          "additionalProperties": false
+        },
+        "error": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "model_catalog_entry": {
+      "$id": "./tauri.commands.v1.json#/$defs/model_catalog_entry",
+      "type": "object",
+      "required": ["model_id", "family", "display_name", "description", "supported_languages", "default_language", "manifest_path"],
+      "properties": {
+        "model_id": { "type": "string" },
+        "family": { "type": "string" },
+        "display_name": { "type": "string" },
+        "description": { "type": "string" },
+        "supported_languages": { "type": "array", "items": { "type": "string" } },
+        "default_language": { "type": "string" },
+        "size_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "license_spdx": { "type": ["string", "null"] },
+        "manifest_path": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "preset_info": {
+      "$id": "./tauri.commands.v1.json#/$defs/preset_info",
+      "type": "object",
+      "required": ["id", "name", "description", "rule_count"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "rule_count": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "log_entry": {
+      "$id": "./tauri.commands.v1.json#/$defs/log_entry",
+      "type": "object",
+      "required": ["timestamp", "level", "target", "message"],
+      "properties": {
+        "timestamp": { "type": "string" },
+        "level": { "type": "string" },
+        "target": { "type": "string" },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "diagnostics_report": {
+      "$id": "./tauri.commands.v1.json#/$defs/diagnostics_report",
+      "type": "object",
+      "required": ["version", "platform", "capabilities", "config", "self_check", "recent_logs"],
+      "properties": {
+        "version": { "type": "string" },
+        "platform": { "type": "string" },
+        "capabilities": { "$ref": "#/$defs/open_object" },
+        "config": { "$ref": "#/$defs/open_object" },
+        "self_check": { "$ref": "#/$defs/open_object" },
+        "recent_logs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/log_entry" }
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
