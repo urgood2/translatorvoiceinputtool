@@ -262,6 +262,25 @@ describe('HotkeyConfig', () => {
     expect(screen.queryByText('Press keys...')).toBeNull();
     expect(onPrimaryChange).not.toHaveBeenCalled();
   });
+
+  it('shows an error when clearing hotkey fails', async () => {
+    const onPrimaryChange = vi.fn().mockRejectedValue(new Error('clear failed'));
+    render(
+      <HotkeyConfig
+        primaryHotkey="Ctrl+Shift+A"
+        copyLastHotkey=""
+        mode="hold"
+        onPrimaryChange={onPrimaryChange}
+        onCopyLastChange={vi.fn()}
+        onModeChange={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+
+    expect(onPrimaryChange).toHaveBeenCalledWith('');
+    expect(await screen.findByText('clear failed')).toBeDefined();
+  });
 });
 
 describe('InjectionSettings', () => {

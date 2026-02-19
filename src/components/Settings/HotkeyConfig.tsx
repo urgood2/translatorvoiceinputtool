@@ -68,7 +68,23 @@ function HotkeyInput({ label, description, value, onChange, disabled }: HotkeyIn
     }
   };
 
-  const displayValue = pendingValue || value;
+  const handleClear = async () => {
+    if (disabled) return;
+
+    setError(null);
+    setIsRecording(false);
+    setPendingValue('');
+
+    try {
+      await onChange('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to clear hotkey');
+    } finally {
+      setPendingValue(null);
+    }
+  };
+
+  const displayValue = pendingValue !== null ? pendingValue : value;
 
   useEffect(() => {
     if (disabled) {
@@ -103,7 +119,7 @@ function HotkeyInput({ label, description, value, onChange, disabled }: HotkeyIn
         </div>
         {value && (
           <button
-            onClick={() => onChange('')}
+            onClick={() => void handleClear()}
             disabled={disabled}
             className="px-3 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md
                        disabled:opacity-50 disabled:cursor-not-allowed"
