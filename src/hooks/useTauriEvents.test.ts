@@ -12,6 +12,12 @@ import { useTauriEvents, useTauriEvent } from './useTauriEvents';
 import { useAppStore } from '../store/appStore';
 import { emitMockEvent } from '../tests/setup';
 
+function fireMockEventWithLog(eventName: string, payload: unknown): void {
+  const seq = (payload as { seq?: unknown })?.seq;
+  console.debug(`[test-event] name=${eventName} seq=${String(seq)}`);
+  emitMockEvent(eventName, payload);
+}
+
 // Reset store before each test
 beforeEach(() => {
   useAppStore.setState({
@@ -284,6 +290,182 @@ describe('useTauriEvents', () => {
       state: 'ready',
       restart_count: 0,
     });
+
+    unmount();
+  });
+
+  test('ignores out-of-order seq for same stream', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    const newer = {
+      seq: 20,
+      entry: {
+        id: 'entry-new',
+        text: 'new',
+        raw_text: 'new',
+        final_text: 'new',
+        timestamp: new Date().toISOString(),
+        audio_duration_ms: 1000,
+        transcription_duration_ms: 220,
+        injection_result: { status: 'injected' as const },
+      },
+    };
+    const older = {
+      seq: 19,
+      entry: {
+        id: 'entry-old',
+        text: 'old',
+        raw_text: 'old',
+        final_text: 'old',
+        timestamp: new Date().toISOString(),
+        audio_duration_ms: 1000,
+        transcription_duration_ms: 220,
+        injection_result: { status: 'injected' as const },
+      },
+    };
+
+    act(() => {
+      fireMockEventWithLog('transcript:complete', newer);
+      fireMockEventWithLog('transcript:complete', older);
+    });
+
+    const history = useAppStore.getState().history;
+    expect(history).toHaveLength(1);
+    expect(history[0]?.id).toBe('entry-new');
+
+    unmount();
+  });
+
+  test('tracks seq independently across streams', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    act(() => {
+      fireMockEventWithLog('state:changed', {
+        seq: 100,
+        state: 'recording',
+        enabled: true,
+      });
+      fireMockEventWithLog('transcript:complete', {
+        seq: 1,
+        entry: {
+          id: 'entry-independent',
+          text: 'independent',
+          raw_text: 'independent',
+          final_text: 'independent',
+          timestamp: new Date().toISOString(),
+          audio_duration_ms: 1200,
+          transcription_duration_ms: 333,
+          injection_result: { status: 'injected' as const },
+        },
+      });
+    });
+
+    const state = useAppStore.getState();
+    expect(state.appState).toBe('recording');
+    expect(state.history).toHaveLength(1);
+    expect(state.history[0]?.id).toBe('entry-independent');
+
+    unmount();
+  });
+
+  test('seq tracking resets after unmount and remount', async () => {
+    const first = renderHook(() => useTauriEvents());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    act(() => {
+      fireMockEventWithLog('state:changed', {
+        seq: 50,
+        state: 'recording',
+        enabled: true,
+      });
+    });
+    expect(useAppStore.getState().appState).toBe('recording');
+    first.unmount();
+
+    const second = renderHook(() => useTauriEvents());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    act(() => {
+      fireMockEventWithLog('state:changed', {
+        seq: 50,
+        state: 'idle',
+        enabled: true,
+      });
+    });
+    expect(useAppStore.getState().appState).toBe('idle');
+
+    second.unmount();
+  });
+
+  test('cleans up every registered listener on unmount', async () => {
+    const defaultListenImpl = vi.mocked(listen).getMockImplementation();
+    const unlistenFns: Array<ReturnType<typeof vi.fn>> = [];
+    vi.mocked(listen).mockImplementation((() => {
+      const unlisten = vi.fn();
+      unlistenFns.push(unlisten);
+      return Promise.resolve(unlisten);
+    }) as typeof listen);
+
+    try {
+      const { unmount } = renderHook(() => useTauriEvents());
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+
+      expect(listen).toHaveBeenCalledTimes(13);
+      expect(unlistenFns).toHaveLength(13);
+
+      unmount();
+
+      unlistenFns.forEach((fn) => {
+        expect(fn).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      if (defaultListenImpl) {
+        vi.mocked(listen).mockImplementation(defaultListenImpl);
+      }
+    }
+  });
+
+  test('processes app:error payloads in legacy and structured shapes', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    act(() => {
+      fireMockEventWithLog('app:error', {
+        seq: 501,
+        message: 'Legacy error shape',
+        recoverable: true,
+      });
+    });
+    expect(useAppStore.getState().errorDetail).toBe('Legacy error shape');
+
+    act(() => {
+      fireMockEventWithLog('app:error', {
+        seq: 502,
+        error: {
+          code: 'E_INTERNAL',
+          message: 'Structured error shape',
+          recoverable: false,
+        },
+      });
+    });
+    expect(useAppStore.getState().errorDetail).toBe('Structured error shape');
 
     unmount();
   });
