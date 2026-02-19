@@ -292,16 +292,30 @@ class TestDownload:
         assert dest.exists()
         assert dest.read_bytes() == content
 
-    def test_build_download_headers_uses_hf_token_from_env_only(self):
-        """Should include Authorization header when HF_TOKEN is set."""
+    def test_build_download_headers_uses_hf_token_for_trusted_hf_urls_only(self):
+        """Should include Authorization header only for trusted Hugging Face HTTPS URLs."""
         with patch.dict(os.environ, {"HF_TOKEN": "hf_test_token"}, clear=False):
-            headers = build_download_headers(existing_size=128)
+            headers = build_download_headers(
+                existing_size=128,
+                url="https://huggingface.co/nvidia/model/resolve/main/model.bin",
+            )
 
         assert headers["Range"] == "bytes=128-"
         assert headers["Authorization"] == "Bearer hf_test_token"
 
-    def test_download_file_adds_authorization_header_from_hf_token(self, tmp_path):
-        """Should attach HF auth header to download requests."""
+    def test_build_download_headers_omits_hf_token_for_non_hf_urls(self):
+        """Should never attach Authorization header for non-HF hosts."""
+        with patch.dict(os.environ, {"HF_TOKEN": "hf_test_token"}, clear=False):
+            headers = build_download_headers(
+                existing_size=64,
+                url="https://example.com/model.bin",
+            )
+
+        assert headers["Range"] == "bytes=64-"
+        assert "Authorization" not in headers
+
+    def test_download_file_adds_authorization_header_for_trusted_hf_url(self, tmp_path):
+        """Should attach HF auth header to trusted Hugging Face download requests."""
         dest = tmp_path / "downloaded.bin"
         content = b"test file content"
 
@@ -315,13 +329,40 @@ class TestDownload:
                 mock_response.__exit__ = MagicMock(return_value=False)
                 mock_urlopen.return_value = mock_response
 
-                download_file("http://example.com/file.bin", dest, len(content))
+                download_file(
+                    "https://huggingface.co/nvidia/model/resolve/main/file.bin",
+                    dest,
+                    len(content),
+                )
 
                 request = mock_urlopen.call_args.args[0]
                 auth_header = request.headers.get("Authorization")
                 if auth_header is None:
                     auth_header = request.headers.get("authorization")
                 assert auth_header == "Bearer hf_header_token"
+
+    def test_download_file_does_not_add_authorization_header_for_non_hf_url(self, tmp_path):
+        """Should not attach HF auth header to non-HF mirrors."""
+        dest = tmp_path / "downloaded.bin"
+        content = b"test file content"
+
+        with patch.dict(os.environ, {"HF_TOKEN": "hf_header_token"}, clear=False):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                mock_response = MagicMock()
+                mock_response.status = 200
+                mock_response.headers = {"Content-Length": str(len(content))}
+                mock_response.read.side_effect = [content, b""]
+                mock_response.__enter__ = lambda s: s
+                mock_response.__exit__ = MagicMock(return_value=False)
+                mock_urlopen.return_value = mock_response
+
+                download_file("https://example.com/file.bin", dest, len(content))
+
+                request = mock_urlopen.call_args.args[0]
+                auth_header = request.headers.get("Authorization")
+                if auth_header is None:
+                    auth_header = request.headers.get("authorization")
+                assert auth_header is None
 
     def test_download_with_mirrors_fallback(self, tmp_path):
         """Should try mirrors on primary failure."""

@@ -42,6 +42,8 @@ CHECK_CACHE_LOCK_TIMEOUT_SECONDS = 1.0
 DOWNLOAD_CHUNK_SIZE = 8192
 DISK_SPACE_BUFFER = 1.1  # 10% buffer
 
+TRUSTED_HF_HOSTS = ("huggingface.co", "hf.co")
+
 
 class ModelStatus(Enum):
     """Model download/verification status."""
@@ -375,7 +377,7 @@ def download_file(
         # Check for existing partial download
         existing_size = dest_path.stat().st_size if dest_path.exists() else 0
 
-        headers = build_download_headers(existing_size)
+        headers = build_download_headers(existing_size, url)
 
         request = urllib.request.Request(url, headers=headers)
 
@@ -423,7 +425,18 @@ def download_file(
         raise NetworkError("urllib not available", url)
 
 
-def build_download_headers(existing_size: int = 0) -> dict[str, str]:
+def is_trusted_hf_download_url(url: str) -> bool:
+    """Return True when URL is a trusted Hugging Face HTTPS endpoint."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+
+    if parsed.scheme != "https" or not host:
+        return False
+
+    return any(host == trusted or host.endswith(f".{trusted}") for trusted in TRUSTED_HF_HOSTS)
+
+
+def build_download_headers(existing_size: int = 0, url: str = "") -> dict[str, str]:
     """Build download request headers.
 
     HuggingFace auth token is sourced from HF_TOKEN env var only.
@@ -434,7 +447,7 @@ def build_download_headers(existing_size: int = 0) -> dict[str, str]:
         headers["Range"] = f"bytes={existing_size}-"
 
     hf_token = os.environ.get("HF_TOKEN", "").strip()
-    if hf_token:
+    if hf_token and is_trusted_hf_download_url(url):
         headers["Authorization"] = f"Bearer {hf_token}"
 
     return headers
