@@ -266,6 +266,35 @@ fn transcription_error_event_payload(session_id: &str, app_error: &AppError) -> 
     })
 }
 
+fn parse_sidecar_transcription_error(raw_error: &str) -> (String, String) {
+    if let Some((kind_part, message_part)) = raw_error.split_once(':') {
+        let kind = kind_part.trim();
+        let message = message_part.trim_start();
+        if kind.starts_with("E_") && !message.is_empty() {
+            return (kind.to_string(), message.to_string());
+        }
+    }
+
+    (
+        ErrorKind::TranscriptionFailed.to_sidecar().to_string(),
+        raw_error.to_string(),
+    )
+}
+
+fn transcription_failure_app_error(session_id: &str, raw_error: &str) -> AppError {
+    let (sidecar_error_kind, sidecar_message) = parse_sidecar_transcription_error(raw_error);
+    AppError::new(
+        ErrorKind::TranscriptionFailed.to_sidecar(),
+        "Transcription failed",
+        Some(json!({
+            "session_id": session_id,
+            "error_kind": sidecar_error_kind,
+            "sidecar_message": sidecar_message
+        })),
+        true,
+    )
+}
+
 #[derive(Debug, Clone, Default)]
 struct PipelineTimingMarks {
     t0_stop_called: Option<Instant>,
@@ -1617,16 +1646,8 @@ impl IntegrationManager {
                         }
 
                         if let Some(ref handle) = app_handle {
-                            let app_error = AppError::new(
-                                ErrorKind::TranscriptionFailed.to_sidecar(),
-                                "Transcription failed",
-                                Some(json!({
-                                    "session_id": session_id,
-                                    "error_kind": ErrorKind::TranscriptionFailed.to_sidecar(),
-                                    "sidecar_message": error
-                                })),
-                                true,
-                            );
+                            let app_error =
+                                transcription_failure_app_error(&session_id, error.as_str());
                             emit_with_shared_seq(
                                 handle,
                                 &[EVENT_TRANSCRIPTION_ERROR, EVENT_APP_ERROR],
@@ -2216,6 +2237,53 @@ mod tests {
                 .pointer("/app_error/code")
                 .and_then(Value::as_str),
             Some("E_TRANSCRIPTION_FAILED")
+        );
+    }
+
+    #[test]
+    fn test_transcription_failure_app_error_preserves_sidecar_error_kind() {
+        let app_error =
+            transcription_failure_app_error("session-1", "E_ASR_INIT: model initialization failed");
+
+        assert_eq!(app_error.code, "E_TRANSCRIPTION_FAILED");
+        assert_eq!(
+            app_error
+                .details
+                .as_ref()
+                .and_then(|d| d.get("error_kind"))
+                .and_then(Value::as_str),
+            Some("E_ASR_INIT")
+        );
+        assert_eq!(
+            app_error
+                .details
+                .as_ref()
+                .and_then(|d| d.get("sidecar_message"))
+                .and_then(Value::as_str),
+            Some("model initialization failed")
+        );
+    }
+
+    #[test]
+    fn test_transcription_failure_app_error_falls_back_to_canonical_kind() {
+        let app_error = transcription_failure_app_error("session-1", "sidecar timeout");
+
+        assert_eq!(app_error.code, "E_TRANSCRIPTION_FAILED");
+        assert_eq!(
+            app_error
+                .details
+                .as_ref()
+                .and_then(|d| d.get("error_kind"))
+                .and_then(Value::as_str),
+            Some("E_TRANSCRIPTION_FAILED")
+        );
+        assert_eq!(
+            app_error
+                .details
+                .as_ref()
+                .and_then(|d| d.get("sidecar_message"))
+                .and_then(Value::as_str),
+            Some("sidecar timeout")
         );
     }
 
