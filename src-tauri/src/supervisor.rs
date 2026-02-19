@@ -379,6 +379,13 @@ mod tests {
             }
         }
 
+        fn set_fail_start(&self, fail_start: bool) {
+            self.inner
+                .lock()
+                .expect("controller state lock poisoned")
+                .fail_start = fail_start;
+        }
+
         fn set_fail_ping(&self, fail_ping: bool) {
             self.inner
                 .lock()
@@ -448,6 +455,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restart_attempt_progression_is_immediate_then_delayed() {
+        println!("[SUPERVISOR_TEST] verifying restart timing progression");
+        let controller = FakeController::default();
+        controller.set_fail_start(true);
+        let mut supervisor = SidecarSupervisor::new(
+            controller.clone(),
+            SidecarSupervisorConfig {
+                max_restart_count: 10,
+                backoff_base_ms: 40,
+                backoff_factor: 2.0,
+                backoff_max_ms: 200,
+                circuit_breaker_window_ms: 60_000,
+                auto_restart_enabled: true,
+            },
+        );
+
+        let first_started = Instant::now();
+        let first_err = supervisor
+            .handle_crash()
+            .await
+            .expect_err("first crash should bubble spawn failure");
+        let first_elapsed = first_started.elapsed();
+        println!(
+            "[SUPERVISOR_TEST] first crash elapsed={:?} restart_count={}",
+            first_elapsed,
+            supervisor.restart_count()
+        );
+        assert!(first_err.contains("spawn failed"));
+        assert_eq!(supervisor.restart_count(), 1);
+        assert_eq!(supervisor.state(), SidecarState::Failed);
+
+        let second_started = Instant::now();
+        let second_err = supervisor
+            .handle_crash()
+            .await
+            .expect_err("second crash should include backoff before failing");
+        let second_elapsed = second_started.elapsed();
+        println!(
+            "[SUPERVISOR_TEST] second crash elapsed={:?} restart_count={}",
+            second_elapsed,
+            supervisor.restart_count()
+        );
+        assert!(second_err.contains("spawn failed"));
+        assert_eq!(supervisor.restart_count(), 2);
+        assert!(
+            second_elapsed >= Duration::from_millis(30),
+            "expected second restart delay to include configured backoff"
+        );
+        assert!(
+            second_elapsed > first_elapsed,
+            "expected second restart attempt to take longer than first"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_count_increments_on_repeated_failures() {
+        println!("[SUPERVISOR_TEST] verifying restart_count increments");
+        let controller = FakeController::default();
+        controller.set_fail_start(true);
+        let mut supervisor = SidecarSupervisor::new(
+            controller,
+            SidecarSupervisorConfig {
+                backoff_base_ms: 0,
+                ..SidecarSupervisorConfig::default()
+            },
+        );
+
+        let _ = supervisor.handle_crash().await;
+        assert_eq!(supervisor.restart_count(), 1);
+        let _ = supervisor.handle_crash().await;
+        assert_eq!(supervisor.restart_count(), 2);
+        let _ = supervisor.handle_crash().await;
+        assert_eq!(supervisor.restart_count(), 3);
+    }
+
+    #[test]
+    fn backoff_delay_never_exceeds_max_cap() {
+        println!("[SUPERVISOR_TEST] verifying backoff max cap");
+        let controller = FakeController::default();
+        let supervisor = SidecarSupervisor::new(
+            controller,
+            SidecarSupervisorConfig {
+                max_restart_count: 10,
+                backoff_base_ms: 100,
+                backoff_factor: 2.0,
+                backoff_max_ms: 250,
+                circuit_breaker_window_ms: 60_000,
+                auto_restart_enabled: true,
+            },
+        );
+
+        for attempt in 2..=8 {
+            assert!(
+                supervisor.backoff_delay_for_attempt(attempt) <= Duration::from_millis(250),
+                "attempt {} exceeded backoff cap",
+                attempt
+            );
+        }
+        assert_eq!(
+            supervisor.backoff_delay_for_attempt(8),
+            Duration::from_millis(250)
+        );
+    }
+
+    #[tokio::test]
     async fn handle_crash_trips_circuit_breaker_after_rapid_failures() {
         let controller = FakeController::default();
         let mut supervisor = SidecarSupervisor::new(
@@ -478,6 +590,33 @@ mod tests {
 
         let state = controller.state();
         assert_eq!(state.start_calls, 1, "only first crash should auto-restart");
+    }
+
+    #[test]
+    fn circuit_breaker_failure_window_only_counts_rapid_failures() {
+        println!("[SUPERVISOR_TEST] verifying circuit breaker failure window");
+        let controller = FakeController::default();
+        let mut supervisor = SidecarSupervisor::new(
+            controller,
+            SidecarSupervisorConfig {
+                max_restart_count: 2,
+                backoff_base_ms: 0,
+                backoff_factor: 2.0,
+                backoff_max_ms: 0,
+                circuit_breaker_window_ms: 20,
+                auto_restart_enabled: true,
+            },
+        );
+
+        let t0 = Instant::now();
+        supervisor.register_failure(t0);
+        assert_eq!(supervisor.circuit_breaker.rapid_failure_count, 1);
+        assert!(!supervisor.circuit_breaker.is_open);
+
+        // Outside configured window -> counter resets instead of tripping breaker.
+        supervisor.register_failure(t0 + Duration::from_millis(25));
+        assert_eq!(supervisor.circuit_breaker.rapid_failure_count, 1);
+        assert!(!supervisor.circuit_breaker.is_open);
     }
 
     #[tokio::test]
@@ -608,6 +747,41 @@ mod tests {
         let state = controller.state();
         assert_eq!(state.start_calls, 1);
         assert_eq!(state.ping_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn successful_recovery_after_failures_resets_restart_progression() {
+        println!("[SUPERVISOR_TEST] verifying reset after successful recovery");
+        let controller = FakeController::default();
+        controller.set_fail_start(true);
+        let mut supervisor = SidecarSupervisor::new(
+            controller.clone(),
+            SidecarSupervisorConfig {
+                max_restart_count: 10,
+                backoff_base_ms: 0,
+                backoff_factor: 2.0,
+                backoff_max_ms: 0,
+                circuit_breaker_window_ms: 60_000,
+                auto_restart_enabled: true,
+            },
+        );
+
+        let _ = supervisor
+            .handle_crash()
+            .await
+            .expect_err("first restart should fail while spawn is forced down");
+        assert_eq!(supervisor.restart_count(), 1);
+        assert_eq!(supervisor.state(), SidecarState::Failed);
+
+        controller.set_fail_start(false);
+        supervisor
+            .handle_crash()
+            .await
+            .expect("restart should recover once spawn failures stop");
+
+        assert_eq!(supervisor.state(), SidecarState::Ready);
+        assert_eq!(supervisor.restart_count(), 0);
+        assert!(!supervisor.circuit_breaker_open());
     }
 
     #[test]
