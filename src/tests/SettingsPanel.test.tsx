@@ -441,4 +441,19 @@ describe('SettingsPanel', () => {
 
     expect(onConfigChange).toHaveBeenCalledWith(['audio', 'audio_cues_enabled'], false);
   });
+
+  it('calls onRefreshDevices when refresh is clicked in audio tab', () => {
+    const onRefreshDevices = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SettingsPanel
+        config={mockConfig}
+        devices={mockDevices}
+        onRefreshDevices={onRefreshDevices}
+        onConfigChange={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(onRefreshDevices).toHaveBeenCalledTimes(1);
+  });
 });
