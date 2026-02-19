@@ -9,7 +9,6 @@
 //! The IntegrationManager is the central coordinator that handles the
 //! event-driven flow across all these components.
 
-use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -19,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::config::{self, HotkeyMode, ReplacementRule};
@@ -35,7 +34,11 @@ use crate::model_defaults;
 use crate::recording::{
     CancelReason, RecordingController, RecordingEvent, StopResult, TranscriptionResult,
 };
+use crate::sidecar::SidecarManager;
 use crate::state::{AppState, AppStateManager, StateEvent};
+use crate::supervisor::{
+    SidecarState as SupervisorState, SidecarSupervisor, SidecarSupervisorConfig,
+};
 use crate::watchdog::{self, PingCallback, Watchdog, WatchdogConfig, WatchdogEvent};
 
 /// Tray icon event name.
@@ -790,6 +793,7 @@ struct RecordingContext {
 }
 
 /// Central integration manager that wires everything together.
+#[derive(Clone)]
 pub struct IntegrationManager {
     /// Application state manager.
     state_manager: Arc<AppStateManager>,
@@ -799,8 +803,8 @@ pub struct IntegrationManager {
     hotkey_manager: Arc<RwLock<HotkeyManager>>,
     /// RPC client (if sidecar is connected).
     rpc_client: Arc<RwLock<Option<RpcClient>>>,
-    /// Sidecar child process.
-    sidecar_process: Arc<RwLock<Option<Child>>>,
+    /// Sidecar lifecycle supervisor.
+    supervisor: Arc<Mutex<SidecarSupervisor<SidecarManager>>>,
     /// Tauri app handle.
     app_handle: Option<AppHandle>,
     /// Focus context for current recording.
@@ -826,17 +830,24 @@ impl IntegrationManager {
     pub fn new(state_manager: Arc<AppStateManager>) -> Self {
         let recording_controller = Arc::new(RecordingController::new(Arc::clone(&state_manager)));
         let watchdog = Arc::new(Watchdog::with_config(WatchdogConfig::default()));
+        let config = IntegrationConfig::default();
+        let mut sidecar_manager = SidecarManager::new();
+        sidecar_manager.set_python_mode(config.python_path.clone(), config.sidecar_module.clone());
+        let supervisor = Arc::new(Mutex::new(SidecarSupervisor::new(
+            sidecar_manager,
+            SidecarSupervisorConfig::default(),
+        )));
 
         Self {
             state_manager,
             recording_controller,
             hotkey_manager: Arc::new(RwLock::new(HotkeyManager::new())),
             rpc_client: Arc::new(RwLock::new(None)),
-            sidecar_process: Arc::new(RwLock::new(None)),
+            supervisor,
             app_handle: None,
             recording_context: Arc::new(RwLock::new(None)),
             current_session_id: Arc::new(RwLock::new(None)),
-            config: IntegrationConfig::default(),
+            config,
             model_status: Arc::new(RwLock::new(ModelStatus::Unknown)),
             model_progress: Arc::new(RwLock::new(None)),
             model_init_attempted: Arc::new(AtomicBool::new(false)),
@@ -847,7 +858,10 @@ impl IntegrationManager {
 
     /// Set the Tauri app handle.
     pub fn set_app_handle(&mut self, handle: AppHandle) {
-        self.app_handle = Some(handle);
+        self.app_handle = Some(handle.clone());
+        if let Ok(mut supervisor) = self.supervisor.try_lock() {
+            supervisor.set_app_handle(handle);
+        }
     }
 
     /// Get the state manager.
@@ -892,9 +906,6 @@ impl IntegrationManager {
         self.start_state_loop();
         self.start_recording_event_loop();
 
-        // Check and initialize model in background
-        self.spawn_model_check();
-
         // Start watchdog loop
         self.start_watchdog_loop();
 
@@ -911,6 +922,7 @@ impl IntegrationManager {
         let model_status = Arc::clone(&self.model_status);
         let app_handle = self.app_handle.clone();
         let event_seq = Arc::clone(&self.event_seq);
+        let manager = self.clone();
 
         // Create ping adapter
         let pinger = Arc::new(RpcPinger {
@@ -964,6 +976,10 @@ impl IntegrationManager {
                                 serde_json::json!({ "reason": "hung" }),
                                 &event_seq,
                             );
+                        }
+
+                        if let Err(err) = manager.recover_sidecar_from_watchdog().await {
+                            log::error!("Watchdog recovery via supervisor failed: {}", err);
                         }
                     }
                     WatchdogEvent::SystemResumed => {
@@ -1747,48 +1763,101 @@ impl IntegrationManager {
         Ok(())
     }
 
-    /// Start the sidecar process and connect RPC client.
-    pub async fn start_sidecar(&self) -> Result<(), String> {
-        log::info!("Starting sidecar process");
+    async fn apply_supervisor_runtime_config(&self) {
+        let mut supervisor = self.supervisor.lock().await;
+        if let Some(handle) = self.app_handle.clone() {
+            supervisor.set_app_handle(handle);
+        }
 
-        // Spawn sidecar process
-        let mut child = Command::new(&self.config.python_path)
-            .arg("-m")
-            .arg(&self.config.sidecar_module)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
+        // Preserve existing integration config overrides for sidecar spawn.
+        supervisor.controller_mut().set_python_mode(
+            self.config.python_path.clone(),
+            self.config.sidecar_module.clone(),
+        );
+    }
 
-        let pid = child.id();
-        log::info!("Sidecar spawned with PID {}", pid);
+    async fn reset_rpc_client(&self, request_shutdown: bool) {
+        let rpc_client = self.rpc_client.write().await.take();
+        if let Some(client) = rpc_client {
+            if request_shutdown {
+                let _: Result<Value, RpcError> = client.call("system.shutdown", None).await;
+            }
+            client.shutdown().await;
+        }
+    }
 
-        // Extract stdin/stdout for RPC client
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "Failed to capture stdin".to_string())?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "Failed to capture stdout".to_string())?;
-
-        // Create RPC client
-        let rpc_client = RpcClient::new(stdin, stdout);
-
-        // Start notification listener
+    async fn attach_rpc_client_to_supervisor_sidecar(&self) {
+        let sidecar = {
+            let supervisor = self.supervisor.lock().await;
+            supervisor.controller().clone()
+        };
+        let rpc_client = RpcClient::new_with_sidecar_manager(sidecar);
         self.start_notification_loop(rpc_client.subscribe());
-
-        // Store references
-        *self.sidecar_process.write().await = Some(child);
         *self.rpc_client.write().await = Some(rpc_client);
+    }
 
-        // Verify connection with ping
-        self.ping_sidecar().await?;
+    async fn emit_supervisor_failure(&self, message: String, restart_count: u32) {
+        self.state_manager.transition_to_error(message.clone());
+        self.recording_controller.set_model_ready(false).await;
 
-        log::info!("Sidecar connected");
-        Ok(())
+        if let Some(ref handle) = self.app_handle {
+            let lower = message.to_ascii_lowercase();
+            let error_kind = if lower.contains("circuit breaker") {
+                ErrorKind::SidecarCircuitBreaker.to_sidecar()
+            } else if lower.contains("spawn") {
+                ErrorKind::SidecarSpawn.to_sidecar()
+            } else {
+                ErrorKind::SidecarCrash.to_sidecar()
+            };
+
+            let app_error = AppError::new(
+                error_kind,
+                message.clone(),
+                Some(json!({ "restart_count": restart_count })),
+                !lower.contains("circuit breaker"),
+            );
+            emit_with_shared_seq(
+                handle,
+                &[EVENT_APP_ERROR],
+                app_error_event_payload(&app_error),
+                &self.event_seq,
+            );
+        }
+    }
+
+    /// Start the sidecar process through supervisor and connect RPC client.
+    pub async fn start_sidecar(&self) -> Result<(), String> {
+        log::info!("Starting sidecar process via supervisor");
+        self.reset_rpc_client(false).await;
+        self.apply_supervisor_runtime_config().await;
+
+        let (result, state, restart_count) = {
+            let mut supervisor = self.supervisor.lock().await;
+            let result = supervisor.start().await;
+            (result, supervisor.state(), supervisor.restart_count())
+        };
+
+        match result {
+            Ok(()) if state == SupervisorState::Ready => {
+                self.attach_rpc_client_to_supervisor_sidecar().await;
+                self.spawn_model_check();
+                log::info!("Sidecar connected via supervisor");
+                Ok(())
+            }
+            Ok(()) => {
+                let message = format!("Supervisor reported unexpected sidecar state: {:?}", state);
+                self.emit_supervisor_failure(message.clone(), restart_count)
+                    .await;
+                self.watchdog.mark_not_running().await;
+                Err(message)
+            }
+            Err(err) => {
+                self.emit_supervisor_failure(err.clone(), restart_count)
+                    .await;
+                self.watchdog.mark_not_running().await;
+                Err(err)
+            }
+        }
     }
 
     /// Manually restart the sidecar process.
@@ -1796,18 +1865,71 @@ impl IntegrationManager {
     /// This path is used for user-initiated recovery after failures.
     pub async fn restart_sidecar(&self) -> Result<(), String> {
         log::info!("Manual sidecar restart requested");
-        self.emit_sidecar_status("restarting", Some("Manual restart requested".to_string()));
+        self.reset_rpc_client(false).await;
+        self.apply_supervisor_runtime_config().await;
 
-        self.stop_sidecar_runtime().await;
+        let (result, state, restart_count) = {
+            let mut supervisor = self.supervisor.lock().await;
+            let result = supervisor.restart().await;
+            (result, supervisor.state(), supervisor.restart_count())
+        };
 
-        match self.start_sidecar().await {
-            Ok(()) => {
-                self.emit_sidecar_status("ready", Some("Sidecar restarted".to_string()));
+        match result {
+            Ok(()) if state == SupervisorState::Ready => {
+                self.attach_rpc_client_to_supervisor_sidecar().await;
+                self.spawn_model_check();
+                log::info!("Sidecar restarted via supervisor");
                 Ok(())
             }
+            Ok(()) => {
+                let message = format!("Supervisor reported unexpected sidecar state: {:?}", state);
+                self.emit_supervisor_failure(message.clone(), restart_count)
+                    .await;
+                self.watchdog.mark_not_running().await;
+                Err(message)
+            }
             Err(err) => {
-                self.emit_sidecar_status("failed", Some(format!("Manual restart failed: {}", err)));
+                self.emit_supervisor_failure(err.clone(), restart_count)
+                    .await;
+                self.watchdog.mark_not_running().await;
                 Err(err)
+            }
+        }
+    }
+
+    async fn recover_sidecar_from_watchdog(&self) -> Result<(), String> {
+        log::warn!("Watchdog requested sidecar recovery via supervisor");
+        self.reset_rpc_client(false).await;
+        self.apply_supervisor_runtime_config().await;
+
+        let (result, state, restart_count) = {
+            let mut supervisor = self.supervisor.lock().await;
+            let result = supervisor.handle_crash().await;
+            (result, supervisor.state(), supervisor.restart_count())
+        };
+
+        match result {
+            Ok(()) if state == SupervisorState::Ready => {
+                self.attach_rpc_client_to_supervisor_sidecar().await;
+                self.spawn_model_check();
+                Ok(())
+            }
+            Ok(()) => {
+                let message = format!(
+                    "Watchdog recovery ended in non-ready supervisor state: {:?}",
+                    state
+                );
+                self.emit_supervisor_failure(message.clone(), restart_count)
+                    .await;
+                self.watchdog.mark_not_running().await;
+                Err(message)
+            }
+            Err(err) => {
+                let message = format!("Watchdog recovery failed: {}", err);
+                self.emit_supervisor_failure(message.clone(), restart_count)
+                    .await;
+                self.watchdog.mark_not_running().await;
+                Err(message)
             }
         }
     }
@@ -1838,23 +1960,10 @@ impl IntegrationManager {
         Ok(())
     }
 
-    fn emit_sidecar_status(&self, state: &str, detail: Option<String>) {
-        if let Some(ref handle) = self.app_handle {
-            let payload = sidecar_status_payload_from_status_event(Some(state), detail, Some(0));
-            emit_with_shared_seq(handle, &[EVENT_SIDECAR_STATUS], payload, &self.event_seq);
-        }
-    }
-
     async fn stop_sidecar_runtime(&self) {
-        if let Some(client) = self.rpc_client.write().await.take() {
-            let _: Result<Value, RpcError> = client.call("system.shutdown", None).await;
-            client.shutdown().await;
-        }
-
-        if let Some(mut child) = self.sidecar_process.write().await.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.reset_rpc_client(true).await;
+        let mut supervisor = self.supervisor.lock().await;
+        let _ = supervisor.stop().await;
 
         self.watchdog.mark_not_running().await;
     }
@@ -4143,9 +4252,12 @@ mod tests {
             .restart_sidecar()
             .await
             .expect_err("restart_sidecar should fail when sidecar cannot spawn");
-        assert!(error.contains("Failed to spawn sidecar"));
+        assert!(error.contains("Failed to spawn"));
         assert!(manager.rpc_client.read().await.is_none());
-        assert!(manager.sidecar_process.read().await.is_none());
+        assert_eq!(
+            manager.supervisor.lock().await.state(),
+            SupervisorState::Failed
+        );
         assert_eq!(
             manager.watchdog.get_status().await,
             crate::watchdog::HealthStatus::NotRunning

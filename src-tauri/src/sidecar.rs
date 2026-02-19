@@ -101,6 +101,7 @@ enum SidecarSimulationMode {
 }
 
 /// Sidecar manager for process lifecycle management.
+#[derive(Clone)]
 pub struct SidecarManager {
     inner: Arc<Mutex<SidecarInner>>,
     shutdown_flag: Arc<AtomicBool>,

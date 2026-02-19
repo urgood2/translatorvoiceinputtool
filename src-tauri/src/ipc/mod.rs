@@ -23,6 +23,8 @@ use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 
+use crate::sidecar::SidecarManager;
+
 pub use types::*;
 
 /// Maximum line length (1 MiB). Lines exceeding this cause a fatal error.
@@ -127,6 +129,44 @@ impl RpcClient {
         std::thread::spawn(move || {
             Self::reader_loop(
                 stdout,
+                pending_clone,
+                notification_tx_clone,
+                connected_clone,
+            );
+        });
+
+        Self {
+            next_id: AtomicU64::new(1),
+            writer_tx,
+            pending,
+            notification_tx,
+            connected,
+        }
+    }
+
+    /// Create a new RPC client backed by `SidecarManager` read/write primitives.
+    pub fn new_with_sidecar_manager(sidecar: SidecarManager) -> Self {
+        let (writer_tx, writer_rx) = mpsc::channel::<WriterCommand>(32);
+        let (notification_tx, _) = broadcast::channel::<NotificationEvent>(64);
+
+        let pending: Arc<Mutex<HashMap<u64, PendingRequest>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let connected = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+        // Start writer task.
+        let sidecar_for_writer = sidecar.clone();
+        let connected_clone = Arc::clone(&connected);
+        std::thread::spawn(move || {
+            Self::writer_loop_with_sidecar_manager(sidecar_for_writer, writer_rx, connected_clone);
+        });
+
+        // Start reader task.
+        let pending_clone = Arc::clone(&pending);
+        let notification_tx_clone = notification_tx.clone();
+        let connected_clone = Arc::clone(&connected);
+        std::thread::spawn(move || {
+            Self::reader_loop_with_sidecar_manager(
+                sidecar,
                 pending_clone,
                 notification_tx_clone,
                 connected_clone,
@@ -259,6 +299,29 @@ impl RpcClient {
         }
     }
 
+    /// Writer loop backed by `SidecarManager::write_line`.
+    fn writer_loop_with_sidecar_manager(
+        sidecar: SidecarManager,
+        mut rx: mpsc::Receiver<WriterCommand>,
+        connected: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        while let Some(cmd) = rx.blocking_recv() {
+            match cmd {
+                WriterCommand::Send(line) => {
+                    if let Err(err) = sidecar.write_line(&line) {
+                        log::error!("Failed to write to sidecar stdin: {}", err);
+                        connected.store(false, Ordering::SeqCst);
+                        break;
+                    }
+                }
+                WriterCommand::Shutdown => {
+                    log::info!("Writer loop shutting down");
+                    break;
+                }
+            }
+        }
+    }
+
     /// Reader loop - reads responses from stdout.
     fn reader_loop(
         stdout: ChildStdout,
@@ -334,6 +397,85 @@ impl RpcClient {
         connected.store(false, Ordering::SeqCst);
 
         // Notify all pending requests that we're disconnected
+        let mut pending_guard = pending.blocking_lock();
+        for (_, request) in pending_guard.drain() {
+            let _ = request.sender.send(Err(RpcError::Disconnected));
+        }
+    }
+
+    /// Reader loop backed by `SidecarManager::read_line`.
+    fn reader_loop_with_sidecar_manager(
+        sidecar: SidecarManager,
+        pending: Arc<Mutex<HashMap<u64, PendingRequest>>>,
+        notification_tx: broadcast::Sender<NotificationEvent>,
+        connected: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        while connected.load(Ordering::SeqCst) {
+            let line = match sidecar.read_line() {
+                Ok(l) => l,
+                Err(e) => {
+                    log::error!("Error reading from sidecar: {}", e);
+                    connected.store(false, Ordering::SeqCst);
+                    break;
+                }
+            };
+
+            // Check line length.
+            if line.len() > MAX_LINE_LENGTH {
+                log::error!(
+                    "Line exceeds maximum length ({} > {}), fatal",
+                    line.len(),
+                    MAX_LINE_LENGTH
+                );
+                connected.store(false, Ordering::SeqCst);
+                break;
+            }
+
+            // Skip empty lines.
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            // Parse message.
+            let message: IncomingMessage = match serde_json::from_str(&line) {
+                Ok(m) => m,
+                Err(e) => {
+                    log::warn!("Failed to parse message from sidecar: {}", e);
+                    continue;
+                }
+            };
+
+            match message {
+                IncomingMessage::Response(response) => {
+                    if let Some(RequestId::Number(id)) = response.id {
+                        // Correlate with pending request.
+                        let mut pending_guard = pending.blocking_lock();
+                        if let Some(request) = pending_guard.remove(&id) {
+                            let _ = request.sender.send(Ok(response));
+                        } else {
+                            log::warn!("Received response for unknown request id: {}", id);
+                        }
+                    } else if let Some(event) = parse_notification_event(&line) {
+                        // Untagged enum parsing may classify notifications as Response(id=None).
+                        // Recover by parsing notification shape directly and broadcasting it.
+                        let _ = notification_tx.send(event);
+                    }
+                }
+                IncomingMessage::Notification(notif) => {
+                    // Broadcast notification.
+                    let event = NotificationEvent {
+                        method: notif.method,
+                        params: notif.params,
+                    };
+                    let _ = notification_tx.send(event);
+                }
+            }
+        }
+
+        log::info!("Reader loop ended");
+        connected.store(false, Ordering::SeqCst);
+
+        // Notify all pending requests that we're disconnected.
         let mut pending_guard = pending.blocking_lock();
         for (_, request) in pending_guard.drain() {
             let _ = request.sender.send(Err(RpcError::Disconnected));

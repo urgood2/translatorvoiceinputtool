@@ -164,6 +164,14 @@ where
         self.restart_count
     }
 
+    pub fn controller(&self) -> &C {
+        &self.controller
+    }
+
+    pub fn controller_mut(&mut self) -> &mut C {
+        &mut self.controller
+    }
+
     pub fn circuit_breaker_open(&self) -> bool {
         self.circuit_breaker.is_open
     }
