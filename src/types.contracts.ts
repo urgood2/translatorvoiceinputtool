@@ -328,7 +328,10 @@ export type TauriCommandPreviewReplacementResult = {
   truncated: boolean;
 };
 
-export type TauriCommandPurgeModelCacheParams = TauriCommandDefEmptyParams;
+export type TauriCommandPurgeModelCacheParams = {
+  modelId?: string | null;
+  model_id?: string | null;
+};
 export type TauriCommandPurgeModelCacheResult = TauriCommandDefVoidResult;
 
 export type TauriCommandResetConfigToDefaultsParams = TauriCommandDefEmptyParams;

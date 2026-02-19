@@ -154,7 +154,14 @@
       "type": "command",
       "name": "purge_model_cache",
       "deprecated_aliases": [],
-      "params_schema": { "$ref": "#/$defs/empty_params" },
+      "params_schema": {
+        "type": "object",
+        "properties": {
+          "modelId": { "type": ["string", "null"] },
+          "model_id": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      },
       "result_schema": { "$ref": "#/$defs/void_result" }
     },
     {
