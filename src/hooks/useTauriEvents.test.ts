@@ -277,6 +277,123 @@ describe('useTauriEvents', () => {
     unmount();
   });
 
+  test('processes increasing seq values on the same stream', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    act(() => {
+      fireMockEventWithLog('state:changed', {
+        seq: 80,
+        state: 'recording',
+        enabled: true,
+        timestamp: '2026-01-01T00:00:06.000Z',
+      });
+      fireMockEventWithLog('state:changed', {
+        seq: 81,
+        state: 'idle',
+        enabled: false,
+        timestamp: '2026-01-01T00:00:07.000Z',
+      });
+    });
+
+    const currentState = useAppStore.getState();
+    expect(currentState.appState).toBe('idle');
+    expect(currentState.enabled).toBe(false);
+
+    unmount();
+  });
+
+  test('tracks seq independently across state, transcript, model, and sidecar streams', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    act(() => {
+      fireMockEventWithLog('state:changed', {
+        seq: 100,
+        state: 'recording',
+        enabled: true,
+        timestamp: '2026-01-01T00:00:08.000Z',
+      });
+      fireMockEventWithLog('transcript:complete', {
+        seq: 1,
+        entry: {
+          id: 'entry-stream-independence',
+          text: 'independent streams',
+          raw_text: 'independent streams',
+          final_text: 'independent streams',
+          timestamp: '2026-01-01T00:00:08.000Z',
+          audio_duration_ms: 900,
+          transcription_duration_ms: 180,
+          injection_result: { status: 'injected' as const },
+        },
+      });
+      fireMockEventWithLog('model:status', {
+        seq: 1,
+        status: 'ready',
+        model_id: 'test-model',
+      });
+      fireMockEventWithLog('sidecar:status', {
+        seq: 1,
+        state: 'ready',
+        restart_count: 0,
+      });
+      // Stale values per stream should be ignored without affecting other streams.
+      fireMockEventWithLog('state:changed', {
+        seq: 99,
+        state: 'idle',
+        enabled: false,
+        timestamp: '2026-01-01T00:00:09.000Z',
+      });
+      fireMockEventWithLog('transcript:complete', {
+        seq: 0,
+        entry: {
+          id: 'entry-stale',
+          text: 'stale',
+          raw_text: 'stale',
+          final_text: 'stale',
+          timestamp: '2026-01-01T00:00:09.000Z',
+          audio_duration_ms: 800,
+          transcription_duration_ms: 150,
+          injection_result: { status: 'injected' as const },
+        },
+      });
+      fireMockEventWithLog('model:status', {
+        seq: 0,
+        status: 'loading',
+        model_id: 'stale-model',
+      });
+      fireMockEventWithLog('sidecar:status', {
+        seq: 0,
+        state: 'restarting',
+        restart_count: 1,
+      });
+    });
+
+    const state = useAppStore.getState();
+    expect(state.appState).toBe('recording');
+    expect(state.enabled).toBe(true);
+    expect(state.history).toHaveLength(1);
+    expect(state.history[0]?.id).toBe('entry-stream-independence');
+    expect(state.modelStatus).toMatchObject({
+      seq: 1,
+      status: 'ready',
+      model_id: 'test-model',
+    });
+    expect(state.sidecarStatus).toMatchObject({
+      seq: 1,
+      state: 'ready',
+      restart_count: 0,
+    });
+
+    unmount();
+  });
+
   test('recording:status updates recording slice and app state', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
