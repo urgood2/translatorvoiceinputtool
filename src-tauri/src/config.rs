@@ -896,7 +896,12 @@ fn sanitize_invalid_boolean_fields(config: &mut Value) {
     }
 
     if let Some(audio) = config.get_mut("audio").and_then(Value::as_object_mut) {
-        sanitize_bool_field(audio, "audio_cues_enabled", true, "audio.audio_cues_enabled");
+        sanitize_bool_field(
+            audio,
+            "audio_cues_enabled",
+            true,
+            "audio.audio_cues_enabled",
+        );
         sanitize_bool_field(audio, "trim_silence", true, "audio.trim_silence");
         sanitize_bool_field(audio, "vad_enabled", false, "audio.vad_enabled");
     }
@@ -945,7 +950,12 @@ fn sanitize_invalid_boolean_fields(config: &mut Value) {
     if let Some(replacements) = config.get_mut("replacements").and_then(Value::as_array_mut) {
         for (index, replacement) in replacements.iter_mut().enumerate() {
             if let Some(rule) = replacement.as_object_mut() {
-                sanitize_bool_field(rule, "enabled", true, &format!("replacements[{}].enabled", index));
+                sanitize_bool_field(
+                    rule,
+                    "enabled",
+                    true,
+                    &format!("replacements[{}].enabled", index),
+                );
                 sanitize_bool_field(
                     rule,
                     "word_boundary",

@@ -167,9 +167,10 @@ fn setup_tray(app: &AppHandle) -> Result<(TrayIcon, TrayMenuItems), tauri::Error
         .build(app)?;
     let show_settings_item =
         MenuItemBuilder::with_id(menu_ids::SHOW_SETTINGS, "Show Settings").build(app)?;
-    let status_item = MenuItemBuilder::with_id(menu_ids::STATUS, get_status_text(AppState::Idle, true))
-        .enabled(false)
-        .build(app)?;
+    let status_item =
+        MenuItemBuilder::with_id(menu_ids::STATUS, get_status_text(AppState::Idle, true))
+            .enabled(false)
+            .build(app)?;
     let toggle_enabled_item =
         MenuItemBuilder::with_id(menu_ids::TOGGLE_ENABLED, get_toggle_enabled_text(true))
             .build(app)?;

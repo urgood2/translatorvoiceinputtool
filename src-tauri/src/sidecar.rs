@@ -8,9 +8,9 @@
 
 #![allow(dead_code)] // Methods will be used in future RPC client implementation
 
+use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
-use std::env;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -253,51 +253,51 @@ impl SidecarManager {
             Self::spawn_simulated_crash_process()?
         } else {
             match &self.spawn_mode {
-            SpawnMode::Python { path, module } => {
-                // Development mode: run via Python interpreter
-                log::info!("Using Python mode: {} -m {}", path, module);
-                Command::new(path)
-                    .arg("-m")
-                    .arg(module)
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|e| format!("Failed to spawn Python sidecar: {}", e))?
-            }
-            SpawnMode::Bundled => {
-                // Release mode: use bundled binary
-                // Get the sidecar path from Tauri's resource directory
-                let sidecar_path = self.get_bundled_sidecar_path()?;
-                log::info!("Using bundled sidecar: {:?}", sidecar_path);
-
-                // Handle macOS quarantine attribute removal
-                #[cfg(target_os = "macos")]
-                {
-                    if let Err(e) = Self::remove_macos_quarantine(&sidecar_path) {
-                        log::warn!("Failed to remove quarantine attribute: {}", e);
-                    }
+                SpawnMode::Python { path, module } => {
+                    // Development mode: run via Python interpreter
+                    log::info!("Using Python mode: {} -m {}", path, module);
+                    Command::new(path)
+                        .arg("-m")
+                        .arg(module)
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .map_err(|e| format!("Failed to spawn Python sidecar: {}", e))?
                 }
+                SpawnMode::Bundled => {
+                    // Release mode: use bundled binary
+                    // Get the sidecar path from Tauri's resource directory
+                    let sidecar_path = self.get_bundled_sidecar_path()?;
+                    log::info!("Using bundled sidecar: {:?}", sidecar_path);
 
-                // Ensure executable permissions on Unix
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(metadata) = std::fs::metadata(&sidecar_path) {
-                        let mut perms = metadata.permissions();
-                        perms.set_mode(perms.mode() | 0o111);
-                        let _ = std::fs::set_permissions(&sidecar_path, perms);
+                    // Handle macOS quarantine attribute removal
+                    #[cfg(target_os = "macos")]
+                    {
+                        if let Err(e) = Self::remove_macos_quarantine(&sidecar_path) {
+                            log::warn!("Failed to remove quarantine attribute: {}", e);
+                        }
                     }
-                }
 
-                Command::new(&sidecar_path)
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|e| format!("Failed to spawn bundled sidecar: {}", e))?
+                    // Ensure executable permissions on Unix
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(metadata) = std::fs::metadata(&sidecar_path) {
+                            let mut perms = metadata.permissions();
+                            perms.set_mode(perms.mode() | 0o111);
+                            let _ = std::fs::set_permissions(&sidecar_path, perms);
+                        }
+                    }
+
+                    Command::new(&sidecar_path)
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .map_err(|e| format!("Failed to spawn bundled sidecar: {}", e))?
+                }
             }
-        }
         };
 
         let pid = child.id();
@@ -331,7 +331,9 @@ impl SidecarManager {
 
     fn simulation_mode_from_env() -> SidecarSimulationMode {
         Self::simulation_mode_from_values(
-            env::var("OPENVOICY_SIDECAR_SIMULATION_MODE").ok().as_deref(),
+            env::var("OPENVOICY_SIDECAR_SIMULATION_MODE")
+                .ok()
+                .as_deref(),
             env::var("OPENVOICY_SIDECAR_SIMULATE_CRASH").ok().as_deref(),
         )
     }
@@ -1215,7 +1217,10 @@ mod tests {
                     break;
                 }
                 Ok(None) => {
-                    assert!(Instant::now() < deadline, "simulated crash process did not exit");
+                    assert!(
+                        Instant::now() < deadline,
+                        "simulated crash process did not exit"
+                    );
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 Err(e) => panic!("failed to wait on simulated crash process: {}", e),
@@ -1229,12 +1234,16 @@ mod tests {
             "Traceback (most recent call last):"
         ));
         assert!(SidecarManager::is_fatal_stderr_line("FATAL: unrecoverable"));
-        assert!(SidecarManager::is_fatal_stderr_line("thread panicked at foo"));
+        assert!(SidecarManager::is_fatal_stderr_line(
+            "thread panicked at foo"
+        ));
     }
 
     #[test]
     fn test_is_fatal_stderr_line_ignores_nonfatal_output() {
-        assert!(!SidecarManager::is_fatal_stderr_line("warning: model warmup"));
+        assert!(!SidecarManager::is_fatal_stderr_line(
+            "warning: model warmup"
+        ));
         assert!(!SidecarManager::is_fatal_stderr_line("info: ready"));
     }
 

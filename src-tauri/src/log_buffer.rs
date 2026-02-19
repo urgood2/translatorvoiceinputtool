@@ -308,8 +308,7 @@ impl Log for CombinedLogger {
 /// Call this early in application startup.
 pub fn init_buffer_logger(min_level: Level) {
     let primary_logger =
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-            .build();
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build();
     let combined = CombinedLogger::new(Box::new(primary_logger), BufferLogger::global(min_level));
 
     if log::set_boxed_logger(Box::new(combined)).is_ok() {
@@ -571,8 +570,10 @@ mod tests {
             records: Arc::clone(&primary_records),
         };
         let buffer = Arc::new(LogRingBuffer::new(10, 4096));
-        let combined =
-            CombinedLogger::new(Box::new(primary), BufferLogger::new(Arc::clone(&buffer), Level::Info));
+        let combined = CombinedLogger::new(
+            Box::new(primary),
+            BufferLogger::new(Arc::clone(&buffer), Level::Info),
+        );
 
         let record = Record::builder()
             .args(format_args!("combined hello"))
@@ -582,13 +583,11 @@ mod tests {
         combined.log(&record);
 
         assert_eq!(buffer.len(), 1);
-        assert!(
-            primary_records
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|message| message == "combined hello")
-        );
+        assert!(primary_records
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|message| message == "combined hello"));
     }
 
     #[test]
