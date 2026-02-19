@@ -246,6 +246,10 @@ pub enum AppErrorKind {
     AccessibilityPermissionDenied,
     /// Clipboard-only mode active (not an error, informational).
     ClipboardOnlyMode,
+    /// Direct text injection failed.
+    InjectionFailed { message: String },
+    /// Overlay rendering or interaction failed.
+    OverlayFailed { message: String },
 
     // === Internal Errors ===
     /// Generic internal error.
@@ -565,6 +569,22 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
             None,
         ),
 
+        AppErrorKind::InjectionFailed { message } => UserError::new(
+            "Injection Failed",
+            "Failed to inject transcribed text into the focused application.",
+            Some(ErrorKind::InjectionFailed),
+            Some(Remediation::Retry),
+            Some(message.clone()),
+        ),
+
+        AppErrorKind::OverlayFailed { message } => UserError::new(
+            "Overlay Failed",
+            "Failed to update or display the recording overlay.",
+            Some(ErrorKind::OverlayFailed),
+            Some(Remediation::Retry),
+            Some(message.clone()),
+        ),
+
         // === Internal Errors ===
         AppErrorKind::Internal { message } => UserError::new(
             "Internal Error",
@@ -616,7 +636,10 @@ pub fn from_sidecar_error(kind: &str, message: &str, details: Option<&str>) -> A
         "E_LANGUAGE_UNSUPPORTED" => AppErrorKind::Internal {
             message: format!("Language unsupported: {}", message),
         },
-        "E_INJECTION_FAILED" | "E_OVERLAY_FAILED" => AppErrorKind::Internal {
+        "E_INJECTION_FAILED" => AppErrorKind::InjectionFailed {
+            message: message.to_string(),
+        },
+        "E_OVERLAY_FAILED" => AppErrorKind::OverlayFailed {
             message: message.to_string(),
         },
 
@@ -727,6 +750,12 @@ mod tests {
             AppErrorKind::SelfInjectionPrevented,
             AppErrorKind::AccessibilityPermissionDenied,
             AppErrorKind::ClipboardOnlyMode,
+            AppErrorKind::InjectionFailed {
+                message: "inject fail".to_string(),
+            },
+            AppErrorKind::OverlayFailed {
+                message: "overlay fail".to_string(),
+            },
             AppErrorKind::Internal {
                 message: "test".to_string(),
             },
@@ -818,6 +847,20 @@ mod tests {
 
         let error = from_sidecar_error("E_UNKNOWN", "Something went wrong", None);
         assert!(matches!(error, AppErrorKind::Internal { .. }));
+    }
+
+    #[test]
+    fn test_from_sidecar_error_preserves_injection_and_overlay_codes() {
+        let injection = from_sidecar_error("E_INJECTION_FAILED", "paste failed", None);
+        let overlay = from_sidecar_error("E_OVERLAY_FAILED", "overlay hidden", None);
+
+        assert!(matches!(injection, AppErrorKind::InjectionFailed { .. }));
+        assert!(matches!(overlay, AppErrorKind::OverlayFailed { .. }));
+
+        let injection_payload = AppError::from_kind(&injection);
+        let overlay_payload = AppError::from_kind(&overlay);
+        assert_eq!(injection_payload.code, "E_INJECTION_FAILED");
+        assert_eq!(overlay_payload.code, "E_OVERLAY_FAILED");
     }
 
     #[test]
