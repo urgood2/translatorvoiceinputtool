@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAppStore, selectAppState } from './store';
 import { useTauriEvents } from './hooks';
-import { SelfCheck, Diagnostics, SettingsPanel, StatusIndicator, HistoryPanel } from './components';
+import {
+  SelfCheck,
+  Diagnostics,
+  SettingsPanel,
+  StatusIndicator,
+  HistoryPanel,
+  StatusDashboard,
+} from './components';
 import type { DiagnosticsReport } from './types';
 
 function App() {
@@ -114,6 +121,11 @@ function App() {
       </div>
 
       <div className="w-full max-w-md space-y-4">
+        <div className="bg-gray-800 rounded-lg p-6">
+          <h2 className="text-xl font-semibold mb-4">Status Dashboard</h2>
+          <StatusDashboard />
+        </div>
+
         {/* Model Status */}
         <div className="bg-gray-800 rounded-lg p-6">
           <h2 className="text-xl font-semibold mb-4">Model Status</h2>
