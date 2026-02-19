@@ -63,4 +63,37 @@ describe('tauri.events.v1 contract', () => {
     expect(byName.get('sidecar:status')?.deprecated_aliases).toContain('status:changed');
     expect(byName.get('recording:status')?.deprecated_aliases).toEqual([]);
   });
+
+  it('defines transcript entry additive fields for compatibility', () => {
+    const contractPath = resolve(process.cwd(), 'shared/contracts/tauri.events.v1.json');
+    const raw = JSON.parse(readFileSync(contractPath, 'utf-8')) as {
+      $defs?: Record<string, { properties?: Record<string, unknown>; required?: string[] }>;
+    };
+
+    const transcriptEntry = raw.$defs?.transcript_entry;
+    expect(transcriptEntry).toBeDefined();
+
+    const props = transcriptEntry?.properties ?? {};
+    expect(props.id).toBeDefined();
+    expect(props.text).toBeDefined();
+    expect(props.timestamp).toBeDefined();
+    expect(props.audio_duration_ms).toBeDefined();
+    expect(props.transcription_duration_ms).toBeDefined();
+    expect(props.injection_result).toBeDefined();
+
+    expect(props.session_id).toBeDefined();
+    expect(props.raw_text).toBeDefined();
+    expect(props.final_text).toBeDefined();
+    expect(props.language).toBeDefined();
+    expect(props.confidence).toBeDefined();
+    expect(props.timings).toBeDefined();
+
+    const required = new Set(transcriptEntry?.required ?? []);
+    expect(required.has('session_id')).toBe(false);
+    expect(required.has('raw_text')).toBe(false);
+    expect(required.has('final_text')).toBe(false);
+    expect(required.has('language')).toBe(false);
+    expect(required.has('confidence')).toBe(false);
+    expect(required.has('timings')).toBe(false);
+  });
 });
