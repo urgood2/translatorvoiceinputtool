@@ -975,11 +975,39 @@ fn collect_sensitive_unknown_keys(
     known_keys: &[&str],
     fields: &mut Vec<String>,
 ) {
-    for key in object.keys() {
+    for (key, value) in object {
         let is_known = known_keys.contains(&key.as_str());
-        if !is_known && contains_sensitive_field_keyword(key) {
-            fields.push(path_with_key(prefix, key));
+        if is_known {
+            continue;
         }
+
+        let unknown_path = path_with_key(prefix, key);
+        if contains_sensitive_field_keyword(key) {
+            fields.push(unknown_path.clone());
+        }
+
+        collect_sensitive_unknown_descendants(value, &unknown_path, fields);
+    }
+}
+
+fn collect_sensitive_unknown_descendants(value: &Value, prefix: &str, fields: &mut Vec<String>) {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                let path = path_with_key(prefix, key);
+                if contains_sensitive_field_keyword(key) {
+                    fields.push(path.clone());
+                }
+                collect_sensitive_unknown_descendants(child, &path, fields);
+            }
+        }
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                let path = format!("{}[{}]", prefix, index);
+                collect_sensitive_unknown_descendants(item, &path, fields);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -2352,5 +2380,30 @@ mod tests {
 
         let unknown = sensitive_unknown_config_fields(&config);
         assert!(unknown.is_empty());
+    }
+
+    #[test]
+    fn test_sensitive_unknown_config_fields_detected_under_unknown_parent_objects() {
+        let config = serde_json::json!({
+            "schema_version": 1,
+            "integrations": {
+                "slack": {
+                    "credentials": {
+                        "api_token": "bad",
+                        "refreshSecret": "bad"
+                    }
+                },
+                "accounts": [
+                    {"name": "a", "session_key": "bad"},
+                    {"name": "b", "profile": {"password_hint": "bad"}}
+                ]
+            }
+        });
+
+        let unknown = sensitive_unknown_config_fields(&config);
+        assert!(unknown.contains(&"integrations.slack.credentials.api_token".to_string()));
+        assert!(unknown.contains(&"integrations.slack.credentials.refreshSecret".to_string()));
+        assert!(unknown.contains(&"integrations.accounts[0].session_key".to_string()));
+        assert!(unknown.contains(&"integrations.accounts[1].profile.password_hint".to_string()));
     }
 }
