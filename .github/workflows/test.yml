@@ -8,6 +8,7 @@ on:
       - 'sidecar/**'
       - 'shared/**'
       - 'src/**'
+      - 'scripts/**'
       - 'package.json'
       - '.github/workflows/test.yml'
   pull_request:
@@ -16,6 +17,7 @@ on:
       - 'sidecar/**'
       - 'shared/**'
       - 'src/**'
+      - 'scripts/**'
       - 'package.json'
       - '.github/workflows/test.yml'
 
@@ -112,6 +114,9 @@ jobs:
 
       - name: Install jsonschema
         run: pip install jsonschema
+
+      - name: Validate contracts and generated artifacts
+        run: python scripts/validate_contracts.py
 
       - name: Validate schemas
         run: python shared/schema/validate.py --self-test
