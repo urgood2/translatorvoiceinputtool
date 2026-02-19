@@ -15,6 +15,11 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ValidateContractsTests(unittest.TestCase):
+    @staticmethod
+    def _write_jsonl(path: Path, rows: list[dict]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
     def test_extract_listen_event_names_from_text_resolves_constants(self) -> None:
         text = """
 const EVENTS = {
@@ -129,6 +134,156 @@ listen('sidecar:status', () => {});
             errors = MODULE.run_generator_and_diff(root, "scripts/gen_contracts_ts.py", "src/types.contracts.ts")
             self.assertEqual(len(errors), 1)
             self.assertIn("out of date", errors[0])
+
+    def test_validate_frontend_listener_events_reports_undeclared_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            hook_file = root / "src" / "hooks" / "useTauriEvents.ts"
+            hook_file.parent.mkdir(parents=True, exist_ok=True)
+            hook_file.write_text(
+                "\n".join(
+                    [
+                        "import { listen } from '@tauri-apps/api/event';",
+                        "void listen('state:changed', () => {});",
+                        "void listen('state:changd', () => {});",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            events_contract = {
+                "items": [
+                    {
+                        "type": "event",
+                        "name": "state:changed",
+                        "payload_schema": {"type": "object"},
+                    }
+                ]
+            }
+            errors = MODULE.validate_frontend_listener_events(root, events_contract)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("state:changd", errors[0])
+            self.assertIn("undeclared event", errors[0])
+
+    def test_validate_tauri_event_payload_examples_reports_schema_violation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            fixture = root / "src" / "hooks" / "useTauriEvents.test.ts"
+            fixture.parent.mkdir(parents=True, exist_ok=True)
+            fixture.write_text(
+                "\n".join(
+                    [
+                        "emitMockEvent('state:changed', {",
+                        "  seq: 1,",
+                        "  state: 'idle',",
+                        "  enabled: true,",
+                        "  unexpected: true,",
+                        "});",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            events_contract = {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "items": [
+                    {
+                        "type": "event",
+                        "name": "state:changed",
+                        "payload_schema": {
+                            "type": "object",
+                            "required": ["seq", "state", "enabled"],
+                            "properties": {
+                                "seq": {"type": "integer"},
+                                "state": {"type": "string"},
+                                "enabled": {"type": "boolean"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    }
+                ],
+            }
+
+            errors = MODULE.validate_tauri_event_payload_examples(root, events_contract)
+            self.assertGreaterEqual(len(errors), 1)
+            self.assertTrue(any("unexpected" in err for err in errors))
+
+    def test_validate_sidecar_examples_reports_missing_required_method_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            examples_path = root / "shared" / "ipc" / "examples" / "IPC_V1_EXAMPLES.jsonl"
+            self._write_jsonl(
+                examples_path,
+                [
+                    {
+                        "type": "request",
+                        "data": {"jsonrpc": "2.0", "id": 1, "method": "system.ping", "params": {}},
+                    }
+                ],
+            )
+
+            sidecar_contract = {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "items": [
+                    {
+                        "type": "method",
+                        "name": "status.get",
+                        "required": True,
+                        "params_schema": {"type": "object", "additionalProperties": False},
+                        "result_schema": {"type": "object"},
+                    },
+                    {
+                        "type": "method",
+                        "name": "system.ping",
+                        "required": False,
+                        "params_schema": {"type": "object", "additionalProperties": False},
+                        "result_schema": {"type": "object"},
+                    },
+                ],
+            }
+
+            errors = MODULE.validate_sidecar_examples_against_contract(root, sidecar_contract)
+            self.assertTrue(any("missing request fixture for required sidecar method 'status.get'" in err for err in errors))
+
+    def test_validate_sidecar_examples_reports_unknown_fixture_method_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            examples_path = root / "shared" / "ipc" / "examples" / "IPC_V1_EXAMPLES.jsonl"
+            self._write_jsonl(
+                examples_path,
+                [
+                    {
+                        "type": "request",
+                        "data": {"jsonrpc": "2.0", "id": 1, "method": "status.get_typo", "params": {}},
+                    },
+                    {
+                        "type": "notification",
+                        "data": {"jsonrpc": "2.0", "method": "status.changed_typo", "params": {}},
+                    },
+                ],
+            )
+
+            sidecar_contract = {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "items": [
+                    {
+                        "type": "method",
+                        "name": "status.get",
+                        "required": False,
+                        "params_schema": {"type": "object", "additionalProperties": False},
+                        "result_schema": {"type": "object"},
+                    },
+                    {
+                        "type": "notification",
+                        "name": "status.changed",
+                        "params_schema": {"type": "object", "additionalProperties": False},
+                    },
+                ],
+            }
+
+            errors = MODULE.validate_sidecar_examples_against_contract(root, sidecar_contract)
+            self.assertTrue(any("unknown request method 'status.get_typo'" in err for err in errors))
+            self.assertTrue(any("unknown notification method 'status.changed_typo'" in err for err in errors))
 
     def test_validate_generator_determinism_accepts_stable_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
