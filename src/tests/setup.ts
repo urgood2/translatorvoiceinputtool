@@ -155,16 +155,26 @@ export function createMockTranscript(overrides: Partial<{
   text: string;
   timestamp: string;
   audio_duration_ms: number;
-  processing_duration_ms: number;
-  injected: boolean;
+  transcription_duration_ms: number;
+  injection_result:
+    | { status: 'injected' }
+    | { status: 'clipboard_only'; reason: string }
+    | { status: 'error'; message: string };
+  timings: Partial<{
+    ipc_ms: number;
+    transcribe_ms: number;
+    postprocess_ms: number;
+    inject_ms: number;
+    total_ms: number;
+  }>;
 }> = {}) {
   return {
     id: 'test-transcript-id',
     text: 'Hello, world!',
     timestamp: new Date().toISOString(),
     audio_duration_ms: 2000,
-    processing_duration_ms: 500,
-    injected: true,
+    transcription_duration_ms: 500,
+    injection_result: { status: 'injected' as const },
     ...overrides,
   };
 }

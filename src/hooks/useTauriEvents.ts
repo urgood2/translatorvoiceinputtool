@@ -10,10 +10,12 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useAppStore } from '../store/appStore';
 import type {
   AudioLevelEvent,
+  InjectionResult,
   ModelStatus,
   Progress,
   StateEvent,
   TranscriptEntry,
+  TranscriptEventPayload,
 } from '../types';
 
 // Event names emitted by Rust backend
@@ -37,6 +39,67 @@ const EVENTS = {
   // Sidecar events
   SIDECAR_STATUS: 'sidecar:status',
 } as const;
+
+function defaultInjectionResult(): InjectionResult {
+  return { status: 'injected' };
+}
+
+function normalizeInjectionResult(result: unknown): InjectionResult {
+  if (!result || typeof result !== 'object') {
+    return defaultInjectionResult();
+  }
+
+  const payload = result as Record<string, unknown>;
+  const status = payload.status;
+  if (status === 'injected') {
+    return { status: 'injected' };
+  }
+  if (status === 'clipboard_only') {
+    return {
+      status: 'clipboard_only',
+      reason:
+        typeof payload.reason === 'string' && payload.reason.length > 0
+          ? payload.reason
+          : 'clipboard_only',
+    };
+  }
+  if (status === 'error') {
+    return {
+      status: 'error',
+      message:
+        typeof payload.message === 'string' && payload.message.length > 0
+          ? payload.message
+          : 'injection error',
+    };
+  }
+  if (status === 'failed') {
+    return {
+      status: 'error',
+      message:
+        typeof payload.error === 'string' && payload.error.length > 0
+          ? payload.error
+          : 'injection failed',
+    };
+  }
+
+  return defaultInjectionResult();
+}
+
+function normalizeTranscriptPayload(payload: TranscriptEventPayload): TranscriptEntry {
+  if ('entry' in payload) {
+    return payload.entry;
+  }
+
+  return {
+    id: payload.session_id,
+    text: payload.text,
+    timestamp: new Date().toISOString(),
+    audio_duration_ms: payload.audio_duration_ms,
+    transcription_duration_ms: payload.processing_duration_ms,
+    injection_result: normalizeInjectionResult(payload.injection_result),
+    timings: payload.timings,
+  };
+}
 
 /**
  * Hook that subscribes to all Tauri events and updates the store.
@@ -111,11 +174,11 @@ export function useTauriEvents(): void {
       if (!audioLevelRegistered) return;
 
       // Subscribe to transcript completions
-      const transcriptRegistered = await registerListener<{ entry: TranscriptEntry }>(
+      const transcriptRegistered = await registerListener<TranscriptEventPayload>(
         EVENTS.TRANSCRIPT_COMPLETE,
         (event) => {
           console.debug('Event: transcript:complete', event.payload);
-          store._addHistoryEntry(event.payload.entry);
+          store._addHistoryEntry(normalizeTranscriptPayload(event.payload));
         }
       );
       if (!transcriptRegistered) return;

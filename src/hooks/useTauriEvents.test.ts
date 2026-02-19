@@ -10,6 +10,7 @@ import { renderHook, act } from '@testing-library/react';
 import { listen } from '@tauri-apps/api/event';
 import { useTauriEvents, useTauriEvent } from './useTauriEvents';
 import { useAppStore } from '../store/appStore';
+import { emitMockEvent } from '../tests/setup';
 
 // Reset store before each test
 beforeEach(() => {
@@ -110,14 +111,55 @@ describe('useTauriEvents', () => {
       text: 'Hello',
       timestamp: new Date().toISOString(),
       audio_duration_ms: 1000,
-      processing_duration_ms: 200,
-      injected: true,
+      transcription_duration_ms: 200,
+      injection_result: { status: 'injected' },
     });
     expect(useAppStore.getState().history[0]?.id).toBe('test');
 
     // Test _setError
     store._setError('Test error');
     expect(useAppStore.getState().errorDetail).toBe('Test error');
+  });
+
+  test('normalizes legacy transcript payload and preserves timings', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    // Wait for async setup
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    const timings = {
+      ipc_ms: 11,
+      transcribe_ms: 340,
+      postprocess_ms: 8,
+      inject_ms: 36,
+      total_ms: 395,
+    };
+
+    act(() => {
+      emitMockEvent('transcript:complete', {
+        session_id: 'session-123',
+        text: 'Legacy payload',
+        audio_duration_ms: 1200,
+        processing_duration_ms: 450,
+        injection_result: { status: 'failed', error: 'paste failed' },
+        timings,
+      });
+    });
+
+    const [entry] = useAppStore.getState().history;
+    expect(entry).toMatchObject({
+      id: 'session-123',
+      text: 'Legacy payload',
+      audio_duration_ms: 1200,
+      transcription_duration_ms: 450,
+      injection_result: { status: 'error', message: 'paste failed' },
+      timings,
+    });
+    expect(new Date(entry.timestamp).toString()).not.toBe('Invalid Date');
+
+    unmount();
   });
 });
 

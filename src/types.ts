@@ -247,6 +247,15 @@ export type InjectionResult =
   | { status: 'clipboard_only'; reason: string }
   | { status: 'error'; message: string };
 
+/** Optional timing breakdown for stop -> inject pipeline. */
+export interface TranscriptTimings {
+  ipc_ms?: number;
+  transcribe_ms?: number;
+  postprocess_ms?: number;
+  inject_ms?: number;
+  total_ms?: number;
+}
+
 /** Transcript history entry. */
 export interface TranscriptEntry {
   id: string;
@@ -255,6 +264,7 @@ export interface TranscriptEntry {
   audio_duration_ms: number;
   transcription_duration_ms: number;
   injection_result: InjectionResult;
+  timings?: TranscriptTimings;
 }
 
 // ============================================================================
@@ -398,6 +408,38 @@ export interface ModelProgressEvent {
 export interface TranscriptEvent {
   entry: TranscriptEntry;
 }
+
+/** Legacy injection result shape emitted by transcription_complete notifications. */
+export type LegacyInjectionResult =
+  | {
+      status: 'injected';
+      text_length?: number;
+      timestamp?: string;
+    }
+  | {
+      status: 'clipboard_only';
+      reason: string;
+      text_length?: number;
+      timestamp?: string;
+    }
+  | {
+      status: 'failed';
+      error: string;
+      timestamp?: string;
+    };
+
+/** Legacy transcript completion payload shape emitted by older backend paths. */
+export interface LegacyTranscriptEvent {
+  session_id: string;
+  text: string;
+  audio_duration_ms: number;
+  processing_duration_ms: number;
+  injection_result?: InjectionResult | LegacyInjectionResult;
+  timings?: TranscriptTimings;
+}
+
+/** Transcript completion payload accepted during compatibility window. */
+export type TranscriptEventPayload = TranscriptEvent | LegacyTranscriptEvent;
 
 /** Error event. */
 export interface ErrorEvent {
