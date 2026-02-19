@@ -216,4 +216,25 @@ describe('App diagnostics panels', () => {
     expect(screen.getByText('System Health Check')).toBeDefined();
     expect(screen.getAllByText('Diagnostics').length).toBeGreaterThan(0);
   });
+
+  it('defaults to status tab and switches panel content on tab click', async () => {
+    render(<App />);
+
+    const statusTab = await screen.findByRole('tab', { name: 'Status' });
+    const historyTab = screen.getByRole('tab', { name: 'History' });
+    const replacementsTab = screen.getByRole('tab', { name: 'Replacements' });
+
+    expect(statusTab.getAttribute('aria-selected')).toBe('true');
+    expect(historyTab.getAttribute('aria-selected')).toBe('false');
+    expect(screen.getByTestId('status-dashboard')).toBeDefined();
+
+    fireEvent.click(replacementsTab);
+    expect(replacementsTab.getAttribute('aria-selected')).toBe('true');
+    expect(statusTab.getAttribute('aria-selected')).toBe('false');
+    expect(screen.getByText('Replacements tab integration is in progress.')).toBeDefined();
+
+    fireEvent.click(historyTab);
+    expect(historyTab.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getAllByText('Sample transcript text.').length).toBeGreaterThan(0);
+  });
 });
