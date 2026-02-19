@@ -223,9 +223,6 @@ where
     }
 
     pub async fn handle_crash(&mut self) -> Result<(), String> {
-        self.state = SidecarState::Failed;
-        self.emit_status(Some("sidecar crash detected"));
-
         let now = Instant::now();
         self.register_failure(now);
 
@@ -249,7 +246,7 @@ where
 
         self.state = SidecarState::Restarting;
         self.emit_status(Some(&format!(
-            "restarting sidecar in {}ms (attempt {})",
+            "sidecar crash detected; restarting in {}ms (attempt {})",
             delay.as_millis(),
             self.restart_count
         )));
@@ -314,6 +311,13 @@ where
     }
 
     fn emit_status(&self, message: Option<&str>) {
+        let payload = self.status_payload(message);
+        if let Some(app_handle) = &self.app_handle {
+            let _ = app_handle.emit(EVENT_SIDECAR_STATUS, payload);
+        }
+    }
+
+    fn status_payload(&self, message: Option<&str>) -> Value {
         let mut payload = json!({
             "state": self.state.as_str(),
             "restart_count": self.restart_count,
@@ -332,24 +336,6 @@ where
             }
         }
 
-        let payload = crate::event_seq::payload_with_next_seq(payload);
-        if let Some(app_handle) = &self.app_handle {
-            let _ = app_handle.emit(EVENT_SIDECAR_STATUS, payload);
-        }
-    }
-
-    #[allow(dead_code)]
-    fn status_payload_for_testing(&self, message: Option<&str>) -> Value {
-        let mut payload = json!({
-            "state": self.state.as_str(),
-            "restart_count": self.restart_count,
-        });
-        if let Some(message) = message {
-            payload
-                .as_object_mut()
-                .expect("payload object")
-                .insert("message".to_string(), json!(message));
-        }
         crate::event_seq::payload_with_next_seq(payload)
     }
 }
@@ -614,5 +600,44 @@ mod tests {
         let state = controller.state();
         assert_eq!(state.start_calls, 1);
         assert_eq!(state.ping_calls, 1);
+    }
+
+    #[test]
+    fn status_payload_is_structured_and_includes_required_fields() {
+        let controller = FakeController::default();
+        let supervisor = SidecarSupervisor::new(controller, SidecarSupervisorConfig::default());
+
+        let payload = supervisor.status_payload(Some("starting sidecar"));
+        assert!(payload.get("seq").and_then(Value::as_u64).is_some());
+        assert_eq!(
+            payload.get("state").and_then(Value::as_str),
+            Some("stopped")
+        );
+        assert_eq!(
+            payload.get("restart_count").and_then(Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            payload.get("message").and_then(Value::as_str),
+            Some("starting sidecar")
+        );
+    }
+
+    #[test]
+    fn status_payload_omits_message_when_not_provided() {
+        let controller = FakeController::default();
+        let supervisor = SidecarSupervisor::new(controller, SidecarSupervisorConfig::default());
+
+        let payload = supervisor.status_payload(None);
+        assert!(payload.get("seq").and_then(Value::as_u64).is_some());
+        assert_eq!(
+            payload.get("state").and_then(Value::as_str),
+            Some("stopped")
+        );
+        assert_eq!(
+            payload.get("restart_count").and_then(Value::as_u64),
+            Some(0)
+        );
+        assert!(payload.get("message").is_none());
     }
 }
