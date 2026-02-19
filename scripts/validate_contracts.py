@@ -82,6 +82,14 @@ class EventPayloadExample:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class RustEmissionSite:
+    file: Path
+    line: int
+    event_name: str
+    payload_expr: str
+
+
 def log(message: str) -> None:
     print(f"[validate_contracts] {message}")
 
@@ -315,6 +323,97 @@ def extract_balanced_braces(text: str, start_index: int) -> tuple[str, int]:
     raise ValueError("unbalanced braces")
 
 
+def extract_balanced_parentheses(text: str, start_index: int) -> tuple[str, int]:
+    depth = 0
+    in_single = False
+    in_double = False
+    escape = False
+    idx = start_index
+
+    while idx < len(text):
+        ch = text[idx]
+        if escape:
+            escape = False
+            idx += 1
+            continue
+        if ch == "\\":
+            escape = True
+            idx += 1
+            continue
+        if not in_double and ch == "'":
+            in_single = not in_single
+            idx += 1
+            continue
+        if not in_single and ch == '"':
+            in_double = not in_double
+            idx += 1
+            continue
+        if in_single or in_double:
+            idx += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start_index : idx + 1], idx + 1
+        idx += 1
+    raise ValueError("unbalanced parentheses")
+
+
+def split_top_level_commas(text: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth_paren = 0
+    depth_brace = 0
+    depth_bracket = 0
+    in_single = False
+    in_double = False
+    escape = False
+
+    for idx, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if not in_double and ch == "'":
+            in_single = not in_single
+            continue
+        if not in_single and ch == '"':
+            in_double = not in_double
+            continue
+        if in_single or in_double:
+            continue
+        if ch == "(":
+            depth_paren += 1
+            continue
+        if ch == ")":
+            depth_paren = max(0, depth_paren - 1)
+            continue
+        if ch == "{":
+            depth_brace += 1
+            continue
+        if ch == "}":
+            depth_brace = max(0, depth_brace - 1)
+            continue
+        if ch == "[":
+            depth_bracket += 1
+            continue
+        if ch == "]":
+            depth_bracket = max(0, depth_bracket - 1)
+            continue
+        if ch == "," and depth_paren == 0 and depth_brace == 0 and depth_bracket == 0:
+            parts.append(text[start:idx].strip())
+            start = idx + 1
+
+    tail = text[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
 def parse_const_object_string_maps(text: str) -> dict[str, dict[str, str]]:
     maps: dict[str, dict[str, str]] = {}
     for match in re.finditer(r"const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*{", text):
@@ -483,6 +582,506 @@ def validate_frontend_listener_events(repo_root: Path, events_contract: dict[str
         f"{unresolved} unresolved, "
         f"{failed} failed"
     )
+    return errors
+
+
+def parse_rust_event_constants(text: str) -> dict[str, str]:
+    constants: dict[str, str] = {}
+    for match in re.finditer(r'const\s+(EVENT_[A-Z0-9_]+)\s*:\s*&str\s*=\s*"([^"]+)";', text):
+        constants[match.group(1)] = match.group(2)
+    return constants
+
+
+def resolve_rust_event_token(token: str, constants: dict[str, str]) -> str | None:
+    value = token.strip()
+    if not value:
+        return None
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    if value in constants:
+        return constants[value]
+    return None
+
+
+def parse_rust_event_list_expression(expr: str, constants: dict[str, str]) -> list[str]:
+    value = expr.strip()
+    if value.startswith("&"):
+        value = value[1:].strip()
+    if not (value.startswith("[") and value.endswith("]")):
+        return []
+    inner = value[1:-1].strip()
+    if not inner:
+        return []
+
+    events: list[str] = []
+    for token in split_top_level_commas(inner):
+        resolved = resolve_rust_event_token(token, constants)
+        if resolved:
+            events.append(resolved)
+    return events
+
+
+def extract_rust_emission_sites(repo_root: Path, rust_file: Path) -> list[RustEmissionSite]:
+    if not rust_file.exists():
+        return []
+
+    text = rust_file.read_text(encoding="utf-8")
+    constants = parse_rust_event_constants(text)
+    sites: list[RustEmissionSite] = []
+
+    for match in re.finditer(r"\bemit_with_shared_seq\s*\(", text):
+        paren_start = text.find("(", match.start())
+        if paren_start == -1:
+            continue
+        try:
+            call_expr, _ = extract_balanced_parentheses(text, paren_start)
+        except ValueError:
+            continue
+        args = split_top_level_commas(call_expr[1:-1])
+        if len(args) < 3:
+            continue
+
+        events = parse_rust_event_list_expression(args[1], constants)
+        payload_expr = args[2].strip()
+        line = line_number_for_offset(text, match.start())
+        for event_name in events:
+            sites.append(
+                RustEmissionSite(
+                    file=rust_file,
+                    line=line,
+                    event_name=event_name,
+                    payload_expr=payload_expr,
+                )
+            )
+
+    for match in re.finditer(r"\bhandle\.emit\s*\(", text):
+        paren_start = text.find("(", match.start())
+        if paren_start == -1:
+            continue
+        try:
+            call_expr, _ = extract_balanced_parentheses(text, paren_start)
+        except ValueError:
+            continue
+        args = split_top_level_commas(call_expr[1:-1])
+        if len(args) < 2:
+            continue
+        event_name = resolve_rust_event_token(args[0], constants)
+        if event_name is None:
+            continue
+        payload_expr = args[1].strip()
+        line = line_number_for_offset(text, match.start())
+        sites.append(
+            RustEmissionSite(
+                file=rust_file,
+                line=line,
+                event_name=event_name,
+                payload_expr=payload_expr,
+            )
+        )
+
+    return sites
+
+
+def parse_rust_struct_field_types(text: str, struct_name: str) -> dict[str, str]:
+    match = re.search(rf"\bpub\s+struct\s+{re.escape(struct_name)}\s*{{", text)
+    if not match:
+        return {}
+    brace_start = text.find("{", match.start())
+    if brace_start == -1:
+        return {}
+    try:
+        body, _ = extract_balanced_braces(text, brace_start)
+    except ValueError:
+        return {}
+
+    fields: dict[str, str] = {}
+    for field_match in re.finditer(r"\bpub\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^,\n]+),", body):
+        fields[field_match.group(1)] = field_match.group(2).strip()
+    return fields
+
+
+def parse_rust_function_signature_arg_types(text: str, fn_name: str) -> dict[str, str]:
+    match = re.search(rf"\bfn\s+{re.escape(fn_name)}\s*\(", text)
+    if not match:
+        return {}
+    paren_start = text.find("(", match.start())
+    if paren_start == -1:
+        return {}
+    try:
+        sig, _ = extract_balanced_parentheses(text, paren_start)
+    except ValueError:
+        return {}
+
+    arg_types: dict[str, str] = {}
+    for arg in split_top_level_commas(sig[1:-1]):
+        if ":" not in arg:
+            continue
+        left, right = arg.split(":", 1)
+        name = left.strip().split()[-1].strip()
+        if name in {"self", "&self", "&mut", "&mutself"}:
+            continue
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+            continue
+        arg_types[name] = right.strip()
+    return arg_types
+
+
+def parse_rust_function_body(text: str, fn_name: str) -> str | None:
+    match = re.search(rf"\bfn\s+{re.escape(fn_name)}\s*\(", text)
+    if not match:
+        return None
+    brace_start = text.find("{", match.end())
+    if brace_start == -1:
+        return None
+    try:
+        body, _ = extract_balanced_braces(text, brace_start)
+    except ValueError:
+        return None
+    return body
+
+
+def rust_type_to_json_type(rust_type: str) -> str | None:
+    raw = rust_type.strip()
+    raw = re.sub(r"\s+", "", raw)
+    raw = raw.removeprefix("&")
+
+    if raw.startswith("Option<") and raw.endswith(">"):
+        inner = raw[len("Option<") : -1]
+        return rust_type_to_json_type(inner)
+
+    if raw in {"String", "str"}:
+        return "string"
+    if raw in {"bool"}:
+        return "boolean"
+    if raw in {"u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"}:
+        return "integer"
+    if raw in {"f32", "f64"}:
+        return "number"
+    if raw in {"Value", "serde_json::Value"}:
+        return None
+    return "object"
+
+
+def infer_json_type_from_rust_expr(expr: str, arg_types: dict[str, str]) -> str | None:
+    value = expr.strip()
+    if not value:
+        return None
+
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return "string"
+    if value in {"true", "false"}:
+        return "boolean"
+    if re.fullmatch(r"-?[0-9]+", value):
+        return "integer"
+    if re.fullmatch(r"-?[0-9]+\.[0-9]+", value):
+        return "number"
+    if value.endswith(".to_rfc3339()") or value.endswith(".to_string()"):
+        return "string"
+
+    if value in arg_types:
+        return rust_type_to_json_type(arg_types[value])
+
+    head = value.split(".", 1)[0]
+    tail = value.split(".", 1)[1] if "." in value else ""
+    if head in arg_types:
+        inferred = rust_type_to_json_type(arg_types[head])
+        if inferred:
+            # Prefer direct type mapping for primitive args.
+            if inferred != "object":
+                return inferred
+        if tail.startswith("message"):
+            return "string"
+        if tail.startswith("recoverable"):
+            return "boolean"
+        if tail.startswith("state"):
+            return "string"
+        if tail.startswith("enabled"):
+            return "boolean"
+        if tail.startswith("detail"):
+            return "string"
+
+    return None
+
+
+def parse_json_object_key_types(obj_text: str, arg_types: dict[str, str]) -> dict[str, str | None]:
+    text = obj_text.strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return {}
+    inner = text[1:-1].strip()
+    inner = re.sub(r"//[^\n]*", "", inner)
+    if not inner:
+        return {}
+
+    key_types: dict[str, str | None] = {}
+    for entry in split_top_level_commas(inner):
+        if ":" not in entry:
+            continue
+        key_raw, value_raw = entry.split(":", 1)
+        key_match = re.match(r'\s*"([A-Za-z0-9_]+)"\s*$', key_raw.strip())
+        if not key_match:
+            continue
+        key = key_match.group(1)
+        key_types[key] = infer_json_type_from_rust_expr(value_raw, arg_types)
+    return key_types
+
+
+def infer_payload_shape_from_rust_function(
+    rust_text: str,
+    fn_name: str,
+) -> tuple[str, dict[str, str | None]] | None:
+    body = parse_rust_function_body(rust_text, fn_name)
+    if body is None:
+        return None
+    arg_types = parse_rust_function_signature_arg_types(rust_text, fn_name)
+
+    key_types: dict[str, str | None] = {}
+    for macro_match in re.finditer(r"json!\s*\(\s*{", body):
+        brace_start = body.find("{", macro_match.start())
+        if brace_start == -1:
+            continue
+        try:
+            obj_text, _ = extract_balanced_braces(body, brace_start)
+        except ValueError:
+            continue
+        key_types.update(parse_json_object_key_types(obj_text, arg_types))
+
+    for insert_match in re.finditer(
+        r'insert\(\s*"([A-Za-z0-9_]+)"\.to_string\(\)\s*,\s*json!\((.*?)\)\s*\)',
+        body,
+        re.S,
+    ):
+        key = insert_match.group(1)
+        value_expr = insert_match.group(2).strip()
+        key_types[key] = infer_json_type_from_rust_expr(value_expr, arg_types)
+
+    if not key_types:
+        return None
+    return (f"fn:{fn_name}", key_types)
+
+
+def infer_payload_shape_from_rust_struct(
+    rust_text: str,
+    struct_name: str,
+) -> tuple[str, dict[str, str | None]] | None:
+    field_types = parse_rust_struct_field_types(rust_text, struct_name)
+    if not field_types:
+        return None
+    key_types = {field: rust_type_to_json_type(rust_type) for field, rust_type in field_types.items()}
+    return (f"struct:{struct_name}", key_types)
+
+
+def find_identifier_assignment_source(text: str, identifier: str, max_line: int) -> str | None:
+    pattern = re.compile(rf"\blet\s+(?:mut\s+)?{re.escape(identifier)}\s*=\s*(.+?);", re.S)
+    candidates: list[tuple[int, str]] = []
+    for match in pattern.finditer(text):
+        line = line_number_for_offset(text, match.start())
+        if line <= max_line:
+            candidates.append((line, match.group(1).strip()))
+    if not candidates:
+        return None
+    _line, rhs = max(candidates, key=lambda item: item[0])
+    return rhs
+
+
+def resolve_schema_fragment(schema: dict[str, Any], root_schema: dict[str, Any]) -> dict[str, Any]:
+    current = schema
+    seen: set[str] = set()
+    while isinstance(current, dict) and "$ref" in current:
+        ref = current.get("$ref")
+        if not isinstance(ref, str) or not ref.startswith("#/") or ref in seen:
+            break
+        seen.add(ref)
+        node: Any = root_schema
+        for token in ref[2:].split("/"):
+            if not isinstance(node, dict) or token not in node:
+                node = None
+                break
+            node = node[token]
+        if not isinstance(node, dict):
+            break
+        current = node
+    return current if isinstance(current, dict) else schema
+
+
+def schema_allows_json_type(schema: dict[str, Any], root_schema: dict[str, Any], json_type: str) -> bool:
+    resolved = resolve_schema_fragment(schema, root_schema)
+    if "oneOf" in resolved and isinstance(resolved["oneOf"], list):
+        return any(
+            isinstance(option, dict) and schema_allows_json_type(option, root_schema, json_type)
+            for option in resolved["oneOf"]
+        )
+    if "anyOf" in resolved and isinstance(resolved["anyOf"], list):
+        return any(
+            isinstance(option, dict) and schema_allows_json_type(option, root_schema, json_type)
+            for option in resolved["anyOf"]
+        )
+    if "type" in resolved:
+        schema_type = resolved["type"]
+        if isinstance(schema_type, str):
+            return schema_type == json_type or (schema_type == "integer" and json_type == "number")
+        if isinstance(schema_type, list):
+            return json_type in schema_type or (json_type == "number" and "integer" in schema_type)
+    if "const" in resolved:
+        const_val = resolved["const"]
+        if isinstance(const_val, bool):
+            return json_type == "boolean"
+        if isinstance(const_val, int) and not isinstance(const_val, bool):
+            return json_type == "integer"
+        if isinstance(const_val, float):
+            return json_type in {"number", "integer"}
+        if isinstance(const_val, str):
+            return json_type == "string"
+    if "enum" in resolved and isinstance(resolved["enum"], list) and resolved["enum"]:
+        sample = resolved["enum"][0]
+        if isinstance(sample, bool):
+            return json_type == "boolean"
+        if isinstance(sample, int) and not isinstance(sample, bool):
+            return json_type == "integer"
+        if isinstance(sample, float):
+            return json_type in {"number", "integer"}
+        if isinstance(sample, str):
+            return json_type == "string"
+    return True
+
+
+def infer_rust_payload_shape(
+    rust_text: str,
+    site: RustEmissionSite,
+) -> tuple[str, dict[str, str | None]] | None:
+    expr = site.payload_expr.strip()
+    fn_match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", expr)
+    if fn_match:
+        fn_name = fn_match.group(1)
+        function_shape = infer_payload_shape_from_rust_function(rust_text, fn_name)
+        if function_shape is not None:
+            return function_shape
+
+    if expr == "canonical_payload":
+        shape = infer_payload_shape_from_rust_function(rust_text, "sidecar_status_payload_from_status_event")
+        if shape is not None:
+            return shape
+
+    if expr.startswith("json!(") and expr.endswith(")"):
+        inner = expr[len("json!(") : -1].strip()
+        if inner.startswith("{") and inner.endswith("}"):
+            return ("inline:json-object", parse_json_object_key_types(inner, {}))
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", inner):
+            rhs = find_identifier_assignment_source(rust_text, inner, site.line)
+            if rhs:
+                if rhs.startswith("model_status_event_payload("):
+                    shape = infer_payload_shape_from_rust_struct(rust_text, "ModelStatusPayload")
+                    if shape is not None:
+                        return shape
+                if rhs.startswith("ModelProgress"):
+                    shape = infer_payload_shape_from_rust_struct(rust_text, "ModelProgress")
+                    if shape is not None:
+                        return shape
+
+    return None
+
+
+def validate_rust_event_payloads(repo_root: Path, events_contract: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    rust_file = repo_root / "src-tauri" / "src" / "integration.rs"
+    if not rust_file.exists():
+        return [f"missing Rust integration source: {rust_file.relative_to(repo_root)}"]
+
+    rust_text = rust_file.read_text(encoding="utf-8")
+    sites = extract_rust_emission_sites(repo_root, rust_file)
+    if not sites:
+        return [f"{rust_file.relative_to(repo_root)}: no Rust emission sites found"]
+
+    canonical_names, _alias_map = tauri_event_name_maps(events_contract)
+    canonical_schema_map: dict[str, dict[str, Any]] = {}
+    for item in events_contract.get("items", []):
+        if not isinstance(item, dict) or item.get("type") != "event":
+            continue
+        name = item.get("name")
+        payload_schema = item.get("payload_schema")
+        if isinstance(name, str) and isinstance(payload_schema, dict):
+            canonical_schema_map[name] = payload_schema
+
+    checked = 0
+    passed = 0
+    for site in sites:
+        if site.event_name not in canonical_names:
+            continue
+        schema = canonical_schema_map.get(site.event_name)
+        if schema is None:
+            continue
+        checked += 1
+        rel = site.file.relative_to(repo_root)
+        log(
+            f"Rust emit site: {rel}:{site.line}: event '{site.event_name}' payload expr '{site.payload_expr}'"
+        )
+
+        inferred = infer_rust_payload_shape(rust_text, site)
+        if inferred is None:
+            errors.append(
+                f"{rel}:{site.line}: unable to infer Rust payload shape for event '{site.event_name}'"
+            )
+            log(
+                f"FAIL: {rel}:{site.line}: unable to infer Rust payload shape for event '{site.event_name}'"
+            )
+            continue
+
+        source_name, key_types = inferred
+        resolved_schema = resolve_schema_fragment(schema, events_contract)
+        properties = resolved_schema.get("properties", {})
+        if not isinstance(properties, dict):
+            properties = {}
+        required = resolved_schema.get("required", [])
+        required_no_seq = {
+            name for name in required if isinstance(name, str) and name != "seq"
+        }
+        emitted_keys = set(key_types.keys())
+
+        site_errors: list[str] = []
+        missing = sorted(required_no_seq - emitted_keys)
+        if missing:
+            site_errors.append(
+                f"missing required field(s): {', '.join(missing)}"
+            )
+
+        if resolved_schema.get("additionalProperties") is False:
+            extras = sorted(name for name in emitted_keys if name not in properties)
+            if extras:
+                site_errors.append(
+                    f"unexpected field(s) not in schema: {', '.join(extras)}"
+                )
+
+        for key, inferred_type in key_types.items():
+            if inferred_type is None:
+                continue
+            prop_schema = properties.get(key)
+            if not isinstance(prop_schema, dict):
+                continue
+            if not schema_allows_json_type(prop_schema, events_contract, inferred_type):
+                site_errors.append(
+                    f"field '{key}' inferred as {inferred_type}, incompatible with schema"
+                )
+
+        if site_errors:
+            for detail in site_errors:
+                errors.append(
+                    f"{rel}:{site.line}: event '{site.event_name}' via {source_name}: {detail}"
+                )
+            log(
+                f"FAIL: {rel}:{site.line}: event '{site.event_name}' via {source_name} "
+                f"({len(site_errors)} issue(s))"
+            )
+            continue
+
+        passed += 1
+        log(
+            f"OK: {rel}:{site.line}: event '{site.event_name}' via {source_name}"
+        )
+
+    if checked == 0:
+        errors.append(
+            f"{rust_file.relative_to(repo_root)}: no canonical tauri.events emissions found for validation"
+        )
+    log(f"Rust payload validation summary: {checked} checked, {passed} passed, {len(errors)} failed")
     return errors
 
 
@@ -831,6 +1430,12 @@ def main(argv: list[str] | None = None) -> int:
             (
                 "Frontend listener event names declared in contract",
                 validate_frontend_listener_events(repo_root, contracts["tauri.events"]),
+            )
+        )
+        checks.append(
+            (
+                "Rust emitted event payloads match tauri.events contract",
+                validate_rust_event_payloads(repo_root, contracts["tauri.events"]),
             )
         )
         checks.append(

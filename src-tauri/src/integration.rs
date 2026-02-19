@@ -498,6 +498,14 @@ fn transcription_error_event_payload(session_id: &str, app_error: &AppError) -> 
     })
 }
 
+fn app_error_event_payload(app_error: &AppError) -> Value {
+    json!({
+        "error": app_error,
+        "message": app_error.message,
+        "recoverable": app_error.recoverable,
+    })
+}
+
 fn transcript_complete_event_payload(entry: &TranscriptEntry) -> Value {
     json!({
         "entry": entry
@@ -2340,12 +2348,14 @@ impl IntegrationManager {
                                 transcription_failure_app_error(&session_id, error.as_str());
                             emit_with_shared_seq(
                                 handle,
-                                &[
-                                    EVENT_TRANSCRIPT_ERROR,
-                                    EVENT_TRANSCRIPTION_ERROR,
-                                    EVENT_APP_ERROR,
-                                ],
+                                &[EVENT_TRANSCRIPT_ERROR, EVENT_TRANSCRIPTION_ERROR],
                                 transcription_error_event_payload(&session_id, &app_error),
+                                &event_seq,
+                            );
+                            emit_with_shared_seq(
+                                handle,
+                                &[EVENT_APP_ERROR],
+                                app_error_event_payload(&app_error),
                                 &event_seq,
                             );
                         }
@@ -3060,8 +3070,14 @@ mod tests {
         assert_eq!(payload.status, "loading");
         assert_eq!(payload.revision.as_deref(), Some("r1"));
         assert_eq!(payload.cache_path.as_deref(), Some("/tmp/model-cache"));
-        assert_eq!(payload.progress.as_ref().map(|p| p.current), Some(progress.current));
-        assert_eq!(payload.progress.as_ref().and_then(|p| p.total), progress.total);
+        assert_eq!(
+            payload.progress.as_ref().map(|p| p.current),
+            Some(progress.current)
+        );
+        assert_eq!(
+            payload.progress.as_ref().and_then(|p| p.total),
+            progress.total
+        );
         assert_eq!(
             payload.progress.as_ref().map(|p| p.unit.as_str()),
             Some(progress.unit.as_str())
@@ -3288,7 +3304,9 @@ mod tests {
             Some("Sidecar crashed")
         );
         assert_eq!(
-            payload.pointer("/error/recoverable").and_then(Value::as_bool),
+            payload
+                .pointer("/error/recoverable")
+                .and_then(Value::as_bool),
             Some(false)
         );
         assert_eq!(
@@ -3298,7 +3316,9 @@ mod tests {
             Some(2)
         );
         assert_eq!(
-            payload.pointer("/error/details/source").and_then(Value::as_str),
+            payload
+                .pointer("/error/details/source")
+                .and_then(Value::as_str),
             Some("watchdog")
         );
 
@@ -3307,6 +3327,36 @@ mod tests {
             payload.pointer("/app_error/code").and_then(Value::as_str),
             Some("E_SIDECAR_CRASH")
         );
+    }
+
+    #[test]
+    fn test_app_error_event_payload_matches_contract_shape() {
+        let app_error = AppError::new(
+            ErrorKind::TranscriptionFailed.to_sidecar(),
+            "Transcription failed",
+            Some(json!({
+                "session_id": "session-1",
+                "error_kind": ErrorKind::TranscriptionFailed.to_sidecar()
+            })),
+            true,
+        );
+
+        let payload = app_error_event_payload(&app_error);
+
+        assert_eq!(
+            payload.pointer("/error/code").and_then(Value::as_str),
+            Some("E_TRANSCRIPTION_FAILED")
+        );
+        assert_eq!(
+            payload.get("message").and_then(Value::as_str),
+            Some("Transcription failed")
+        );
+        assert_eq!(
+            payload.get("recoverable").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(payload.get("session_id").is_none());
+        assert!(payload.get("app_error").is_none());
     }
 
     #[test]

@@ -234,6 +234,97 @@ listen('sidecar:status', () => {});
             self.assertIn("without canonical listener 'state:changed'", output)
             self.assertIn("1 listeners checked, 1 valid, 1 using legacy aliases", output)
 
+    def test_validate_rust_event_payloads_accepts_matching_payload_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            rust_file = root / "src-tauri" / "src" / "integration.rs"
+            rust_file.parent.mkdir(parents=True, exist_ok=True)
+            rust_file.write_text(
+                "\n".join(
+                    [
+                        "use serde_json::{json, Value};",
+                        'const EVENT_STATE_CHANGED: &str = "state:changed";',
+                        "fn state_changed_event_payload() -> Value {",
+                        '  json!({ "state": "idle", "enabled": true, "timestamp": "2026-02-19T00:00:00Z", "detail": null })',
+                        "}",
+                        "fn emit_with_shared_seq<T>(_handle: &T, _events: &[&str], _payload: Value, _seq: &u64) {}",
+                        "fn wire(handle: &u8, event_seq: &u64) {",
+                        "  emit_with_shared_seq(handle, &[EVENT_STATE_CHANGED], state_changed_event_payload(), event_seq);",
+                        "}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            events_contract = {
+                "items": [
+                    {
+                        "type": "event",
+                        "name": "state:changed",
+                        "payload_schema": {
+                            "type": "object",
+                            "required": ["seq", "state", "enabled", "timestamp"],
+                            "properties": {
+                                "seq": {"type": "integer"},
+                                "state": {"type": "string"},
+                                "enabled": {"type": "boolean"},
+                                "timestamp": {"type": "string"},
+                                "detail": {"type": ["string", "null"]},
+                            },
+                            "additionalProperties": False,
+                        },
+                    }
+                ]
+            }
+
+            errors = MODULE.validate_rust_event_payloads(root, events_contract)
+            self.assertEqual(errors, [])
+
+    def test_validate_rust_event_payloads_reports_extra_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            rust_file = root / "src-tauri" / "src" / "integration.rs"
+            rust_file.parent.mkdir(parents=True, exist_ok=True)
+            rust_file.write_text(
+                "\n".join(
+                    [
+                        "use serde_json::{json, Value};",
+                        'const EVENT_STATE_CHANGED: &str = "state:changed";',
+                        "fn state_changed_event_payload() -> Value {",
+                        '  json!({ "state": "idle", "enabled": true, "timestamp": "2026-02-19T00:00:00Z", "unexpected": 1 })',
+                        "}",
+                        "fn emit_with_shared_seq<T>(_handle: &T, _events: &[&str], _payload: Value, _seq: &u64) {}",
+                        "fn wire(handle: &u8, event_seq: &u64) {",
+                        "  emit_with_shared_seq(handle, &[EVENT_STATE_CHANGED], state_changed_event_payload(), event_seq);",
+                        "}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            events_contract = {
+                "items": [
+                    {
+                        "type": "event",
+                        "name": "state:changed",
+                        "payload_schema": {
+                            "type": "object",
+                            "required": ["seq", "state", "enabled", "timestamp"],
+                            "properties": {
+                                "seq": {"type": "integer"},
+                                "state": {"type": "string"},
+                                "enabled": {"type": "boolean"},
+                                "timestamp": {"type": "string"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    }
+                ]
+            }
+
+            errors = MODULE.validate_rust_event_payloads(root, events_contract)
+            self.assertTrue(any("unexpected field(s) not in schema" in err for err in errors))
+
     def test_validate_tauri_event_payload_examples_reports_schema_violation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
