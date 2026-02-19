@@ -852,6 +852,7 @@ fn migrate_config(mut config: Value) -> AppConfig {
         }
     }
 
+    sanitize_invalid_boolean_fields(&mut config);
     ensure_replacement_rule_ids(&mut config);
 
     // Future migrations go here:
@@ -861,6 +862,105 @@ fn migrate_config(mut config: Value) -> AppConfig {
         log::error!("Config migration failed, using defaults: {}", e);
         AppConfig::default()
     })
+}
+
+fn sanitize_invalid_boolean_fields(config: &mut Value) {
+    fn sanitize_bool_field(
+        object: &mut serde_json::Map<String, Value>,
+        key: &str,
+        default: bool,
+        path: &str,
+    ) {
+        if matches!(object.get(key), Some(value) if !value.is_boolean()) {
+            log::warn!(
+                "Invalid boolean config value at '{}'; resetting to default {}",
+                path,
+                default
+            );
+            object.insert(key.to_string(), Value::Bool(default));
+        }
+    }
+
+    fn sanitize_optional_bool_field(
+        object: &mut serde_json::Map<String, Value>,
+        key: &str,
+        path: &str,
+    ) {
+        if matches!(object.get(key), Some(value) if !value.is_boolean() && !value.is_null()) {
+            log::warn!(
+                "Invalid optional boolean config value at '{}'; removing invalid value",
+                path
+            );
+            object.remove(key);
+        }
+    }
+
+    if let Some(audio) = config.get_mut("audio").and_then(Value::as_object_mut) {
+        sanitize_bool_field(audio, "audio_cues_enabled", true, "audio.audio_cues_enabled");
+        sanitize_bool_field(audio, "trim_silence", true, "audio.trim_silence");
+        sanitize_bool_field(audio, "vad_enabled", false, "audio.vad_enabled");
+    }
+
+    if let Some(injection) = config.get_mut("injection").and_then(Value::as_object_mut) {
+        sanitize_bool_field(
+            injection,
+            "restore_clipboard",
+            true,
+            "injection.restore_clipboard",
+        );
+        sanitize_bool_field(
+            injection,
+            "focus_guard_enabled",
+            true,
+            "injection.focus_guard_enabled",
+        );
+
+        if let Some(app_overrides) = injection
+            .get_mut("app_overrides")
+            .and_then(Value::as_object_mut)
+        {
+            for (app_id, override_value) in app_overrides {
+                if let Some(override_obj) = override_value.as_object_mut() {
+                    sanitize_optional_bool_field(
+                        override_obj,
+                        "use_clipboard_only",
+                        &format!("injection.app_overrides.{}.use_clipboard_only", app_id),
+                    );
+                }
+            }
+        }
+    }
+
+    if let Some(ui) = config.get_mut("ui").and_then(Value::as_object_mut) {
+        sanitize_bool_field(ui, "show_on_startup", true, "ui.show_on_startup");
+        sanitize_bool_field(ui, "onboarding_completed", false, "ui.onboarding_completed");
+        sanitize_bool_field(ui, "overlay_enabled", true, "ui.overlay_enabled");
+        sanitize_bool_field(ui, "reduce_motion", false, "ui.reduce_motion");
+    }
+
+    if let Some(history) = config.get_mut("history").and_then(Value::as_object_mut) {
+        sanitize_bool_field(history, "encrypt_at_rest", true, "history.encrypt_at_rest");
+    }
+
+    if let Some(replacements) = config.get_mut("replacements").and_then(Value::as_array_mut) {
+        for (index, replacement) in replacements.iter_mut().enumerate() {
+            if let Some(rule) = replacement.as_object_mut() {
+                sanitize_bool_field(rule, "enabled", true, &format!("replacements[{}].enabled", index));
+                sanitize_bool_field(
+                    rule,
+                    "word_boundary",
+                    false,
+                    &format!("replacements[{}].word_boundary", index),
+                );
+                sanitize_bool_field(
+                    rule,
+                    "case_sensitive",
+                    true,
+                    &format!("replacements[{}].case_sensitive", index),
+                );
+            }
+        }
+    }
 }
 
 fn ensure_replacement_rule_ids(config: &mut Value) {
@@ -1465,6 +1565,85 @@ mod tests {
         assert_eq!(loaded.ui.theme, "system");
         assert_eq!(loaded.history.persistence_mode, "memory");
         assert_eq!(loaded.history.max_entries, 2000);
+    }
+
+    #[test]
+    fn test_invalid_boolean_types_fall_back_to_per_field_defaults() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        fs::write(
+            &config_path,
+            r#"{
+                "schema_version": 1,
+                "audio": {
+                    "audio_cues_enabled": "yes",
+                    "trim_silence": "no",
+                    "vad_enabled": "false",
+                    "vad_silence_ms": 1600
+                },
+                "hotkeys": {
+                    "primary": "Alt+Space",
+                    "copy_last": "Alt+C",
+                    "mode": "hold"
+                },
+                "injection": {
+                    "paste_delay_ms": 55,
+                    "restore_clipboard": "true",
+                    "focus_guard_enabled": 1,
+                    "app_overrides": {
+                        "slack": {
+                            "paste_delay_ms": 45,
+                            "use_clipboard_only": "sometimes"
+                        }
+                    }
+                },
+                "ui": {
+                    "show_on_startup": "false",
+                    "window_width": 777,
+                    "window_height": 555,
+                    "overlay_enabled": "nope",
+                    "reduce_motion": "0"
+                },
+                "history": {
+                    "max_entries": 321,
+                    "encrypt_at_rest": "true"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = load_config_from_path(&config_path);
+
+        // Should not fall back to full defaults.
+        assert_eq!(loaded.hotkeys.primary, "Alt+Space");
+        assert_eq!(loaded.hotkeys.copy_last, "Alt+C");
+        assert_eq!(loaded.audio.vad_silence_ms, 1600);
+        assert_eq!(loaded.injection.paste_delay_ms, 55);
+        assert_eq!(loaded.ui.window_width, 777);
+        assert_eq!(loaded.ui.window_height, 555);
+        assert_eq!(loaded.history.max_entries, 321);
+
+        // Invalid booleans should reset to per-field defaults.
+        assert!(loaded.audio.audio_cues_enabled);
+        assert!(loaded.audio.trim_silence);
+        assert!(!loaded.audio.vad_enabled);
+        assert!(loaded.injection.restore_clipboard);
+        assert!(loaded.injection.focus_guard_enabled);
+        assert!(loaded.ui.show_on_startup);
+        assert!(loaded.ui.overlay_enabled);
+        assert!(!loaded.ui.reduce_motion);
+        assert!(loaded.history.encrypt_at_rest);
+
+        // Invalid optional bool should be dropped.
+        assert_eq!(
+            loaded
+                .injection
+                .app_overrides
+                .get("slack")
+                .and_then(|override_cfg| override_cfg.use_clipboard_only),
+            None
+        );
     }
 
     #[test]
