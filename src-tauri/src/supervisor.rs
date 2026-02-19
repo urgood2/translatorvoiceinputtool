@@ -197,6 +197,9 @@ where
             err
         })?;
 
+        // Successful ping means the restart completed; reset backoff progression.
+        self.restart_count = 0;
+        self.last_restart_at = None;
         self.state = SidecarState::Ready;
         self.emit_status(None);
         Ok(())
@@ -578,5 +581,34 @@ mod tests {
         assert_eq!(supervisor.restart_count(), 0);
         assert!(!supervisor.circuit_breaker_open());
         assert_eq!(controller.state().start_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn successful_restart_resets_backoff_counter() {
+        let controller = FakeController::default();
+        let mut supervisor = SidecarSupervisor::new(
+            controller.clone(),
+            SidecarSupervisorConfig {
+                max_restart_count: 10,
+                backoff_base_ms: 100,
+                backoff_factor: 2.0,
+                backoff_max_ms: 30_000,
+                circuit_breaker_window_ms: 60_000,
+                auto_restart_enabled: true,
+            },
+        );
+
+        supervisor
+            .handle_crash()
+            .await
+            .expect("restart should recover after successful self-check");
+
+        assert_eq!(supervisor.state(), SidecarState::Ready);
+        assert_eq!(supervisor.restart_count(), 0);
+        assert!(!supervisor.circuit_breaker_open());
+
+        let state = controller.state();
+        assert_eq!(state.start_calls, 1);
+        assert_eq!(state.ping_calls, 1);
     }
 }
