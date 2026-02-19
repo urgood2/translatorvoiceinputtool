@@ -445,6 +445,90 @@ listen('sidecar:status', () => {});
             self.assertTrue(any("unknown request method 'status.get_typo'" in err for err in errors))
             self.assertTrue(any("unknown notification method 'status.changed_typo'" in err for err in errors))
 
+    def test_validate_sidecar_handler_dispatch_accepts_required_methods_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            server_file = root / "sidecar" / "src" / "openvoicy_sidecar" / "server.py"
+            server_file.parent.mkdir(parents=True, exist_ok=True)
+            server_file.write_text(
+                "\n".join(
+                    [
+                        "def handle_ping(request):",
+                        "    return {}",
+                        "def handle_status(request):",
+                        "    return {}",
+                        "HANDLERS: dict[str, object] = {",
+                        "  'system.ping': handle_ping,",
+                        "  'status.get': handle_status,",
+                        "}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            sidecar_contract = {
+                "items": [
+                    {
+                        "type": "method",
+                        "name": "system.ping",
+                        "required": True,
+                        "params_schema": {"type": "object"},
+                        "result_schema": {"type": "object"},
+                    },
+                    {
+                        "type": "method",
+                        "name": "status.get",
+                        "required": True,
+                        "params_schema": {"type": "object"},
+                        "result_schema": {"type": "object"},
+                    },
+                ]
+            }
+
+            errors = MODULE.validate_sidecar_handler_dispatch(root, sidecar_contract)
+            self.assertEqual(errors, [])
+
+    def test_validate_sidecar_handler_dispatch_reports_missing_required_method(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            server_file = root / "sidecar" / "src" / "openvoicy_sidecar" / "server.py"
+            server_file.parent.mkdir(parents=True, exist_ok=True)
+            server_file.write_text(
+                "\n".join(
+                    [
+                        "def handle_ping(request):",
+                        "    return {}",
+                        "HANDLERS: dict[str, object] = {",
+                        "  'system.ping': handle_ping,",
+                        "}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            sidecar_contract = {
+                "items": [
+                    {
+                        "type": "method",
+                        "name": "system.ping",
+                        "required": True,
+                        "params_schema": {"type": "object"},
+                        "result_schema": {"type": "object"},
+                    },
+                    {
+                        "type": "method",
+                        "name": "status.get",
+                        "required": True,
+                        "params_schema": {"type": "object"},
+                        "result_schema": {"type": "object"},
+                    },
+                ]
+            }
+
+            errors = MODULE.validate_sidecar_handler_dispatch(root, sidecar_contract)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("status.get", errors[0])
+
     def test_validate_generator_determinism_accepts_stable_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

@@ -55,6 +55,7 @@ EXCLUDED_FRONTEND_PATH_PARTS = {"tests"}
 EXAMPLES_PATH = REPO_ROOT / "shared" / "ipc" / "examples" / "IPC_V1_EXAMPLES.jsonl"
 EVENT_PAYLOAD_EXAMPLES_PATH = REPO_ROOT / "src" / "hooks" / "useTauriEvents.test.ts"
 EVENT_PAYLOAD_IGNORE_MARKER = "contract-validate-ignore"
+SIDECAR_SERVER_PATH = REPO_ROOT / "sidecar" / "src" / "openvoicy_sidecar" / "server.py"
 
 METHOD_NAME_RE = re.compile(r"([a-z]+\.[a-z_]+)")
 ABSOLUTE_PATH_RE = re.compile(
@@ -1156,6 +1157,61 @@ def sidecar_contract_maps(sidecar_contract: dict[str, Any]) -> tuple[dict[str, d
     return methods, notifications, required
 
 
+def extract_sidecar_handler_methods(server_text: str) -> set[str]:
+    match = re.search(r"HANDLERS\s*:\s*dict\[[^\]]+\]\s*=\s*{", server_text)
+    if not match:
+        return set()
+    brace_start = server_text.find("{", match.start())
+    if brace_start == -1:
+        return set()
+    try:
+        body, _ = extract_balanced_braces(server_text, brace_start)
+    except ValueError:
+        return set()
+
+    methods: set[str] = set()
+    for entry in re.finditer(r'["\']([^"\']+)["\']\s*:', body):
+        methods.add(entry.group(1))
+    return methods
+
+
+def validate_sidecar_handler_dispatch(repo_root: Path, sidecar_contract: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    server_file = repo_root / "sidecar" / "src" / "openvoicy_sidecar" / "server.py"
+    if not server_file.exists():
+        return [f"missing sidecar server source: {server_file.relative_to(repo_root)}"]
+
+    server_text = server_file.read_text(encoding="utf-8")
+    registered_methods = extract_sidecar_handler_methods(server_text)
+    if not registered_methods:
+        return [f"{server_file.relative_to(repo_root)}: unable to extract HANDLERS dispatch table"]
+
+    methods, _notifications, required_methods = sidecar_contract_maps(sidecar_contract)
+    required_sorted = sorted(required_methods)
+    found = 0
+    for method_name in required_sorted:
+        if method_name in registered_methods:
+            found += 1
+            log(f"OK: sidecar handler dispatch includes required method '{method_name}'")
+        else:
+            log(f"FAIL: sidecar handler dispatch missing required method '{method_name}'")
+            errors.append(
+                f"{server_file.relative_to(repo_root)}: required sidecar method '{method_name}' missing from HANDLERS dispatch table"
+            )
+
+    unknown_handlers = sorted(name for name in registered_methods if name not in methods)
+    for unknown in unknown_handlers:
+        log(
+            f"WARN: sidecar HANDLERS includes method '{unknown}' not declared in sidecar.rpc contract"
+        )
+
+    log(
+        "Sidecar handler dispatch summary: "
+        f"{len(required_sorted)} required methods, {found} found, {len(required_sorted) - found} missing"
+    )
+    return errors
+
+
 def validate_sidecar_examples_against_contract(repo_root: Path, sidecar_contract: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     examples_file = repo_root / "shared" / "ipc" / "examples" / "IPC_V1_EXAMPLES.jsonl"
@@ -1189,6 +1245,9 @@ def validate_sidecar_examples_against_contract(repo_root: Path, sidecar_contract
             if not isinstance(method, str):
                 continue
             if method not in methods:
+                log(
+                    f"WARN: shared/ipc/examples/IPC_V1_EXAMPLES.jsonl:{line}: unknown request method '{method}'"
+                )
                 errors.append(f"shared/ipc/examples/IPC_V1_EXAMPLES.jsonl:{line}: unknown request method '{method}'")
                 continue
             params = data.get("params", {})
@@ -1223,6 +1282,9 @@ def validate_sidecar_examples_against_contract(repo_root: Path, sidecar_contract
             if not isinstance(method, str):
                 continue
             if method not in notifications:
+                log(
+                    f"WARN: shared/ipc/examples/IPC_V1_EXAMPLES.jsonl:{line}: unknown notification method '{method}'"
+                )
                 errors.append(
                     f"shared/ipc/examples/IPC_V1_EXAMPLES.jsonl:{line}: unknown notification method '{method}'"
                 )
@@ -1436,6 +1498,12 @@ def main(argv: list[str] | None = None) -> int:
             (
                 "Rust emitted event payloads match tauri.events contract",
                 validate_rust_event_payloads(repo_root, contracts["tauri.events"]),
+            )
+        )
+        checks.append(
+            (
+                "Required sidecar methods implemented in server dispatch",
+                validate_sidecar_handler_dispatch(repo_root, contracts["sidecar.rpc"]),
             )
         )
         checks.append(
