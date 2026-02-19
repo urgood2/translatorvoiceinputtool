@@ -251,8 +251,18 @@ def self_test() -> bool:
         ({"schema_version": 1, "ui": {"theme": "invalid"}}, "invalid ui.theme enum"),
         ({"schema_version": 1, "model": {"preferred_device": "tpu"}}, "invalid model.preferred_device enum"),
         ({"schema_version": 1, "history": {"persistence_mode": "remote"}}, "invalid history.persistence_mode enum"),
+        ({"schema_version": 1, "history": {"max_entries": 5}}, "history.max_entries below minimum"),
+        ({"schema_version": 1, "history": {"max_entries": 5001}}, "history.max_entries above maximum"),
         ({"schema_version": 1, "injection": {"paste_delay_ms": 5}}, "paste_delay below minimum"),
         ({"schema_version": 1, "injection": {"paste_delay_ms": 1000}}, "paste_delay above maximum"),
+        (
+            {"schema_version": 1, "injection": {"app_overrides": {"slack": {"paste_delay_ms": 5}}}},
+            "app_override paste_delay below minimum",
+        ),
+        (
+            {"schema_version": 1, "injection": {"app_overrides": {"slack": {"paste_delay_ms": 1000}}}},
+            "app_override paste_delay above maximum",
+        ),
         ({"schema_version": 1, "audio": {"vad_silence_ms": 50}}, "vad_silence below minimum"),
         ({"schema_version": 1, "audio": {"vad_min_speech_ms": 50}}, "vad_min_speech below minimum"),
         (
