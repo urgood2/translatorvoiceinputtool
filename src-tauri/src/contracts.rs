@@ -35,8 +35,7 @@ pub struct TauriCommandDefDiagnosticsReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct TauriCommandDefEmptyParams {
-}
+pub struct TauriCommandDefEmptyParams {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct TauriCommandDefLogEntry {
@@ -538,7 +537,11 @@ pub struct CommandRunSelfCheckResult {
 pub struct CommandSetAudioDeviceParams {
     #[serde(rename = "deviceUid", default, skip_serializing_if = "Option::is_none")]
     pub device_uid: Option<String>,
-    #[serde(rename = "device_uid", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "device_uid",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub device_uid_2: Option<String>,
 }
 
@@ -745,8 +748,7 @@ pub struct RpcAsrInitializeResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct RpcAsrStatusParams {
-}
+pub struct RpcAsrStatusParams {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct RpcAsrStatusResult {
@@ -785,8 +787,7 @@ pub struct RpcAsrTranscribeResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct RpcAudioListDevicesParams {
-}
+pub struct RpcAudioListDevicesParams {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct RpcAudioListDevicesResult {
@@ -812,8 +813,7 @@ pub struct RpcAudioMeterStartResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct RpcAudioMeterStatusParams {
-}
+pub struct RpcAudioMeterStatusParams {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct RpcAudioMeterStatusResult {
@@ -825,8 +825,7 @@ pub struct RpcAudioMeterStatusResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct RpcAudioMeterStopParams {
-}
+pub struct RpcAudioMeterStopParams {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct RpcAudioMeterStopResult {
@@ -874,8 +873,7 @@ pub struct RpcModelDownloadResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct RpcModelGetStatusParams {
-}
+pub struct RpcModelGetStatusParams {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct RpcModelGetStatusResult {
@@ -963,8 +961,7 @@ pub struct RpcRecordingStartResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct RpcRecordingStatusParams {
-}
+pub struct RpcRecordingStatusParams {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct RpcRecordingStatusResult {
@@ -1007,8 +1004,7 @@ pub struct RpcReplacementsGetPresetRulesResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct RpcReplacementsGetPresetsParams {
-}
+pub struct RpcReplacementsGetPresetsParams {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct RpcReplacementsGetPresetsResult {
@@ -1018,8 +1014,7 @@ pub struct RpcReplacementsGetPresetsResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct RpcReplacementsGetRulesParams {
-}
+pub struct RpcReplacementsGetRulesParams {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct RpcReplacementsGetRulesResult {
@@ -1062,8 +1057,7 @@ pub struct RpcReplacementsSetRulesResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct RpcStatusGetParams {
-}
+pub struct RpcStatusGetParams {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct RpcStatusGetResult {
@@ -1077,8 +1071,7 @@ pub struct RpcStatusGetResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct RpcSystemInfoParams {
-}
+pub struct RpcSystemInfoParams {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct RpcSystemInfoResult {
@@ -1091,8 +1084,7 @@ pub struct RpcSystemInfoResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct RpcSystemPingParams {
-}
+pub struct RpcSystemPingParams {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct RpcSystemPingResult {

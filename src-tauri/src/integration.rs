@@ -3083,6 +3083,219 @@ mod tests {
     }
 
     #[test]
+    fn test_state_changed_emits_canonical_and_legacy_with_shared_seq() {
+        let broadcaster = MockBroadcaster::with_windows(&["main"]);
+        let seq_counter = Arc::new(AtomicU64::new(1));
+        let event = StateEvent {
+            state: AppState::Recording,
+            enabled: true,
+            detail: Some("capturing".to_string()),
+            timestamp: chrono::Utc::now(),
+        };
+
+        println!("[EVENT_TEST] Emitting canonical+legacy state events");
+        let emitted_seq = emit_with_shared_seq_for_broadcaster(
+            &broadcaster,
+            &[EVENT_STATE_CHANGED, EVENT_STATE_CHANGED_LEGACY],
+            state_changed_event_payload(&event),
+            &seq_counter,
+        );
+        println!("[EVENT_TEST] state events emitted with seq={emitted_seq}");
+
+        let main_events = broadcaster.received_event_names("main");
+        assert_eq!(
+            main_events,
+            vec![
+                EVENT_STATE_CHANGED.to_string(),
+                EVENT_STATE_CHANGED_LEGACY.to_string()
+            ]
+        );
+
+        let payloads = broadcaster.received_payloads("main");
+        assert_eq!(payloads.len(), 2);
+        assert_eq!(payloads[0].get("seq").and_then(Value::as_u64), Some(1));
+        assert_eq!(payloads[1].get("seq").and_then(Value::as_u64), Some(1));
+        assert_eq!(
+            payloads[0].get("detail").and_then(Value::as_str),
+            Some("capturing")
+        );
+        assert!(payloads[0].get("error_detail").is_none());
+    }
+
+    #[test]
+    fn test_transcript_events_emit_canonical_and_legacy_with_shared_seq() {
+        let broadcaster = MockBroadcaster::with_windows(&["main"]);
+        let seq_counter = Arc::new(AtomicU64::new(1));
+        let session_id = Uuid::new_v4();
+        let entry = TranscriptEntry::new(
+            "hello world".to_string(),
+            800,
+            120,
+            HistoryInjectionResult::Injected,
+        )
+        .with_session_id(Some(session_id));
+
+        println!("[EVENT_TEST] Emitting canonical+legacy transcript complete events");
+        emit_with_shared_seq_for_broadcaster(
+            &broadcaster,
+            &[EVENT_TRANSCRIPT_COMPLETE, EVENT_TRANSCRIPTION_COMPLETE],
+            transcript_complete_event_payload(&entry),
+            &seq_counter,
+        );
+
+        let app_error = AppError::new(
+            ErrorKind::SidecarCrash.to_sidecar(),
+            "Sidecar crashed",
+            Some(json!({ "restart_count": 1 })),
+            false,
+        );
+        println!("[EVENT_TEST] Emitting canonical+legacy transcript error events");
+        emit_with_shared_seq_for_broadcaster(
+            &broadcaster,
+            &[EVENT_TRANSCRIPT_ERROR, EVENT_TRANSCRIPTION_ERROR],
+            transcription_error_event_payload("session-1", &app_error),
+            &seq_counter,
+        );
+
+        let events = broadcaster.received_event_names("main");
+        assert_eq!(
+            events,
+            vec![
+                EVENT_TRANSCRIPT_COMPLETE.to_string(),
+                EVENT_TRANSCRIPTION_COMPLETE.to_string(),
+                EVENT_TRANSCRIPT_ERROR.to_string(),
+                EVENT_TRANSCRIPTION_ERROR.to_string()
+            ]
+        );
+
+        let payloads = broadcaster.received_payloads("main");
+        assert_eq!(payloads.len(), 4);
+        assert_eq!(payloads[0].get("seq").and_then(Value::as_u64), Some(1));
+        assert_eq!(payloads[1].get("seq").and_then(Value::as_u64), Some(1));
+        assert_eq!(payloads[2].get("seq").and_then(Value::as_u64), Some(2));
+        assert_eq!(payloads[3].get("seq").and_then(Value::as_u64), Some(2));
+
+        let complete_entry = &payloads[0]["entry"];
+        assert_eq!(
+            complete_entry.get("session_id").and_then(Value::as_str),
+            Some(session_id.to_string().as_str())
+        );
+        assert_eq!(
+            complete_entry.get("text").and_then(Value::as_str),
+            complete_entry.get("final_text").and_then(Value::as_str)
+        );
+        assert_eq!(
+            complete_entry.get("raw_text").and_then(Value::as_str),
+            complete_entry.get("final_text").and_then(Value::as_str)
+        );
+
+        assert!(payloads[2].get("error").is_some());
+        assert_eq!(
+            payloads[2].get("message").and_then(Value::as_str),
+            Some("Sidecar crashed")
+        );
+    }
+
+    #[test]
+    fn test_sidecar_status_state_mapping_covers_all_canonical_states() {
+        println!("[EVENT_TEST] Validating sidecar status state normalization");
+        let states = [
+            ("starting", "starting"),
+            ("ready", "ready"),
+            ("failed", "failed"),
+            ("restarting", "restarting"),
+            ("stopped", "stopped"),
+            ("recording", "ready"),
+        ];
+
+        for (input_state, expected_state) in states {
+            let payload =
+                sidecar_status_payload_from_status_event(Some(input_state), None, Some(2));
+            assert_eq!(
+                payload.get("state").and_then(Value::as_str),
+                Some(expected_state),
+                "state mapping mismatch for input={input_state}"
+            );
+            assert_eq!(
+                payload.get("restart_count").and_then(Value::as_u64),
+                Some(2)
+            );
+        }
+    }
+
+    #[test]
+    fn test_recording_status_transition_payloads_cover_recording_lifecycle() {
+        println!("[EVENT_TEST] Validating recording lifecycle payload transitions");
+        let idle = recording_status_event_payload("idle", None, None, None);
+        let recording = recording_status_event_payload(
+            "recording",
+            Some("session-1"),
+            Some("2026-02-19T03:00:00Z".to_string()),
+            None,
+        );
+        let transcribing =
+            recording_status_event_payload("transcribing", Some("session-1"), None, Some(1200));
+        let cancelled = recording_status_event_payload("idle", None, None, None);
+
+        assert_eq!(idle.get("phase").and_then(Value::as_str), Some("idle"));
+        assert!(idle.get("session_id").is_none());
+
+        assert_eq!(
+            recording.get("phase").and_then(Value::as_str),
+            Some("recording")
+        );
+        assert_eq!(
+            recording.get("session_id").and_then(Value::as_str),
+            Some("session-1")
+        );
+        assert!(recording.get("audio_ms").is_none());
+
+        assert_eq!(
+            transcribing.get("phase").and_then(Value::as_str),
+            Some("transcribing")
+        );
+        assert_eq!(
+            transcribing.get("session_id").and_then(Value::as_str),
+            Some("session-1")
+        );
+        assert_eq!(
+            transcribing.get("audio_ms").and_then(Value::as_u64),
+            Some(1200)
+        );
+
+        assert_eq!(cancelled.get("phase").and_then(Value::as_str), Some("idle"));
+        assert!(cancelled.get("session_id").is_none());
+    }
+
+    #[test]
+    fn test_seq_shared_counter_across_event_types_starts_at_one() {
+        let broadcaster = MockBroadcaster::with_windows(&["main"]);
+        let seq_counter = Arc::new(AtomicU64::new(1));
+
+        println!("[EVENT_TEST] Emitting state event with shared counter");
+        let first_seq = emit_with_shared_seq_for_broadcaster(
+            &broadcaster,
+            &[EVENT_STATE_CHANGED],
+            json!({ "state": "idle", "enabled": true }),
+            &seq_counter,
+        );
+        println!("[EVENT_TEST] Emitting model event with shared counter");
+        let second_seq = emit_with_shared_seq_for_broadcaster(
+            &broadcaster,
+            &[EVENT_MODEL_STATUS],
+            json!({ "status": "ready", "model_id": "parakeet" }),
+            &seq_counter,
+        );
+
+        assert_eq!(first_seq, 1);
+        assert_eq!(second_seq, 2);
+
+        let payloads = broadcaster.received_payloads("main");
+        assert_eq!(payloads[0].get("seq").and_then(Value::as_u64), Some(1));
+        assert_eq!(payloads[1].get("seq").and_then(Value::as_u64), Some(2));
+    }
+
+    #[test]
     fn test_no_window_specific_emit_calls_for_app_events() {
         let source = include_str!("integration.rs");
         let forbidden = [".emit", "_to("].concat();
