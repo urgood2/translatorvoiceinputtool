@@ -399,6 +399,16 @@ fn map_transcription_complete_durations(
     (audio_duration_ms, processing_duration_ms)
 }
 
+fn resolve_transcript_texts(
+    text: &str,
+    raw_text: Option<&str>,
+    final_text: Option<&str>,
+) -> (String, String) {
+    let resolved_final = final_text.unwrap_or(text).to_string();
+    let resolved_raw = raw_text.unwrap_or(&resolved_final).to_string();
+    (resolved_raw, resolved_final)
+}
+
 fn stop_rpc_method_for_result(result: &StopResult) -> &'static str {
     match result {
         StopResult::TooShort => "recording.cancel",
@@ -829,6 +839,10 @@ struct RecordingContext {
     session_id: String,
     /// Audio duration returned by recording.stop, if available.
     audio_duration_ms: Option<u64>,
+    /// Raw transcript text from sidecar before post-processing/replacements.
+    raw_text: Option<String>,
+    /// Final transcript text from sidecar after post-processing/replacements.
+    final_text: Option<String>,
     /// Pipeline timing marks for stop -> injection latency tracking.
     timing_marks: PipelineTimingMarks,
 }
@@ -2131,6 +2145,8 @@ impl IntegrationManager {
                                         focus_before: focus,
                                         session_id: session_id.clone(),
                                         audio_duration_ms: None,
+                                        raw_text: None,
+                                        final_text: None,
                                         timing_marks: PipelineTimingMarks::default(),
                                     });
                                     *current_session_id.write().await = Some(session_id.clone());
@@ -2503,7 +2519,7 @@ impl IntegrationManager {
                     }
                     RecordingEvent::TranscriptionComplete {
                         session_id,
-                        text,
+                        text: sidecar_text,
                         audio_duration_ms,
                         processing_duration_ms,
                         timestamp: _,
@@ -2517,35 +2533,45 @@ impl IntegrationManager {
                             );
                         }
 
+                        // Snapshot focus context and timing marks for this session.
+                        let (focus_before, mut timing_marks, raw_text, final_text) = {
+                            let ctx = recording_context.read().await;
+                            if let Some(ctx) = ctx.as_ref() {
+                                (
+                                    Some(ctx.focus_before.clone()),
+                                    ctx.timing_marks.clone(),
+                                    ctx.raw_text.clone(),
+                                    ctx.final_text.clone(),
+                                )
+                            } else {
+                                (None, PipelineTimingMarks::default(), None, None)
+                            }
+                        };
+                        let (raw_text, final_text) = resolve_transcript_texts(
+                            &sidecar_text,
+                            raw_text.as_deref(),
+                            final_text.as_deref(),
+                        );
                         log::info!(
                             "Transcription complete: session={}, text_len={}, text_sha256_prefix={}, audio={}ms, processing={}ms",
                             session_id,
-                            text.len(),
-                            sha256_prefix(&text),
+                            final_text.len(),
+                            sha256_prefix(&final_text),
                             audio_duration_ms,
                             processing_duration_ms
                         );
 
                         if log::log_enabled!(log::Level::Debug) {
-                            log::debug!("Transcription text (debug): {}", text);
+                            log::debug!("Transcription text (debug): {}", final_text);
                         }
-
-                        // Snapshot focus context and timing marks for this session.
-                        let (focus_before, mut timing_marks) = {
-                            let ctx = recording_context.read().await;
-                            if let Some(ctx) = ctx.as_ref() {
-                                (Some(ctx.focus_before.clone()), ctx.timing_marks.clone())
-                            } else {
-                                (None, PipelineTimingMarks::default())
-                            }
-                        };
                         if timing_marks.t2_transcription_received.is_none() {
                             timing_marks.t2_transcription_received = Some(Instant::now());
                         }
                         let expected_focus = focus_before.as_ref();
 
-                        // Skip injection if text is empty
-                        if text.trim().is_empty() {
+                        // Sidecar output is already fully transformed (normalize/macros/replacements).
+                        // Never apply replacements again on the Rust side.
+                        if final_text.trim().is_empty() {
                             log::info!("Empty transcription, skipping injection");
                             continue;
                         }
@@ -2577,7 +2603,7 @@ impl IntegrationManager {
 
                         // Inject text
                         let mut result =
-                            inject_text(&text, expected_focus, &injection_config).await;
+                            inject_text(&final_text, expected_focus, &injection_config).await;
                         timing_marks.t4_injection_completed = Some(Instant::now());
 
                         let pipeline_timings = pipeline_timings_from_marks(&timing_marks);
@@ -2587,12 +2613,12 @@ impl IntegrationManager {
 
                         let mut injection_app_error: Option<AppError> = None;
                         if let InjectionResult::Failed { error, .. } = result.clone() {
-                            let fallback_reason = match crate::injection::set_clipboard_public(&text)
-                            {
-                                Ok(()) => format!(
-                                    "{}; transcript copied to clipboard for manual paste",
-                                    error
-                                ),
+                            let fallback_reason =
+                                match crate::injection::set_clipboard_public(&final_text) {
+                                    Ok(()) => format!(
+                                        "{}; transcript copied to clipboard for manual paste",
+                                        error
+                                    ),
                                 Err(clipboard_error) => format!(
                                     "{}; clipboard fallback failed: {}; transcript preserved in history",
                                     error, clipboard_error
@@ -2601,11 +2627,13 @@ impl IntegrationManager {
 
                             result = InjectionResult::ClipboardOnly {
                                 reason: fallback_reason.clone(),
-                                text_length: text.len(),
+                                text_length: final_text.len(),
                                 timestamp: chrono::Utc::now(),
                             };
-                            injection_app_error =
-                                Some(injection_failure_app_error(&fallback_reason, text.len()));
+                            injection_app_error = Some(injection_failure_app_error(
+                                &fallback_reason,
+                                final_text.len(),
+                            ));
                         }
 
                         match &result {
@@ -2632,12 +2660,15 @@ impl IntegrationManager {
 
                         // Add to history and emit a shared transcript payload.
                         let mut transcript_entry = TranscriptEntry::new(
-                            text.clone(),
+                            final_text.clone(),
                             audio_duration_ms as u32,
                             processing_duration_ms as u32,
                             HistoryInjectionResult::from_injection_result(&result),
                         )
                         .with_session_id(Uuid::parse_str(&session_id).ok());
+                        transcript_entry.raw_text = raw_text;
+                        transcript_entry.final_text = final_text.clone();
+                        transcript_entry.text = final_text;
                         if let Some(timings) = pipeline_timings.clone() {
                             transcript_entry = transcript_entry.with_timings(timings);
                         }
@@ -2772,11 +2803,20 @@ impl IntegrationManager {
                             duration_ms: u64,
                             #[serde(default)]
                             confidence: Option<f64>,
+                            #[serde(default)]
+                            raw_text: Option<String>,
+                            #[serde(default)]
+                            final_text: Option<String>,
                         }
 
                         if let Ok(params) =
                             serde_json::from_value::<TranscriptionParams>(event.params)
                         {
+                            let (raw_text, final_text) = resolve_transcript_texts(
+                                &params.text,
+                                params.raw_text.as_deref(),
+                                params.final_text.as_deref(),
+                            );
                             let (audio_duration_ms, processing_duration_ms) = {
                                 let mut stop_audio_duration_ms = None;
                                 let mut ctx = recording_context.write().await;
@@ -2785,6 +2825,8 @@ impl IntegrationManager {
                                         ctx.timing_marks.t2_transcription_received =
                                             Some(Instant::now());
                                         stop_audio_duration_ms = ctx.audio_duration_ms;
+                                        ctx.raw_text = Some(raw_text.clone());
+                                        ctx.final_text = Some(final_text.clone());
                                     }
                                 }
                                 map_transcription_complete_durations(
@@ -2795,7 +2837,8 @@ impl IntegrationManager {
 
                             let result = TranscriptionResult {
                                 session_id: params.session_id,
-                                text: params.text,
+                                // Sidecar text is authoritative and already post-processed.
+                                text: final_text,
                                 audio_duration_ms,
                                 processing_duration_ms,
                             };
@@ -3882,6 +3925,21 @@ mod tests {
             map_transcription_complete_durations(420, None);
         assert_eq!(audio_duration_ms, 0);
         assert_eq!(processing_duration_ms, 420);
+    }
+
+    #[test]
+    fn test_resolve_transcript_texts_defaults_to_single_processed_text() {
+        let (raw_text, final_text) = resolve_transcript_texts("hello", None, None);
+        assert_eq!(raw_text, "hello");
+        assert_eq!(final_text, "hello");
+    }
+
+    #[test]
+    fn test_resolve_transcript_texts_prefers_sidecar_raw_and_final_fields() {
+        let (raw_text, final_text) =
+            resolve_transcript_texts("compat-text", Some("raw asr"), Some("post processed"));
+        assert_eq!(raw_text, "raw asr");
+        assert_eq!(final_text, "post processed");
     }
 
     #[test]
