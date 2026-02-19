@@ -18,6 +18,21 @@ function fireMockEventWithLog(eventName: string, payload: unknown): void {
   emitMockEvent(eventName, payload);
 }
 
+function logStoreTest(eventName: string, payload: unknown): void {
+  const before = useAppStore.getState();
+  console.debug(
+    `[STORE_TEST] before event=${eventName} appState=${before.appState} history=${before.history.length} errorDetail=${String(before.errorDetail)}`
+  );
+  console.debug(`[STORE_TEST] payload event=${eventName} payload=${JSON.stringify(payload)}`);
+}
+
+function logStoreStateAfter(label: string): void {
+  const after = useAppStore.getState();
+  console.debug(
+    `[STORE_TEST] after ${label} appState=${after.appState} history=${after.history.length} errorDetail=${String(after.errorDetail)}`
+  );
+}
+
 // Reset store before each test
 beforeEach(() => {
   useAppStore.setState({
@@ -662,6 +677,256 @@ describe('useTauriEvents', () => {
       });
     });
     expect(useAppStore.getState().errorDetail).toBe('Structured error shape');
+
+    unmount();
+  });
+
+  test('state payload prefers detail field over error_detail', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    const payload = {
+      seq: 910,
+      state: 'error' as const,
+      enabled: false,
+      detail: 'Canonical detail wins',
+      error_detail: 'Legacy detail fallback',
+      timestamp: '2026-01-01T00:11:00.000Z',
+    };
+    logStoreTest('state:changed', payload);
+
+    act(() => {
+      fireMockEventWithLog('state:changed', payload);
+    });
+
+    const state = useAppStore.getState();
+    logStoreStateAfter('state detail precedence');
+    expect(state.appState).toBe('error');
+    expect(state.enabled).toBe(false);
+    expect(state.errorDetail).toBe('Canonical detail wins');
+
+    unmount();
+  });
+
+  test('events without seq are processed for backward compatibility', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    const first = {
+      state: 'recording' as const,
+      enabled: true,
+      timestamp: '2026-01-01T00:12:00.000Z',
+    };
+    const second = {
+      state: 'idle' as const,
+      enabled: false,
+      timestamp: '2026-01-01T00:12:01.000Z',
+    };
+    logStoreTest('state:changed(no-seq)', first);
+    logStoreTest('state_changed(no-seq)', second);
+
+    act(() => {
+      emitMockEvent('state:changed', first);
+      emitMockEvent('state_changed', second);
+    });
+
+    const state = useAppStore.getState();
+    logStoreStateAfter('no-seq compatibility');
+    expect(state.appState).toBe('idle');
+    expect(state.enabled).toBe(false);
+
+    unmount();
+  });
+
+  test('rapid transcript events are stored newest-first', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    act(() => {
+      fireMockEventWithLog('transcript:complete', {
+        seq: 1001,
+        entry: {
+          id: 'rapid-1',
+          text: 'one',
+          raw_text: 'one',
+          final_text: 'one',
+          timestamp: '2026-01-01T00:13:00.000Z',
+          audio_duration_ms: 100,
+          transcription_duration_ms: 20,
+          injection_result: { status: 'injected' as const },
+        },
+      });
+      fireMockEventWithLog('transcript:complete', {
+        seq: 1002,
+        entry: {
+          id: 'rapid-2',
+          text: 'two',
+          raw_text: 'two',
+          final_text: 'two',
+          timestamp: '2026-01-01T00:13:01.000Z',
+          audio_duration_ms: 110,
+          transcription_duration_ms: 22,
+          injection_result: { status: 'injected' as const },
+        },
+      });
+      fireMockEventWithLog('transcript:complete', {
+        seq: 1003,
+        entry: {
+          id: 'rapid-3',
+          text: 'three',
+          raw_text: 'three',
+          final_text: 'three',
+          timestamp: '2026-01-01T00:13:02.000Z',
+          audio_duration_ms: 120,
+          transcription_duration_ms: 24,
+          injection_result: { status: 'injected' as const },
+        },
+      });
+    });
+
+    const history = useAppStore.getState().history;
+    logStoreStateAfter('rapid transcript ordering');
+    expect(history).toHaveLength(3);
+    expect(history[0]?.id).toBe('rapid-3');
+    expect(history[1]?.id).toBe('rapid-2');
+    expect(history[2]?.id).toBe('rapid-1');
+
+    unmount();
+  });
+
+  test('model status canonical shape and progress updates are reflected in store', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    const statusPayload = {
+      seq: 1201,
+      model_id: 'parakeet-rnnt-1.1b',
+      status: 'downloading' as const,
+      progress: { current: 25, total: 100, unit: 'bytes' },
+    };
+    const progressPayload = { current: 30, total: 100, unit: 'bytes' };
+    logStoreTest('model:status', statusPayload);
+    logStoreTest('model:progress', progressPayload);
+
+    act(() => {
+      fireMockEventWithLog('model:status', statusPayload);
+      fireMockEventWithLog('model:progress', progressPayload);
+    });
+
+    const state = useAppStore.getState();
+    logStoreStateAfter('model status + progress');
+    expect(state.modelStatus).toMatchObject({
+      seq: 1201,
+      model_id: 'parakeet-rnnt-1.1b',
+      status: 'downloading',
+      progress: { current: 25, total: 100, unit: 'bytes' },
+    });
+    expect(state.downloadProgress).toEqual(progressPayload);
+
+    unmount();
+  });
+
+  test('sidecar failed payload updates sidecar slice with restart metadata', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    const failedPayload = {
+      seq: 1301,
+      state: 'failed',
+      restart_count: 3,
+      message: 'sidecar crashed repeatedly',
+    };
+    logStoreTest('sidecar:status', failedPayload);
+
+    act(() => {
+      fireMockEventWithLog('sidecar:status', failedPayload);
+    });
+
+    const state = useAppStore.getState();
+    logStoreStateAfter('sidecar failed');
+    expect(state.sidecarStatus).toMatchObject(failedPayload);
+
+    unmount();
+  });
+
+  test('recording status handles transitions with minimal optional fields', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    act(() => {
+      fireMockEventWithLog('recording:status', {
+        seq: 1401,
+        phase: 'recording',
+        session_id: 'session-1401',
+      });
+      // Missing session_id/audio_ms should still be accepted for idle transition.
+      fireMockEventWithLog('recording:status', {
+        seq: 1402,
+        phase: 'idle',
+      });
+    });
+
+    const state = useAppStore.getState();
+    logStoreStateAfter('recording transitions');
+    expect(state.recordingStatus).toMatchObject({
+      seq: 1402,
+      phase: 'idle',
+    });
+    expect(state.appState).toBe('idle');
+
+    unmount();
+  });
+
+  test('legacy transcript payload missing optional fields is normalized safely', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    const payload = {
+      session_id: 'legacy-minimal',
+      text: 'Legacy minimal',
+      audio_duration_ms: 321,
+      processing_duration_ms: 123,
+    };
+    logStoreTest('transcription:complete', payload);
+
+    act(() => {
+      // contract-validate-ignore: intentionally exercising minimal legacy payload shape
+      emitMockEvent('transcription:complete', payload);
+    });
+
+    const [entry] = useAppStore.getState().history;
+    logStoreStateAfter('legacy transcript optional fields');
+    expect(entry).toMatchObject({
+      id: 'legacy-minimal',
+      text: 'Legacy minimal',
+      raw_text: 'Legacy minimal',
+      final_text: 'Legacy minimal',
+      audio_duration_ms: 321,
+      transcription_duration_ms: 123,
+      injection_result: { status: 'injected' },
+    });
+    expect(typeof entry.timestamp).toBe('string');
 
     unmount();
   });
