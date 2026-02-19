@@ -30,7 +30,7 @@ const EVENTS = {
 } as const;
 
 listen(EVENTS.STATE_CHANGED, () => {});
-registerListener(EVENTS.SIDECAR_STATUS, () => {});
+registerListener<Record<string, unknown>>(EVENTS.SIDECAR_STATUS, () => {});
 listen('sidecar:status', () => {});
         """.strip()
         rows = MODULE.extract_listen_event_names_from_text(text)

@@ -341,7 +341,7 @@ def extract_listen_event_names_from_text(text: str) -> list[tuple[int, str, str 
     results: list[tuple[int, str, str | None]] = []
 
     listen_re = re.compile(
-        r"\b(?:listen|registerListener)(?:<[^>]+>)?\s*\(\s*([A-Za-z_][A-Za-z0-9_\.]*|[\"'][^\"']+[\"'])"
+        r"\b(?:listen|registerListener)(?:<[^>]+>+)?\s*\(\s*([A-Za-z_][A-Za-z0-9_\.]*|[\"'][^\"']+[\"'])"
     )
     for match in listen_re.finditer(text):
         expr = match.group(1).strip()
