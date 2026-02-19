@@ -33,6 +33,7 @@ class _RecorderStub:
     active_session_id: str | None = None
     next_session_idx: int = 1
     phase: str = "idle"  # idle | recording | transcribing
+    # Production AudioRecorder only allows cancel while actively recording.
     allow_cancel_while_transcribing: bool = False
     sample_rate: int = 16000
     channels: int = 1
@@ -164,7 +165,7 @@ def test_cancel_during_active_transcription_aborts_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cancel during transcribing should mark session cancelled and block completion."""
-    recorder = _RecorderStub(allow_cancel_while_transcribing=True)
+    recorder = _RecorderStub()
     monkeypatch.setattr("openvoicy_sidecar.recording.get_recorder", lambda: recorder)
     monkeypatch.setattr(
         "openvoicy_sidecar.notifications.emit_status_changed",

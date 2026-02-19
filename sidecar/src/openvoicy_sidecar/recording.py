@@ -623,17 +623,11 @@ def handle_recording_cancel(request: Request) -> dict[str, Any]:
 
     recorder = get_recorder()
 
-    try:
-        recorder.cancel(session_id)
+    def _finalize_cancel(cancel_path: str, tracker_cancelled: bool) -> dict[str, Any]:
         cleared_pending_audio = clear_pending_audio(session_id)
-
-        # Mark session as cancelled to prevent any notifications
-        from .notifications import get_session_tracker
-
-        tracker = get_session_tracker()
-        tracker.mark_cancelled(session_id)
         log(
             f"Recording cancel cleanup: session={session_id}, "
+            f"path={cancel_path}, tracker_cancelled={tracker_cancelled}, "
             f"pending_audio_cleared={cleared_pending_audio}"
         )
 
@@ -641,11 +635,28 @@ def handle_recording_cancel(request: Request) -> dict[str, Any]:
         from .notifications import emit_status_changed
 
         emit_status_changed("idle", "Ready")
-
         return {"cancelled": True, "session_id": session_id}
+
+    try:
+        recorder.cancel(session_id)
+        # Mark session as cancelled to prevent any notifications
+        from .notifications import get_session_tracker
+
+        tracker = get_session_tracker()
+        tracker_cancelled = tracker.mark_cancelled(session_id)
+        return _finalize_cancel("recording", tracker_cancelled)
     except RuntimeError as e:
         error_msg = str(e).lower()
         if "not recording" in error_msg:
+            # Production stop() transitions recorder back to idle immediately and
+            # transcribes asynchronously. During that window, recorder.cancel()
+            # correctly reports "not recording", but session-level cancellation
+            # should still suppress late completion/error notifications.
+            from .notifications import get_session_tracker
+
+            tracker = get_session_tracker()
+            if tracker.mark_cancelled(session_id):
+                return _finalize_cancel("transcribing", True)
             raise NotRecordingError(str(e))
         if "invalid session" in error_msg or "session id" in error_msg:
             raise InvalidSessionError(str(e))
