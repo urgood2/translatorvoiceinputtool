@@ -2836,6 +2836,97 @@ mod tests {
     }
 
     #[test]
+    fn test_stale_transcription_dropped() {
+        let active_session = Some("session-a");
+        let incoming_session = Some("session-b");
+        assert!(is_stale_session(incoming_session, active_session));
+    }
+
+    #[test]
+    fn test_matching_transcription_accepted() {
+        let active_session = Some("session-a");
+        let incoming_session = Some("session-a");
+        assert!(!is_stale_session(incoming_session, active_session));
+    }
+
+    #[test]
+    fn test_stale_audio_level_dropped() {
+        let active_session = Some("session-a");
+        let incoming_session = Some("session-b");
+        assert!(is_stale_session(incoming_session, active_session));
+    }
+
+    #[test]
+    fn test_non_session_event_always_forwarded() {
+        // Non-session scoped events (for example status updates) do not carry session ids.
+        assert!(!is_stale_session(None, Some("session-a")));
+        assert!(!is_stale_session(None, None));
+    }
+
+    #[test]
+    fn test_transition_old_session_dropped() {
+        let old_session = Some("session-a");
+        let new_session = Some("session-b");
+        assert!(is_stale_session(old_session, new_session));
+    }
+
+    #[test]
+    fn test_between_sessions_dropped() {
+        // Late event from previous session while no active session is tracked should be dropped.
+        assert!(is_stale_session(Some("session-a"), None));
+    }
+
+    #[test]
+    fn test_new_session_clears_old() {
+        let old_session = Some("session-a");
+        let new_session = Some("session-b");
+        assert!(is_stale_session(old_session, new_session));
+        assert!(!is_stale_session(new_session, new_session));
+    }
+
+    #[test]
+    fn test_stale_transcription_error_dropped() {
+        let active_session = Some("session-a");
+        let incoming_session = Some("session-b");
+        assert!(is_stale_session(incoming_session, active_session));
+    }
+
+    #[test]
+    fn test_matching_transcription_error_accepted() {
+        let active_session = Some("session-a");
+        let incoming_session = Some("session-a");
+        assert!(!is_stale_session(incoming_session, active_session));
+    }
+
+    #[test]
+    fn test_rapid_session_turnover_accepts_only_latest_session_events() {
+        let active_session = Some("session-c");
+        let incoming_sessions = [
+            Some("session-a"),
+            Some("session-b"),
+            Some("session-c"),
+            Some("session-a"),
+            Some("session-c"),
+        ];
+        let accepted: Vec<bool> = incoming_sessions
+            .iter()
+            .map(|incoming| !is_stale_session(*incoming, active_session))
+            .collect();
+        assert_eq!(accepted, vec![false, false, true, false, true]);
+    }
+
+    #[test]
+    fn test_no_session_active_drops_session_scoped_notifications() {
+        assert!(is_stale_session(Some("session-a"), None));
+    }
+
+    #[test]
+    fn test_audio_level_meter_mode_not_session_scoped() {
+        // Meter events are not session-scoped; they should not be considered stale.
+        assert!(!is_stale_session(None, Some("session-a")));
+    }
+
+    #[test]
     fn test_integration_config_default() {
         let config = IntegrationConfig::default();
         assert_eq!(config.python_path, "python3");
