@@ -241,6 +241,33 @@ describe('Config Actions', () => {
     expect(invoke).toHaveBeenCalledWith('update_config', expect.anything());
   });
 
+  test('updateAudioConfig restarts mic test when device changes while meter is running', async () => {
+    const config = createMockConfig();
+    config.audio.device_uid = 'old-device';
+    useAppStore.setState({
+      config,
+      selectedDeviceUid: 'old-device',
+      isMeterRunning: true,
+      audioLevel: { rms: -10, peak: -4, source: 'meter' },
+    });
+
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'stop_mic_test') return undefined;
+      if (cmd === 'update_config') return undefined;
+      if (cmd === 'start_mic_test') return undefined;
+      return undefined;
+    });
+
+    await useAppStore.getState().updateAudioConfig({ device_uid: 'new-device' });
+
+    expect(invoke).toHaveBeenNthCalledWith(1, 'stop_mic_test');
+    expect(invoke).toHaveBeenNthCalledWith(2, 'update_config', expect.anything());
+    expect(invoke).toHaveBeenNthCalledWith(3, 'start_mic_test');
+    expect(useAppStore.getState().config?.audio.device_uid).toBe('new-device');
+    expect(useAppStore.getState().selectedDeviceUid).toBe('new-device');
+    expect(useAppStore.getState().isMeterRunning).toBe(true);
+  });
+
   test('updateAudioConfig does nothing without config', async () => {
     await useAppStore.getState().updateAudioConfig({ sample_rate: 48000 });
 

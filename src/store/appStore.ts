@@ -287,16 +287,43 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const config = get().config;
     if (!config) return;
 
+    const isDeviceChange = Object.prototype.hasOwnProperty.call(audioConfig, 'device_uid')
+      && audioConfig.device_uid !== config.audio.device_uid;
+    const shouldRestartMeter = isDeviceChange && get().isMeterRunning;
+
     const newConfig = {
       ...config,
       audio: { ...config.audio, ...audioConfig },
     };
 
+    let meterStoppedForDeviceSwitch = false;
+    let configPersisted = false;
+
     try {
+      if (shouldRestartMeter) {
+        await get().stopMicTest();
+        meterStoppedForDeviceSwitch = true;
+      }
+
       await invoke('update_config', { config: newConfig });
-      set({ config: newConfig });
+      configPersisted = true;
+      set({
+        config: newConfig,
+        selectedDeviceUid: newConfig.audio.device_uid ?? null,
+      });
+
+      if (meterStoppedForDeviceSwitch) {
+        await get().startMicTest();
+      }
     } catch (error) {
       console.error('Failed to update audio config:', error);
+      if (meterStoppedForDeviceSwitch && !configPersisted) {
+        try {
+          await get().startMicTest();
+        } catch (restartError) {
+          console.error('Failed to restart mic test after config update failure:', restartError);
+        }
+      }
       throw error;
     }
   },
