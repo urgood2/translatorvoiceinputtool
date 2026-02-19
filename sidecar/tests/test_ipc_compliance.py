@@ -410,6 +410,7 @@ def test_replacements_rules_presets_preview_and_validation(monkeypatch: pytest.M
     )
     _log(f"Response(preview)={preview_result}")
     assert isinstance(preview_result["result"], str)
+    assert isinstance(preview_result["applied_rules_count"], int)
 
     with pytest.raises(ReplacementError):
         handle_replacements_set_rules(

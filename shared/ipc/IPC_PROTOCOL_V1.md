@@ -1181,7 +1181,8 @@ Preview replacement processing without saving active rules.
   "id": 1,
   "result": {
     "result": "insert date 2026-02-18",
-    "truncated": false
+    "truncated": false,
+    "applied_rules_count": 0
   }
 }
 ```
@@ -1207,10 +1208,11 @@ Preview replacement processing without saving active rules.
 ```json
 {
   "type": "object",
-  "required": ["result", "truncated"],
+  "required": ["result", "truncated", "applied_rules_count"],
   "properties": {
     "result": { "type": "string" },
-    "truncated": { "type": "boolean" }
+    "truncated": { "type": "boolean" },
+    "applied_rules_count": { "type": "integer", "minimum": 0 }
   },
   "additionalProperties": true
 }

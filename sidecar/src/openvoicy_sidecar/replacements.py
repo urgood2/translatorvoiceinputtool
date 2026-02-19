@@ -280,12 +280,28 @@ def apply_replacements(
     Returns:
         Tuple of (result_text, was_truncated).
     """
+    result, truncated, _ = apply_replacements_with_stats(text, rules)
+    return result, truncated
+
+
+def apply_replacements_with_stats(
+    text: str, rules: list[ReplacementRule]
+) -> tuple[str, bool, int]:
+    """Apply all replacement rules and return applied rule count.
+
+    Returns:
+        Tuple of (result_text, was_truncated, applied_rules_count).
+    """
     result = text
+    applied_rules_count = 0
     for rule in rules:
         if not rule.enabled:
             continue
 
-        result = apply_single_rule(result, rule)
+        next_result = apply_single_rule(result, rule)
+        if next_result != result:
+            applied_rules_count += 1
+        result = next_result
 
     # Check output length
     truncated = False
@@ -294,7 +310,7 @@ def apply_replacements(
         truncated = True
         log(f"Output truncated to {MAX_OUTPUT_LENGTH} chars")
 
-    return result, truncated
+    return result, truncated, applied_rules_count
 
 
 # === Full Pipeline ===
@@ -324,6 +340,28 @@ def process_text(
     """
     from .postprocess import normalize
 
+    processed, truncated, _ = process_text_with_stats(
+        text,
+        rules=rules,
+        skip_normalize=skip_normalize,
+        skip_macros=skip_macros,
+    )
+    return processed, truncated
+
+
+def process_text_with_stats(
+    text: str,
+    rules: list[ReplacementRule] | None = None,
+    skip_normalize: bool = False,
+    skip_macros: bool = False,
+) -> tuple[str, bool, int]:
+    """Apply the full pipeline and report applied replacement rule count.
+
+    Returns:
+        Tuple of (processed_text, was_truncated, applied_rules_count).
+    """
+    from .postprocess import normalize
+
     # Stage 1: Normalize
     if not skip_normalize:
         text = normalize(text)
@@ -334,9 +372,9 @@ def process_text(
 
     # Stage 3: Replacements
     rules = rules or []
-    text, truncated = apply_replacements(text, rules)
+    text, truncated, applied_rules_count = apply_replacements_with_stats(text, rules)
 
-    return text, truncated
+    return text, truncated, applied_rules_count
 
 
 # === Preset Management ===
@@ -572,7 +610,7 @@ def handle_replacements_preview(request: Request) -> dict[str, Any]:
     else:
         rules = get_active_rules()
 
-    result, truncated = process_text(
+    result, truncated, applied_rules_count = process_text_with_stats(
         text,
         rules=rules,
         skip_normalize=skip_normalize,
@@ -582,4 +620,5 @@ def handle_replacements_preview(request: Request) -> dict[str, Any]:
     return {
         "result": result,
         "truncated": truncated,
+        "applied_rules_count": applied_rules_count,
     }

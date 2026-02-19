@@ -42,6 +42,7 @@ from openvoicy_sidecar.replacements import (
     handle_replacements_set_rules,
     load_presets_from_file,
     process_text,
+    process_text_with_stats,
     set_active_rules,
     validate_rules,
 )
@@ -679,6 +680,64 @@ class TestReplacementHandlers:
         result = handle_replacements_preview(request)
         assert result["result"] == "Hello by the way world"
         assert result["truncated"] is False
+        assert result["applied_rules_count"] == 1
+
+    def test_preview_reports_applied_rules_count_zero_when_no_rule_applies(self, reset_active_rules):
+        """Should report zero applied rules when output is unchanged by rules."""
+        request = Request(
+            method="replacements.preview",
+            id=2,
+            params={
+                "text": "Hello world",
+                "rules": [
+                    {
+                        "id": "1",
+                        "enabled": True,
+                        "kind": "literal",
+                        "pattern": "NOT_PRESENT",
+                        "replacement": "noop",
+                        "word_boundary": True,
+                    }
+                ],
+            },
+        )
+        result = handle_replacements_preview(request)
+        assert result["result"] == "Hello world"
+        assert result["truncated"] is False
+        assert result["applied_rules_count"] == 0
+
+    def test_process_text_with_stats_reports_rule_applications(self):
+        """process_text_with_stats should count rules that actually mutate text."""
+        rules = [
+            ReplacementRule(
+                id="1",
+                enabled=True,
+                kind="literal",
+                pattern="hello",
+                replacement="hi",
+                word_boundary=False,
+                case_sensitive=False,
+            ),
+            ReplacementRule(
+                id="2",
+                enabled=True,
+                kind="literal",
+                pattern="missing",
+                replacement="noop",
+                word_boundary=False,
+                case_sensitive=False,
+            ),
+        ]
+
+        processed, truncated, applied_rules_count = process_text_with_stats(
+            "hello there",
+            rules=rules,
+            skip_normalize=True,
+            skip_macros=True,
+        )
+        assert processed == "hi there"
+        assert truncated is False
+        assert applied_rules_count == 1
 
     def test_get_current_rules_alias(self, reset_active_rules):
         """get_current_rules should remain available as alias to active rules."""

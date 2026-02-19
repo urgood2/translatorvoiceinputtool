@@ -935,7 +935,8 @@
         "type": "object",
         "required": [
           "result",
-          "truncated"
+          "truncated",
+          "applied_rules_count"
         ],
         "properties": {
           "result": {
@@ -943,6 +944,10 @@
           },
           "truncated": {
             "type": "boolean"
+          },
+          "applied_rules_count": {
+            "type": "integer",
+            "minimum": 0
           }
         },
         "additionalProperties": true
