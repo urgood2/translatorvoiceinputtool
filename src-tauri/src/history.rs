@@ -6,7 +6,7 @@
 #![allow(dead_code)] // Module under construction
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::RwLock;
@@ -16,7 +16,7 @@ use uuid::Uuid;
 const DEFAULT_MAX_SIZE: usize = 100;
 
 /// Result of text injection for a transcript entry.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum HistoryInjectionResult {
     /// Text was successfully injected via paste.
@@ -47,7 +47,7 @@ impl HistoryInjectionResult {
 }
 
 /// Timing breakdown for the stop -> injection pipeline.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptTimings {
     /// Time from stop request until recording.stop RPC returns.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -67,7 +67,7 @@ pub struct TranscriptTimings {
 }
 
 /// A single transcript entry in the history.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptEntry {
     /// Unique identifier for this entry.
     pub id: Uuid,
@@ -79,6 +79,9 @@ pub struct TranscriptEntry {
     pub audio_duration_ms: u32,
     /// Time taken to transcribe in milliseconds.
     pub transcription_duration_ms: u32,
+    /// Recording session ID correlated to the sidecar session, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<Uuid>,
     /// Result of injection attempt.
     pub injection_result: HistoryInjectionResult,
     /// Optional stop -> injection timing breakdown.
@@ -100,9 +103,16 @@ impl TranscriptEntry {
             timestamp: Utc::now(),
             audio_duration_ms,
             transcription_duration_ms,
+            session_id: None,
             injection_result,
             timings: None,
         }
+    }
+
+    /// Attach recording session ID.
+    pub fn with_session_id(mut self, session_id: Option<Uuid>) -> Self {
+        self.session_id = session_id;
+        self
     }
 
     /// Attach pipeline timings.
@@ -465,6 +475,41 @@ mod tests {
         assert!(json.contains("\"text\":\"Test text\""));
         assert!(json.contains("\"audio_duration_ms\":2000"));
         assert!(json.contains("\"transcription_duration_ms\":350"));
+    }
+
+    #[test]
+    fn test_entry_deserialization_defaults_session_id_to_none() {
+        let value = serde_json::json!({
+            "id": Uuid::new_v4(),
+            "text": "legacy entry",
+            "timestamp": Utc::now().to_rfc3339(),
+            "audio_duration_ms": 1000,
+            "transcription_duration_ms": 250,
+            "injection_result": { "status": "injected" }
+        });
+
+        let entry: TranscriptEntry =
+            serde_json::from_value(value).expect("legacy entry should deserialize");
+        assert!(entry.session_id.is_none());
+    }
+
+    #[test]
+    fn test_entry_with_session_id_serialization() {
+        let session_id = Uuid::new_v4();
+        let entry = TranscriptEntry::new(
+            "Test text".to_string(),
+            2000,
+            350,
+            HistoryInjectionResult::Injected,
+        )
+        .with_session_id(Some(session_id));
+
+        let value = serde_json::to_value(&entry).unwrap();
+        let expected = session_id.to_string();
+        assert_eq!(
+            value.get("session_id").and_then(serde_json::Value::as_str),
+            Some(expected.as_str())
+        );
     }
 
     #[test]

@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use crate::config::{self, HotkeyMode, ReplacementRule};
 use crate::errors::{AppError, ErrorKind};
@@ -2283,7 +2284,8 @@ impl IntegrationManager {
                                 audio_duration_ms as u32,
                                 processing_duration_ms as u32,
                                 injection_result_for_history,
-                            );
+                            )
+                            .with_session_id(Uuid::parse_str(&session_id).ok());
                             if let Some(timings) = pipeline_timings.clone() {
                                 entry = entry.with_timings(timings);
                             }
