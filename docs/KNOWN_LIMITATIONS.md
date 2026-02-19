@@ -48,6 +48,18 @@ This document describes the platform-specific capabilities and limitations for t
 - Injecting into elevated windows requires the app to run elevated
 - Keyboard hooks work without elevation for non-elevated windows
 
+### Antivirus / SmartScreen Friction
+
+Unsigned developer builds can trigger Microsoft Defender or SmartScreen warnings.
+This is most common for fresh builds that are not code-signed or broadly downloaded.
+
+**Remediation:**
+1. Verify the build source first (official release artifact or your own local build output)
+2. If SmartScreen blocks launch, use `More info` -> `Run anyway` for trusted builds
+3. If Defender quarantines the binary, open Windows Security -> Protection history and restore/allow the item
+4. For repeat local development, add a targeted exclusion for the build folder in Windows Security
+5. In managed enterprise environments, request an IT allowlist rule for the executable hash/publisher
+
 ### Recommended Mode
 
 **Default:** `push_to_talk` (hold-to-record)
@@ -111,6 +123,18 @@ AVCaptureDevice.authorizationStatus(for: .audio)
 **Requesting:**
 - Accessibility: User must manually enable in System Preferences → Security & Privacy → Privacy → Accessibility
 - Microphone: Standard permission dialog via `AVCaptureDevice.requestAccess`
+
+### Gatekeeper / Quarantine Friction
+
+Unsigned or locally downloaded `.app` bundles may be blocked by Gatekeeper with
+"app is damaged" or "cannot be opened because the developer cannot be verified."
+
+**Remediation:**
+1. Open the app once, then go to System Settings -> Privacy & Security and click `Open Anyway`
+2. For trusted local development builds, remove quarantine metadata:
+   `xattr -dr com.apple.quarantine /path/to/Voice\\ Input\\ Tool.app`
+3. Re-launch the app and re-grant Accessibility/Microphone permissions if prompted
+4. For distributed builds, prefer signed/notarized releases to avoid recurring Gatekeeper prompts
 
 ### Recommended Mode
 
