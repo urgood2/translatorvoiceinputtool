@@ -96,6 +96,7 @@ pub fn run() {
             commands::get_available_presets,
             commands::load_preset,
             // Control commands
+            commands::start_recording,
             commands::toggle_enabled,
             commands::is_enabled,
             commands::set_enabled,

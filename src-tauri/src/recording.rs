@@ -267,6 +267,17 @@ impl RecordingController {
     ///
     /// Returns the session ID on success.
     pub async fn start(&self) -> Result<SessionId, RecordingError> {
+        let session_id = Uuid::new_v4().to_string();
+        self.start_with_session_id(session_id).await
+    }
+
+    /// Start a new recording session with a caller-provided session ID.
+    ///
+    /// Returns the same session ID on success.
+    pub async fn start_with_session_id(
+        &self,
+        session_id: SessionId,
+    ) -> Result<SessionId, RecordingError> {
         // Check if we can start recording
         self.state_manager
             .can_start_recording()
@@ -289,8 +300,6 @@ impl RecordingController {
             return Err(RecordingError::ModelNotReady);
         }
 
-        // Generate session ID
-        let session_id = Uuid::new_v4().to_string();
         let now = Instant::now();
         let timestamp = Utc::now();
 
@@ -661,6 +670,22 @@ mod tests {
 
         assert_eq!(state_manager.get(), AppState::Recording);
         assert_eq!(controller.current_session_id().await, Some(session_id));
+    }
+
+    #[tokio::test]
+    async fn test_start_with_session_id_uses_caller_provided_id() {
+        let (state_manager, controller) = setup();
+        controller.set_model_ready(true).await;
+
+        let fixed = "00000000-0000-4000-8000-000000000123".to_string();
+        let returned = controller
+            .start_with_session_id(fixed.clone())
+            .await
+            .expect("start_with_session_id should succeed");
+
+        assert_eq!(returned, fixed);
+        assert_eq!(controller.current_session_id().await, Some(returned));
+        assert_eq!(state_manager.get(), AppState::Recording);
     }
 
     #[tokio::test]

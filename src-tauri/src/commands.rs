@@ -839,6 +839,38 @@ pub async fn load_preset(
     Ok(preset_rules)
 }
 
+fn map_start_recording_error(message: String) -> CommandError {
+    let lower = message.to_ascii_lowercase();
+
+    if lower.contains("sidecar") || lower.contains("recording.start") || lower.contains("session")
+    {
+        return CommandError::SidecarIpc { message };
+    }
+    if lower.contains("model not ready") {
+        return CommandError::Model { message };
+    }
+    if lower.contains("disabled")
+        || lower.contains("already in progress")
+        || lower.contains("transcribing")
+    {
+        return CommandError::Audio { message };
+    }
+
+    CommandError::Internal { message }
+}
+
+/// Start a new recording session.
+#[tauri::command]
+pub async fn start_recording(
+    integration_state: tauri::State<'_, IntegrationState>,
+) -> Result<(), CommandError> {
+    let manager = integration_state.0.read().await;
+    manager
+        .start_recording()
+        .await
+        .map_err(map_start_recording_error)
+}
+
 // ============================================================================
 // CONTROL COMMANDS
 // ============================================================================
@@ -980,6 +1012,18 @@ mod tests {
         let json = serde_json::to_string(&error).unwrap();
         assert!(json.contains("config"));
         assert!(json.contains("Test error"));
+    }
+
+    #[test]
+    fn test_map_start_recording_error_sidecar_path() {
+        let mapped = map_start_recording_error("Sidecar not connected".to_string());
+        assert!(matches!(mapped, CommandError::SidecarIpc { .. }));
+    }
+
+    #[test]
+    fn test_map_start_recording_error_model_path() {
+        let mapped = map_start_recording_error("Model not ready".to_string());
+        assert!(matches!(mapped, CommandError::Model { .. }));
     }
 
     #[test]

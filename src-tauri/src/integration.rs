@@ -32,10 +32,10 @@ use crate::injection::{inject_text, InjectionConfig, InjectionResult};
 use crate::ipc::{NotificationEvent, RpcClient, RpcError};
 use crate::model_defaults;
 use crate::recording::{
-    CancelReason, RecordingController, RecordingEvent, StopResult, TranscriptionResult,
+    RecordingController, RecordingEvent, StopResult, TranscriptionResult,
 };
 use crate::sidecar::SidecarManager;
-use crate::state::{AppState, AppStateManager, StateEvent};
+use crate::state::{AppState, AppStateManager, CannotRecordReason, StateEvent};
 use crate::supervisor::{
     SidecarState as SupervisorState, SidecarSupervisor, SidecarSupervisorConfig,
 };
@@ -705,6 +705,26 @@ fn validate_recording_start_response(
             expected_session_id, start_result.session_id
         ))
     }
+}
+
+fn cannot_record_reason_message(reason: CannotRecordReason) -> &'static str {
+    match reason {
+        CannotRecordReason::Paused => "Recording disabled (paused)",
+        CannotRecordReason::ModelLoading => "Model not ready",
+        CannotRecordReason::AlreadyRecording => "Recording already in progress",
+        CannotRecordReason::StillTranscribing => "Cannot start recording while transcribing",
+        CannotRecordReason::InErrorState => "Cannot start recording while app is in error state",
+    }
+}
+
+fn recording_start_params(session_id: &str, app_config: &config::AppConfig) -> Value {
+    json!({
+        "session_id": session_id,
+        "device_uid": app_config.audio.device_uid,
+        "vad_enabled": app_config.audio.vad_enabled,
+        "vad_silence_ms": app_config.audio.vad_silence_ms,
+        "vad_min_speech_ms": app_config.audio.vad_min_speech_ms
+    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1609,6 +1629,114 @@ impl IntegrationManager {
         Ok(())
     }
 
+    async fn start_recording_flow(
+        state_manager: &Arc<AppStateManager>,
+        recording_controller: &Arc<RecordingController>,
+        rpc_client: &Arc<RwLock<Option<RpcClient>>>,
+        recording_context: &Arc<RwLock<Option<RecordingContext>>>,
+        current_session_id: &Arc<RwLock<Option<String>>>,
+    ) -> Result<(), String> {
+        if current_session_id.read().await.is_some() {
+            return Err("Recording already in progress".to_string());
+        }
+
+        state_manager
+            .can_start_recording()
+            .map_err(cannot_record_reason_message)
+            .map_err(ToString::to_string)?;
+
+        if !recording_controller.is_model_ready().await {
+            return Err("Model not ready".to_string());
+        }
+
+        let session_id = Uuid::new_v4().to_string();
+        let focus = capture_focus();
+        let app_config = config::load_config();
+        let params = recording_start_params(session_id.as_str(), &app_config);
+
+        let start_response: Value = {
+            let client_guard = rpc_client.read().await;
+            let client = client_guard
+                .as_ref()
+                .ok_or_else(|| "Sidecar not connected".to_string())?;
+
+            client
+                .call("recording.start", Some(params))
+                .await
+                .map_err(|err| format!("Failed to call recording.start RPC: {}", err))?
+        };
+
+        if let Err(mismatch) =
+            validate_recording_start_response(session_id.as_str(), &start_response)
+        {
+            if let Some(client) = rpc_client.read().await.as_ref() {
+                let cancel_session_id = start_response
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or(session_id.as_str())
+                    .to_string();
+                let cancel_result: Result<Value, _> = client
+                    .call(
+                        "recording.cancel",
+                        Some(json!({ "session_id": cancel_session_id })),
+                    )
+                    .await;
+                if let Err(err) = cancel_result {
+                    log::warn!(
+                        "Failed to roll back recording.start via recording.cancel: {}",
+                        err
+                    );
+                }
+            }
+            return Err(mismatch);
+        }
+
+        if let Err(err) = recording_controller
+            .start_with_session_id(session_id.clone())
+            .await
+        {
+            if let Some(client) = rpc_client.read().await.as_ref() {
+                let cancel_result: Result<Value, _> = client
+                    .call(
+                        "recording.cancel",
+                        Some(json!({ "session_id": session_id })),
+                    )
+                    .await;
+                if let Err(cancel_err) = cancel_result {
+                    log::warn!(
+                        "Failed to cancel sidecar session after host start failure: {}",
+                        cancel_err
+                    );
+                }
+            }
+            return Err(format!("Failed to start recording: {}", err));
+        }
+
+        *recording_context.write().await = Some(RecordingContext {
+            focus_before: focus,
+            session_id: session_id.clone(),
+            audio_duration_ms: None,
+            raw_text: None,
+            final_text: None,
+            timing_marks: PipelineTimingMarks::default(),
+        });
+        *current_session_id.write().await = Some(session_id);
+
+        Ok(())
+    }
+
+    /// Unified recording start entry point for commands/UI/hotkey/tray/overlay.
+    pub async fn start_recording(&self) -> Result<(), String> {
+        Self::start_recording_flow(
+            &self.state_manager,
+            &self.recording_controller,
+            &self.rpc_client,
+            &self.recording_context,
+            &self.current_session_id,
+        )
+        .await
+    }
+
     /// Start microphone level meter via sidecar.
     pub async fn start_mic_test(&self, device_uid: Option<String>) -> Result<(), String> {
         let client = self.rpc_client.read().await;
@@ -2131,100 +2259,17 @@ impl IntegrationManager {
                         let recording_action = hk.handle_primary_down(&state_manager);
 
                         if let Some(RecordingAction::Start) = recording_action {
-                            // Capture focus before recording
-                            let focus = capture_focus();
-                            log::debug!("Captured focus before recording: {:?}", focus);
-
-                            // Start recording
-                            match recording_controller.start().await {
-                                Ok(session_id) => {
-                                    log::info!("Recording started: session={}", session_id);
-
-                                    // Store context
-                                    *recording_context.write().await = Some(RecordingContext {
-                                        focus_before: focus,
-                                        session_id: session_id.clone(),
-                                        audio_duration_ms: None,
-                                        raw_text: None,
-                                        final_text: None,
-                                        timing_marks: PipelineTimingMarks::default(),
-                                    });
-                                    *current_session_id.write().await = Some(session_id.clone());
-
-                                    // Tell sidecar to start recording
-                                    if let Some(client) = rpc_client.read().await.as_ref() {
-                                        let expected_session_id = session_id.clone();
-                                        let params = json!({
-                                            "session_id": expected_session_id,
-                                            "device_uid": config.audio.device_uid
-                                        });
-                                        let start_result: Result<Value, _> =
-                                            client.call("recording.start", Some(params)).await;
-                                        let (start_synchronized, cancel_session_id) =
-                                            match start_result {
-                                                Ok(result) => {
-                                                    match validate_recording_start_response(
-                                                        expected_session_id.as_str(),
-                                                        &result,
-                                                    ) {
-                                                        Ok(()) => (true, None),
-                                                        Err(mismatch) => {
-                                                            log::error!("{}", mismatch);
-                                                            (
-                                                                false,
-                                                                result
-                                                                    .get("session_id")
-                                                                    .and_then(Value::as_str)
-                                                                    .map(ToOwned::to_owned)
-                                                                    .or_else(|| {
-                                                                        Some(
-                                                                            expected_session_id
-                                                                                .clone(),
-                                                                        )
-                                                                    }),
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                                Err(err) => {
-                                                    log::error!(
-                                                        "Failed to call recording.start RPC: {}",
-                                                        err
-                                                    );
-                                                    (false, Some(expected_session_id.clone()))
-                                                }
-                                            };
-
-                                        if !start_synchronized {
-                                            if let Some(cancel_session_id) = cancel_session_id {
-                                                let cancel_params =
-                                                    json!({ "session_id": cancel_session_id });
-                                                let cancel_result: Result<Value, _> = client
-                                                    .call("recording.cancel", Some(cancel_params))
-                                                    .await;
-                                                if let Err(err) = cancel_result {
-                                                    log::warn!(
-                                                        "Failed to roll back recording.start via recording.cancel: {}",
-                                                        err
-                                                    );
-                                                }
-                                            }
-                                            let _ = recording_controller
-                                                .cancel(CancelReason::UserButton)
-                                                .await;
-                                            *recording_context.write().await = None;
-                                            *current_session_id.write().await = None;
-                                            state_manager.transition_to_error(
-                                                "Recording session synchronization failed"
-                                                    .to_string(),
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    log::warn!("Failed to start recording: {}", e);
-                                    *current_session_id.write().await = None;
-                                }
+                            if let Err(err) = Self::start_recording_flow(
+                                &state_manager,
+                                &recording_controller,
+                                &rpc_client,
+                                &recording_context,
+                                &current_session_id,
+                            )
+                            .await
+                            {
+                                log::warn!("Failed to start recording: {}", err);
+                                *current_session_id.write().await = None;
                             }
                         } else if let Some(RecordingAction::Stop) = recording_action {
                             // Toggle mode: stop recording
@@ -4490,6 +4535,39 @@ mod tests {
             .await
             .expect_err("start_mic_test should fail without sidecar");
         assert!(error.contains("Sidecar not connected"));
+    }
+
+    #[test]
+    fn test_recording_start_params_include_vad_fields() {
+        let mut app_config = config::AppConfig::default();
+        app_config.audio.device_uid = Some("mic-1".to_string());
+        app_config.audio.vad_enabled = true;
+        app_config.audio.vad_silence_ms = 1500;
+        app_config.audio.vad_min_speech_ms = 350;
+
+        let params = recording_start_params("session-1", &app_config);
+
+        assert_eq!(params["session_id"], "session-1");
+        assert_eq!(params["device_uid"], "mic-1");
+        assert_eq!(params["vad_enabled"], true);
+        assert_eq!(params["vad_silence_ms"], 1500);
+        assert_eq!(params["vad_min_speech_ms"], 350);
+    }
+
+    #[tokio::test]
+    async fn test_start_recording_requires_sidecar_connection_without_state_transition() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(Arc::clone(&state_manager));
+        manager.recording_controller.set_model_ready(true).await;
+
+        let error = manager
+            .start_recording()
+            .await
+            .expect_err("start_recording should fail without sidecar");
+        assert!(error.contains("Sidecar not connected"));
+        assert_eq!(state_manager.get(), AppState::Idle);
+        assert!(manager.current_session_id.read().await.is_none());
+        assert!(manager.recording_controller.current_session_id().await.is_none());
     }
 
     #[tokio::test]
