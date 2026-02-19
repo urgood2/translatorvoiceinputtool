@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { invoke } from '@tauri-apps/api/core';
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -73,7 +73,16 @@ describe('App diagnostics panels', () => {
         case 'get_model_status':
           return { status: 'ready', model_id: 'nvidia/parakeet-tdt-0.6b-v2' };
         case 'get_transcript_history':
-          return [];
+          return [
+            {
+              id: 'entry-1',
+              text: 'Sample transcript text.',
+              timestamp: new Date().toISOString(),
+              audio_duration_ms: 2400,
+              transcription_duration_ms: 500,
+              injection_result: { status: 'injected' },
+            },
+          ];
         case 'get_hotkey_status':
           return {
             primary: 'Ctrl+Shift+Space',
@@ -81,6 +90,8 @@ describe('App diagnostics panels', () => {
             mode: 'hold',
             registered: true,
           };
+        case 'copy_transcript':
+          return undefined;
         case 'get_available_presets':
           return [];
         case 'get_app_state':
@@ -186,5 +197,13 @@ describe('App diagnostics panels', () => {
     expect(screen.getByRole('button', { name: 'Injection' })).toBeDefined();
     expect(screen.getByText('Microphone Test')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Start Test' })).toBeDefined();
+    expect(screen.getByText('Sample transcript text.')).toBeDefined();
+    expect(screen.getByText('Injected')).toBeDefined();
+    expect(screen.getAllByText('Ready').length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByText('Copy'));
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('copy_transcript', { id: 'entry-1' });
+    });
   });
 });

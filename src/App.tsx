@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useAppStore, selectAppState, selectIsRecording } from './store';
+import { useAppStore, selectAppState } from './store';
 import { useTauriEvents } from './hooks';
-import { SelfCheck, Diagnostics, SettingsPanel } from './components';
+import { SelfCheck, Diagnostics, SettingsPanel, StatusIndicator, HistoryPanel } from './components';
 import type { DiagnosticsReport } from './types';
 
 function App() {
@@ -10,7 +10,7 @@ function App() {
 
   // Get store state and actions
   const appState = useAppStore(selectAppState);
-  const isRecording = useAppStore(selectIsRecording);
+  const enabled = useAppStore((state) => state.enabled);
   const errorDetail = useAppStore((state) => state.errorDetail);
   const isInitialized = useAppStore((state) => state.isInitialized);
   const isLoading = useAppStore((state) => state.isLoading);
@@ -19,6 +19,7 @@ function App() {
   const isMeterRunning = useAppStore((state) => state.isMeterRunning);
   const history = useAppStore((state) => state.history);
   const modelStatus = useAppStore((state) => state.modelStatus);
+  const downloadProgress = useAppStore((state) => state.downloadProgress);
   const selfCheckResult = useAppStore((state) => state.selfCheckResult);
   const config = useAppStore((state) => state.config);
   const capabilities = useAppStore((state) => state.capabilities);
@@ -32,6 +33,7 @@ function App() {
   const updateInjectionConfig = useAppStore((state) => state.updateInjectionConfig);
   const startMicTest = useAppStore((state) => state.startMicTest);
   const stopMicTest = useAppStore((state) => state.stopMicTest);
+  const copyTranscript = useAppStore((state) => state.copyTranscript);
 
   const [isSelfCheckLoading, setIsSelfCheckLoading] = useState(false);
   const [isDiagnosticsLoading, setIsDiagnosticsLoading] = useState(false);
@@ -102,33 +104,14 @@ function App() {
     <div className="min-h-screen flex flex-col items-center justify-center p-8">
       <h1 className="text-4xl font-bold mb-8">Voice Input Tool</h1>
 
-      {/* Status Badge */}
-      <div className="mb-6">
-        <span
-          className={`px-4 py-2 rounded-full text-sm font-medium ${
-            isRecording
-              ? 'bg-red-500/20 text-red-400 animate-pulse'
-              : appState === 'transcribing'
-              ? 'bg-yellow-500/20 text-yellow-400'
-              : appState === 'error'
-              ? 'bg-red-500/20 text-red-400'
-              : 'bg-green-500/20 text-green-400'
-          }`}
-        >
-          {appState === 'idle' && 'Ready'}
-          {appState === 'loading_model' && 'Loading Model...'}
-          {appState === 'recording' && 'Recording...'}
-          {appState === 'transcribing' && 'Transcribing...'}
-          {appState === 'error' && 'Error'}
-        </span>
+      <div className="w-full max-w-md mb-6">
+        <StatusIndicator
+          state={appState}
+          enabled={enabled}
+          detail={errorDetail}
+          progress={downloadProgress ?? undefined}
+        />
       </div>
-
-      {/* Error Display */}
-      {errorDetail && (
-        <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-lg max-w-md">
-          <p className="text-red-400 text-sm">{errorDetail}</p>
-        </div>
-      )}
 
       <div className="w-full max-w-md space-y-4">
         {/* Model Status */}
@@ -200,23 +183,14 @@ function App() {
           </div>
         )}
 
-        {/* Recent Transcripts */}
+        {/* History */}
         <div className="bg-gray-800 rounded-lg p-6">
-          <h2 className="text-xl font-semibold mb-4">Recent Transcripts</h2>
-          <div className="space-y-2 max-h-48 overflow-y-auto">
-            {history.length === 0 ? (
-              <p className="text-gray-500 text-sm">No transcripts yet</p>
-            ) : (
-              history.slice(0, 5).map((entry) => (
-                <div key={entry.id} className="p-2 bg-gray-700 rounded text-sm">
-                  <p className="truncate">{entry.text}</p>
-                  <p className="text-xs text-gray-500 mt-1">
-                    {new Date(entry.timestamp).toLocaleTimeString()}
-                  </p>
-                </div>
-              ))
-            )}
-          </div>
+          <HistoryPanel
+            entries={history.slice(0, 5)}
+            onCopy={(id) => {
+              void copyTranscript(id);
+            }}
+          />
         </div>
 
         {/* Self-check */}
