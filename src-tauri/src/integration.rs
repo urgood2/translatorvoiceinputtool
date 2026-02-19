@@ -52,6 +52,8 @@ const EVENT_MODEL_STATUS: &str = "model:status";
 
 /// Canonical sidecar status event name.
 const EVENT_SIDECAR_STATUS: &str = "sidecar:status";
+/// Canonical recording phase event name.
+const EVENT_RECORDING_STATUS: &str = "recording:status";
 
 /// Model status tracking.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -482,6 +484,31 @@ fn state_changed_event_payload(event: &StateEvent) -> Value {
         "detail": event.detail,
         "timestamp": event.timestamp.to_rfc3339(),
     })
+}
+
+fn recording_status_event_payload(
+    phase: &str,
+    session_id: Option<&str>,
+    started_at: Option<String>,
+    audio_ms: Option<u64>,
+) -> Value {
+    let mut payload = json!({ "phase": phase });
+    if let Some(session_id) = session_id {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("session_id".to_string(), json!(session_id));
+        }
+    }
+    if let Some(started_at) = started_at {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("started_at".to_string(), json!(started_at));
+        }
+    }
+    if let Some(audio_ms) = audio_ms {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("audio_ms".to_string(), json!(audio_ms));
+        }
+    }
+    payload
 }
 
 fn should_emit_audio_level(
@@ -2104,6 +2131,53 @@ impl IntegrationManager {
 
             while let Ok(event) = receiver.recv().await {
                 match event {
+                    RecordingEvent::Started {
+                        session_id,
+                        timestamp,
+                    } => {
+                        if let Some(ref handle) = app_handle {
+                            emit_with_shared_seq(
+                                handle,
+                                &[EVENT_RECORDING_STATUS],
+                                recording_status_event_payload(
+                                    "recording",
+                                    Some(session_id.as_str()),
+                                    Some(timestamp.to_rfc3339()),
+                                    None,
+                                ),
+                                &event_seq,
+                            );
+                        }
+                    }
+                    RecordingEvent::Stopped {
+                        session_id,
+                        duration_ms,
+                        ..
+                    } => {
+                        if let Some(ref handle) = app_handle {
+                            emit_with_shared_seq(
+                                handle,
+                                &[EVENT_RECORDING_STATUS],
+                                recording_status_event_payload(
+                                    "transcribing",
+                                    Some(session_id.as_str()),
+                                    None,
+                                    Some(duration_ms),
+                                ),
+                                &event_seq,
+                            );
+                        }
+                    }
+                    RecordingEvent::TooShort { .. } => {
+                        if let Some(ref handle) = app_handle {
+                            emit_with_shared_seq(
+                                handle,
+                                &[EVENT_RECORDING_STATUS],
+                                recording_status_event_payload("idle", None, None, None),
+                                &event_seq,
+                            );
+                        }
+                    }
                     RecordingEvent::TranscriptionComplete {
                         session_id,
                         text,
@@ -2111,6 +2185,15 @@ impl IntegrationManager {
                         processing_duration_ms,
                         timestamp: _,
                     } => {
+                        if let Some(ref handle) = app_handle {
+                            emit_with_shared_seq(
+                                handle,
+                                &[EVENT_RECORDING_STATUS],
+                                recording_status_event_payload("idle", None, None, None),
+                                &event_seq,
+                            );
+                        }
+
                         log::info!(
                             "Transcription complete: session={}, text_len={}, text_sha256_prefix={}, audio={}ms, processing={}ms",
                             session_id,
@@ -2261,6 +2344,14 @@ impl IntegrationManager {
                         *current_session_id.write().await = None;
                     }
                     RecordingEvent::Cancelled { .. } => {
+                        if let Some(ref handle) = app_handle {
+                            emit_with_shared_seq(
+                                handle,
+                                &[EVENT_RECORDING_STATUS],
+                                recording_status_event_payload("idle", None, None, None),
+                                &event_seq,
+                            );
+                        }
                         *recording_context.write().await = None;
                         *current_session_id.write().await = None;
                     }
@@ -3047,6 +3138,57 @@ mod tests {
         assert_eq!(payload.get("enabled").and_then(Value::as_bool), Some(true));
         assert!(payload.get("detail").is_some());
         assert!(payload.get("timestamp").and_then(Value::as_str).is_some());
+    }
+
+    #[test]
+    fn test_recording_status_event_payload_recording_includes_session_and_started_at() {
+        let payload = recording_status_event_payload(
+            "recording",
+            Some("session-1"),
+            Some("2026-02-19T03:00:00Z".to_string()),
+            None,
+        );
+
+        assert_eq!(
+            payload.get("phase").and_then(Value::as_str),
+            Some("recording")
+        );
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some("session-1")
+        );
+        assert_eq!(
+            payload.get("started_at").and_then(Value::as_str),
+            Some("2026-02-19T03:00:00Z")
+        );
+        assert!(payload.get("audio_ms").is_none());
+    }
+
+    #[test]
+    fn test_recording_status_event_payload_transcribing_includes_audio_ms() {
+        let payload =
+            recording_status_event_payload("transcribing", Some("session-2"), None, Some(1234));
+
+        assert_eq!(
+            payload.get("phase").and_then(Value::as_str),
+            Some("transcribing")
+        );
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some("session-2")
+        );
+        assert_eq!(payload.get("audio_ms").and_then(Value::as_u64), Some(1234));
+        assert!(payload.get("started_at").is_none());
+    }
+
+    #[test]
+    fn test_recording_status_event_payload_idle_has_no_optional_fields() {
+        let payload = recording_status_event_payload("idle", None, None, None);
+
+        assert_eq!(payload.get("phase").and_then(Value::as_str), Some("idle"));
+        assert!(payload.get("session_id").is_none());
+        assert!(payload.get("started_at").is_none());
+        assert!(payload.get("audio_ms").is_none());
     }
 
     #[test]
