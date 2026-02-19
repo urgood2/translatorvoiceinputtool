@@ -192,20 +192,28 @@ describe('App diagnostics panels', () => {
       expect(invoke).toHaveBeenCalledWith('generate_diagnostics');
     });
 
-    expect(screen.getByText('System Health Check')).toBeDefined();
-    expect(screen.getAllByText('Diagnostics').length).toBeGreaterThan(0);
-    expect(screen.getByText('Settings')).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Hotkeys' })).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Injection' })).toBeDefined();
-    expect(screen.getByText('Microphone Test')).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Start Test' })).toBeDefined();
+    expect(screen.getByRole('tab', { name: 'Status' })).toBeDefined();
+    expect(screen.getByRole('tab', { name: 'History' })).toBeDefined();
+    expect(screen.getByRole('tab', { name: 'Replacements' })).toBeDefined();
+    expect(screen.getByRole('tab', { name: 'Settings' })).toBeDefined();
+    expect(screen.getAllByText('Ready').length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'History' }));
     expect(screen.getAllByText('Sample transcript text.').length).toBeGreaterThan(0);
     expect(screen.getByText('Injected')).toBeDefined();
-    expect(screen.getAllByText('Ready').length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByText('Copy'));
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('copy_transcript', { id: 'entry-1' });
     });
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Settings' }));
+    expect(screen.getByText('Settings')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Hotkeys' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Injection' })).toBeDefined();
+    expect(screen.getByText('Microphone Test')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Start Test' })).toBeDefined();
+    expect(screen.getByText('System Health Check')).toBeDefined();
+    expect(screen.getAllByText('Diagnostics').length).toBeGreaterThan(0);
   });
 });

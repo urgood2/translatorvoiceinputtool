@@ -8,8 +8,12 @@ import {
   StatusIndicator,
   HistoryPanel,
   StatusDashboard,
+  TabBar,
+  TabPanel,
 } from './components';
 import type { DiagnosticsReport } from './types';
+
+type AppTab = 'status' | 'history' | 'replacements' | 'settings';
 
 function App() {
   // Set up Tauri event listeners
@@ -25,7 +29,6 @@ function App() {
   const audioLevel = useAppStore((state) => state.audioLevel);
   const isMeterRunning = useAppStore((state) => state.isMeterRunning);
   const history = useAppStore((state) => state.history);
-  const modelStatus = useAppStore((state) => state.modelStatus);
   const downloadProgress = useAppStore((state) => state.downloadProgress);
   const selfCheckResult = useAppStore((state) => state.selfCheckResult);
   const config = useAppStore((state) => state.config);
@@ -45,6 +48,7 @@ function App() {
   const [isSelfCheckLoading, setIsSelfCheckLoading] = useState(false);
   const [isDiagnosticsLoading, setIsDiagnosticsLoading] = useState(false);
   const [diagnosticsReport, setDiagnosticsReport] = useState<DiagnosticsReport | null>(null);
+  const [activeTab, setActiveTab] = useState<AppTab>('status');
 
   // Initialize store on mount
   useEffect(() => {
@@ -87,6 +91,17 @@ function App() {
     }
   }, [updateAudioConfig, updateHotkeyConfig, updateInjectionConfig]);
 
+  const handleTabChange = useCallback((tabId: string) => {
+    if (
+      tabId === 'status'
+      || tabId === 'history'
+      || tabId === 'replacements'
+      || tabId === 'settings'
+    ) {
+      setActiveTab(tabId);
+    }
+  }, []);
+
   useEffect(() => {
     if (!isInitialized) {
       return;
@@ -107,11 +122,18 @@ function App() {
     );
   }
 
+  const tabs = [
+    { id: 'status', label: 'Status' },
+    { id: 'history', label: 'History' },
+    { id: 'replacements', label: 'Replacements', badge: config?.replacements.length ?? 0 },
+    { id: 'settings', label: 'Settings' },
+  ];
+
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-8">
       <h1 className="text-4xl font-bold mb-8">Voice Input Tool</h1>
 
-      <div className="w-full max-w-md mb-6">
+      <div className="w-full max-w-4xl mb-6">
         <StatusIndicator
           state={appState}
           enabled={enabled}
@@ -120,105 +142,66 @@ function App() {
         />
       </div>
 
-      <div className="w-full max-w-md space-y-4">
-        <div className="bg-gray-800 rounded-lg p-6">
-          <h2 className="text-xl font-semibold mb-4">Status Dashboard</h2>
-          <StatusDashboard />
-        </div>
+      <div className="w-full max-w-4xl space-y-4">
+        <TabBar tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} />
 
-        {/* Model Status */}
-        <div className="bg-gray-800 rounded-lg p-6">
-          <h2 className="text-xl font-semibold mb-4">Model Status</h2>
-          <div className="space-y-2">
-            <p className="text-sm text-gray-400">
-              Status:{' '}
-              <span className="text-white">
-                {modelStatus?.status ?? 'Unknown'}
-              </span>
-            </p>
-            {modelStatus?.model_id && (
-              <p className="text-sm text-gray-400">
-                Model:{' '}
-                <span className="text-white font-mono text-xs">
-                  {modelStatus.model_id}
-                </span>
+        <div className="h-[65vh] min-h-[480px]">
+          <TabPanel id="status" activeTab={activeTab}>
+            <StatusDashboard />
+          </TabPanel>
+
+          <TabPanel id="history" activeTab={activeTab}>
+            <HistoryPanel entries={history.slice(0, 25)} onCopy={copyTranscript} />
+          </TabPanel>
+
+          <TabPanel id="replacements" activeTab={activeTab}>
+            <div className="space-y-3">
+              <h2 className="text-xl font-semibold">Replacements</h2>
+              <p className="text-sm text-gray-300">
+                Replacements tab integration is in progress.
               </p>
-            )}
-          </div>
-        </div>
+              <p className="text-sm text-gray-400">
+                Configured rules: {config?.replacements.length ?? 0}
+              </p>
+            </div>
+          </TabPanel>
 
-        {/* Audio Devices */}
-        <div className="bg-gray-800 rounded-lg p-6">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-semibold">Audio Devices</h2>
-            <button
-              onClick={() => refreshDevices()}
-              className="text-sm text-blue-400 hover:text-blue-300"
-            >
-              Refresh
-            </button>
-          </div>
-          <div className="space-y-2">
-            {devices.length === 0 ? (
-              <p className="text-gray-500 text-sm">No devices found</p>
-            ) : (
-              devices.map((device) => (
-                <div
-                  key={device.uid}
-                  className="p-2 bg-gray-700 rounded text-sm flex justify-between"
-                >
-                  <span className="truncate">{device.name}</span>
-                  {device.is_default && (
-                    <span className="text-green-400 text-xs">Default</span>
-                  )}
+          <TabPanel id="settings" activeTab={activeTab}>
+            <div className="space-y-4">
+              {config && (
+                <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
+                  <SettingsPanel
+                    config={config}
+                    devices={devices}
+                    audioLevel={audioLevel}
+                    isMeterRunning={isMeterRunning}
+                    effectiveHotkeyMode={capabilities?.hotkey_mode}
+                    onStartMicTest={startMicTest}
+                    onStopMicTest={stopMicTest}
+                    onRefreshDevices={refreshDevices}
+                    onConfigChange={handleSettingsChange}
+                    isLoading={isLoading}
+                  />
                 </div>
-              ))
-            )}
-          </div>
-        </div>
+              )}
 
-        {/* Settings */}
-        {config && (
-          <div className="bg-gray-800 rounded-lg p-6">
-            <h2 className="text-xl font-semibold mb-4">Settings</h2>
-            <SettingsPanel
-              config={config}
-              devices={devices}
-              audioLevel={audioLevel}
-              isMeterRunning={isMeterRunning}
-              effectiveHotkeyMode={capabilities?.hotkey_mode}
-              onStartMicTest={startMicTest}
-              onStopMicTest={stopMicTest}
-              onConfigChange={handleSettingsChange}
-              isLoading={isLoading}
-            />
-          </div>
-        )}
+              <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
+                <SelfCheck
+                  result={selfCheckResult}
+                  onRefresh={refreshSelfCheck}
+                  isLoading={isSelfCheckLoading}
+                />
+              </div>
 
-        {/* History */}
-        <div className="bg-gray-800 rounded-lg p-6">
-          <HistoryPanel
-            entries={history.slice(0, 5)}
-            onCopy={copyTranscript}
-          />
-        </div>
-
-        {/* Self-check */}
-        <div className="bg-gray-800 rounded-lg p-6">
-          <SelfCheck
-            result={selfCheckResult}
-            onRefresh={refreshSelfCheck}
-            isLoading={isSelfCheckLoading}
-          />
-        </div>
-
-        {/* Diagnostics */}
-        <div className="bg-gray-800 rounded-lg p-6">
-          <Diagnostics
-            report={diagnosticsReport}
-            onRefresh={refreshDiagnostics}
-            isLoading={isDiagnosticsLoading}
-          />
+              <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
+                <Diagnostics
+                  report={diagnosticsReport}
+                  onRefresh={refreshDiagnostics}
+                  isLoading={isDiagnosticsLoading}
+                />
+              </div>
+            </div>
+          </TabPanel>
         </div>
 
         <p className="text-center text-gray-500 text-sm">

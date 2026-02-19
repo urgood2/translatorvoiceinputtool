@@ -30,6 +30,7 @@ interface SettingsPanelProps {
   effectiveHotkeyMode?: EffectiveMode<ActivationMode>;
   onStartMicTest?: () => Promise<void>;
   onStopMicTest?: () => Promise<void>;
+  onRefreshDevices?: () => Promise<void> | void;
   onConfigChange: (path: string[], value: any) => Promise<void>;
   isLoading?: boolean;
 }
@@ -65,6 +66,7 @@ export function SettingsPanel({
   effectiveHotkeyMode,
   onStartMicTest,
   onStopMicTest,
+  onRefreshDevices,
   onConfigChange,
   isLoading,
 }: SettingsPanelProps) {
@@ -121,6 +123,22 @@ export function SettingsPanel({
       <div className="p-4 bg-white dark:bg-gray-800 rounded-b-lg">
         {activeTab === 'audio' && (
           <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-400">
+                Audio Devices
+              </h3>
+              {onRefreshDevices ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void onRefreshDevices();
+                  }}
+                  className="text-sm text-blue-400 hover:text-blue-300"
+                >
+                  Refresh
+                </button>
+              ) : null}
+            </div>
             <MicrophoneSelect
               devices={devices}
               selectedUid={config.audio.device_uid}
