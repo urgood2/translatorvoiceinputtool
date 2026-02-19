@@ -635,6 +635,47 @@ fn transcription_failure_app_error(session_id: &str, raw_error: &str) -> AppErro
     )
 }
 
+fn injection_method_attempted(reason: &str) -> &'static str {
+    let normalized = reason.to_ascii_lowercase();
+
+    if normalized.contains("focus") {
+        return "focus_guard";
+    }
+
+    if normalized.contains("paste")
+        || normalized.contains("keystroke")
+        || normalized.contains("wayland")
+        || normalized.contains("xdotool")
+    {
+        return "keystroke_injection";
+    }
+
+    if normalized.contains("clipboard") {
+        return "clipboard";
+    }
+
+    "clipboard_paste"
+}
+
+fn clipboard_only_requires_app_error(reason: &str) -> bool {
+    !reason
+        .to_ascii_lowercase()
+        .starts_with("app override clipboard-only mode")
+}
+
+fn injection_failure_app_error(reason: &str, text_length: usize) -> AppError {
+    AppError::new(
+        ErrorKind::InjectionFailed.to_sidecar(),
+        "Automatic text injection failed. Transcript preserved in history.",
+        Some(json!({
+            "method_attempted": injection_method_attempted(reason),
+            "reason": reason,
+            "text_length": text_length
+        })),
+        true,
+    )
+}
+
 fn validate_recording_start_response(
     expected_session_id: &str,
     response: &Value,
@@ -2535,7 +2576,8 @@ impl IntegrationManager {
                         timing_marks.t3_postprocess_completed = Some(Instant::now());
 
                         // Inject text
-                        let result = inject_text(&text, expected_focus, &injection_config).await;
+                        let mut result =
+                            inject_text(&text, expected_focus, &injection_config).await;
                         timing_marks.t4_injection_completed = Some(Instant::now());
 
                         let pipeline_timings = pipeline_timings_from_marks(&timing_marks);
@@ -2543,12 +2585,45 @@ impl IntegrationManager {
                             log_pipeline_timings(timings);
                         }
 
+                        let mut injection_app_error: Option<AppError> = None;
+                        if let InjectionResult::Failed { error, .. } = result.clone() {
+                            let fallback_reason = match crate::injection::set_clipboard_public(&text)
+                            {
+                                Ok(()) => format!(
+                                    "{}; transcript copied to clipboard for manual paste",
+                                    error
+                                ),
+                                Err(clipboard_error) => format!(
+                                    "{}; clipboard fallback failed: {}; transcript preserved in history",
+                                    error, clipboard_error
+                                ),
+                            };
+
+                            result = InjectionResult::ClipboardOnly {
+                                reason: fallback_reason.clone(),
+                                text_length: text.len(),
+                                timestamp: chrono::Utc::now(),
+                            };
+                            injection_app_error =
+                                Some(injection_failure_app_error(&fallback_reason, text.len()));
+                        }
+
                         match &result {
                             InjectionResult::Injected { text_length, .. } => {
                                 log::info!("Text injected: {} chars", text_length);
                             }
-                            InjectionResult::ClipboardOnly { reason, .. } => {
+                            InjectionResult::ClipboardOnly {
+                                reason,
+                                text_length,
+                                ..
+                            } => {
                                 log::info!("Clipboard-only mode: {}", reason);
+                                if clipboard_only_requires_app_error(reason)
+                                    && injection_app_error.is_none()
+                                {
+                                    injection_app_error =
+                                        Some(injection_failure_app_error(reason, *text_length));
+                                }
                             }
                             InjectionResult::Failed { error, .. } => {
                                 log::error!("Injection failed: {}", error);
@@ -2581,6 +2656,14 @@ impl IntegrationManager {
                                 transcript_complete_event_payload(&transcript_entry),
                                 &event_seq,
                             );
+                            if let Some(app_error) = injection_app_error {
+                                emit_with_shared_seq(
+                                    handle,
+                                    &[EVENT_APP_ERROR],
+                                    app_error_event_payload(&app_error),
+                                    &event_seq,
+                                );
+                            }
                         }
 
                         // Clear context
@@ -4027,6 +4110,67 @@ mod tests {
         );
         assert!(payload.get("session_id").is_none());
         assert!(payload.get("app_error").is_none());
+    }
+
+    #[test]
+    fn test_clipboard_only_requires_app_error_ignores_app_override_mode() {
+        assert!(!clipboard_only_requires_app_error(
+            "App override clipboard-only mode (slack)"
+        ));
+        assert!(clipboard_only_requires_app_error(
+            "Focus changed from Terminal to Browser"
+        ));
+    }
+
+    #[test]
+    fn test_injection_method_attempted_classifies_reasons() {
+        assert_eq!(
+            injection_method_attempted("Focus changed from A to B"),
+            "focus_guard"
+        );
+        assert_eq!(
+            injection_method_attempted("Wayland does not support keystroke injection"),
+            "keystroke_injection"
+        );
+        assert_eq!(
+            injection_method_attempted("Clipboard error: wl-copy failed"),
+            "clipboard"
+        );
+    }
+
+    #[test]
+    fn test_injection_failure_app_error_payload_shape() {
+        let app_error = injection_failure_app_error(
+            "Focus changed from Terminal to Browser",
+            "hello world".len(),
+        );
+
+        assert_eq!(app_error.code, ErrorKind::InjectionFailed.to_sidecar());
+        assert!(app_error.recoverable);
+        assert_eq!(
+            app_error
+                .details
+                .as_ref()
+                .and_then(|d| d.get("method_attempted"))
+                .and_then(Value::as_str),
+            Some("focus_guard")
+        );
+        assert_eq!(
+            app_error
+                .details
+                .as_ref()
+                .and_then(|d| d.get("reason"))
+                .and_then(Value::as_str),
+            Some("Focus changed from Terminal to Browser")
+        );
+        assert_eq!(
+            app_error
+                .details
+                .as_ref()
+                .and_then(|d| d.get("text_length"))
+                .and_then(Value::as_u64),
+            Some(11)
+        );
     }
 
     #[test]
