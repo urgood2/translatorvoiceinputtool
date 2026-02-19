@@ -206,6 +206,33 @@ describe('useTauriEvents', () => {
 
     unmount();
   });
+
+  test('dedupes canonical and legacy state events by shared seq', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    act(() => {
+      emitMockEvent('state:changed', {
+        seq: 77,
+        state: 'recording',
+        enabled: true,
+      });
+      emitMockEvent('state_changed', {
+        seq: 77,
+        state: 'idle',
+        enabled: false,
+      });
+    });
+
+    const currentState = useAppStore.getState();
+    expect(currentState.appState).toBe('recording');
+    expect(currentState.enabled).toBe(true);
+
+    unmount();
+  });
 });
 
 // ============================================================================

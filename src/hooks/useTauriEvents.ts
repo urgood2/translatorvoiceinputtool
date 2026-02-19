@@ -8,6 +8,7 @@
 import { useEffect, useRef } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useAppStore } from '../store/appStore';
+import { createSeqDedupeTracker, type DedupeStreamKey } from '../utils/dedupeTracker';
 import type {
   AudioLevelEvent,
   ErrorEvent,
@@ -47,6 +48,17 @@ const EVENTS = {
 
   // Recording events
   RECORDING_STATUS: 'recording:status',
+} as const;
+
+const STREAM_KEYS: Record<string, DedupeStreamKey> = {
+  STATE: 'state',
+  TRANSCRIPT: 'transcript',
+  TRANSCRIPT_ERROR: 'transcriptError',
+  SIDECAR: 'sidecar',
+  MODEL: 'model',
+  RECORDING: 'recording',
+  AUDIO: 'audio',
+  ERROR: 'error',
 } as const;
 
 function defaultInjectionResult(): InjectionResult {
@@ -137,36 +149,6 @@ function normalizeTranscriptPayload(payload: TranscriptEventPayload): Transcript
   };
 }
 
-function extractSeq(payload: unknown): number | undefined {
-  if (!payload || typeof payload !== 'object') {
-    return undefined;
-  }
-
-  const seq = (payload as { seq?: unknown }).seq;
-  if (typeof seq === 'number' && Number.isFinite(seq)) {
-    return seq;
-  }
-  return undefined;
-}
-
-function shouldProcessWithSeqDedupe(
-  streamKey: string,
-  payload: unknown,
-  lastSeqByStream: Map<string, number>
-): boolean {
-  const seq = extractSeq(payload);
-  if (seq === undefined) {
-    return true;
-  }
-
-  const previous = lastSeqByStream.get(streamKey);
-  if (previous !== undefined && seq <= previous) {
-    return false;
-  }
-  lastSeqByStream.set(streamKey, seq);
-  return true;
-}
-
 function errorMessageFromPayload(payload: ErrorEvent): string {
   if (typeof payload.message === 'string' && payload.message.length > 0) {
     return payload.message;
@@ -207,6 +189,7 @@ export function useTauriEvents(): void {
     if (isSetupRef.current) return;
     isSetupRef.current = true;
     let cancelled = false;
+    const dedupeTracker = createSeqDedupeTracker();
 
     const registerListener = async <T>(
       eventName: string,
@@ -224,14 +207,13 @@ export function useTauriEvents(): void {
 
     const setupListeners = async () => {
       const store = useAppStore.getState();
-      const lastSeqByStream = new Map<string, number>();
 
       const dedupeHandler = <T,>(
-        streamKey: string,
+        streamKey: DedupeStreamKey,
         handler: (payload: T) => void
       ) => {
         return (event: { payload: T }) => {
-          if (!shouldProcessWithSeqDedupe(streamKey, event.payload, lastSeqByStream)) {
+          if (!dedupeTracker.shouldProcess(streamKey, event.payload)) {
             return;
           }
           handler(event.payload);
@@ -241,7 +223,7 @@ export function useTauriEvents(): void {
       // Subscribe to app state changes
       const stateRegistered = await registerListener<StateEvent>(
         EVENTS.STATE_CHANGED,
-        dedupeHandler('state:changed', (payload) => {
+        dedupeHandler(STREAM_KEYS.STATE, (payload) => {
           console.debug('Event: state:changed', payload);
           store._setAppState(payload);
         })
@@ -249,7 +231,7 @@ export function useTauriEvents(): void {
       if (!stateRegistered) return;
       const stateLegacyRegistered = await registerListener<StateEvent>(
         EVENTS.STATE_CHANGED_LEGACY,
-        dedupeHandler('state:changed', (payload) => {
+        dedupeHandler(STREAM_KEYS.STATE, (payload) => {
           console.debug('Event: state_changed', payload);
           store._setAppState(payload);
         })
@@ -259,7 +241,7 @@ export function useTauriEvents(): void {
       // Subscribe to model status changes
       const modelStatusRegistered = await registerListener<ModelStatus>(
         EVENTS.MODEL_STATUS,
-        dedupeHandler('model:status', (payload) => {
+        dedupeHandler(STREAM_KEYS.MODEL, (payload) => {
           console.debug('Event: model:status', payload);
           store._setModelStatus(payload);
         })
@@ -269,7 +251,7 @@ export function useTauriEvents(): void {
       // Subscribe to model download progress
       const modelProgressRegistered = await registerListener<Progress>(
         EVENTS.MODEL_PROGRESS,
-        dedupeHandler('model:progress', (payload) => {
+        dedupeHandler(STREAM_KEYS.MODEL, (payload) => {
           console.debug('Event: model:progress', payload);
           store._setDownloadProgress(payload);
         })
@@ -279,17 +261,17 @@ export function useTauriEvents(): void {
       // Subscribe to audio level updates (during mic test)
       const audioLevelRegistered = await registerListener<AudioLevelEvent>(
         EVENTS.AUDIO_LEVEL,
-        (event) => {
+        dedupeHandler(STREAM_KEYS.AUDIO, (payload) => {
           // Don't log audio levels - too noisy
-          store._setAudioLevel(event.payload);
-        }
+          store._setAudioLevel(payload);
+        })
       );
       if (!audioLevelRegistered) return;
 
       // Subscribe to transcript completions
       const transcriptRegistered = await registerListener<TranscriptEventPayload>(
         EVENTS.TRANSCRIPT_COMPLETE,
-        dedupeHandler('transcript:complete', (payload) => {
+        dedupeHandler(STREAM_KEYS.TRANSCRIPT, (payload) => {
           console.debug('Event: transcript:complete', payload);
           store._addHistoryEntry(normalizeTranscriptPayload(payload));
         })
@@ -297,7 +279,7 @@ export function useTauriEvents(): void {
       if (!transcriptRegistered) return;
       const transcriptLegacyRegistered = await registerListener<TranscriptEventPayload>(
         EVENTS.TRANSCRIPT_COMPLETE_LEGACY,
-        dedupeHandler('transcript:complete', (payload) => {
+        dedupeHandler(STREAM_KEYS.TRANSCRIPT, (payload) => {
           console.debug('Event: transcription:complete', payload);
           store._addHistoryEntry(normalizeTranscriptPayload(payload));
         })
@@ -307,7 +289,7 @@ export function useTauriEvents(): void {
       // Subscribe to error events
       const appErrorRegistered = await registerListener<ErrorEvent>(
         EVENTS.APP_ERROR,
-        dedupeHandler('app:error', (payload) => {
+        dedupeHandler(STREAM_KEYS.ERROR, (payload) => {
           console.error('Event: app:error', payload);
           store._setError(errorMessageFromPayload(payload));
         })
@@ -316,7 +298,7 @@ export function useTauriEvents(): void {
 
       const transcriptErrorRegistered = await registerListener<ErrorEvent>(
         EVENTS.TRANSCRIPT_ERROR,
-        dedupeHandler('transcript:error', (payload) => {
+        dedupeHandler(STREAM_KEYS.TRANSCRIPT_ERROR, (payload) => {
           console.error('Event: transcript:error', payload);
           store._setError(errorMessageFromPayload(payload));
         })
@@ -324,7 +306,7 @@ export function useTauriEvents(): void {
       if (!transcriptErrorRegistered) return;
       const transcriptErrorLegacyRegistered = await registerListener<ErrorEvent>(
         EVENTS.TRANSCRIPT_ERROR_LEGACY,
-        dedupeHandler('transcript:error', (payload) => {
+        dedupeHandler(STREAM_KEYS.TRANSCRIPT_ERROR, (payload) => {
           console.error('Event: transcription:error', payload);
           store._setError(errorMessageFromPayload(payload));
         })
@@ -338,7 +320,7 @@ export function useTauriEvents(): void {
         message?: string;
       }>(
         EVENTS.SIDECAR_STATUS,
-        dedupeHandler('sidecar:status', (payload) => {
+        dedupeHandler(STREAM_KEYS.SIDECAR, (payload) => {
           console.debug('Event: sidecar:status', payload);
           // Could update a dedicated sidecar state slice if needed.
         })
@@ -346,7 +328,7 @@ export function useTauriEvents(): void {
       if (!sidecarRegistered) return;
       const sidecarLegacyRegistered = await registerListener<Record<string, unknown>>(
         EVENTS.SIDECAR_STATUS_LEGACY,
-        dedupeHandler('sidecar:status', (payload) => {
+        dedupeHandler(STREAM_KEYS.SIDECAR, (payload) => {
           console.debug('Event: status:changed', payload);
         })
       );
@@ -355,7 +337,7 @@ export function useTauriEvents(): void {
       // Subscribe to recording status updates (new stream; optional producer).
       const recordingStatusRegistered = await registerListener<Record<string, unknown>>(
         EVENTS.RECORDING_STATUS,
-        dedupeHandler('recording:status', (payload) => {
+        dedupeHandler(STREAM_KEYS.RECORDING, (payload) => {
           console.debug('Event: recording:status', payload);
         })
       );
@@ -372,6 +354,7 @@ export function useTauriEvents(): void {
     return () => {
       console.log('Cleaning up Tauri event listeners');
       cancelled = true;
+      dedupeTracker.reset();
       unlistenersRef.current.forEach((unlisten) => unlisten());
       unlistenersRef.current = [];
       isSetupRef.current = false;
