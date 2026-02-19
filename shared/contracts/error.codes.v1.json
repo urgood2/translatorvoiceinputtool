@@ -1,8 +1,158 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "./error.codes.v1.json",
   "id": "app.error_codes.v1",
   "version": 1,
   "type": "error_code_catalog",
+  "items": [
+    {
+      "type": "error_code",
+      "name": "E_SIDECAR_SPAWN",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_SIDECAR_IPC",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_SIDECAR_CRASH",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_SIDECAR_CIRCUIT_BREAKER",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_MIC_PERMISSION",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_DEVICE_REMOVED",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_NO_AUDIO_DEVICE",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_RECORDING_FAILED",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_TRANSCRIPTION_FAILED",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_TRANSCRIPTION_TIMEOUT",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_MODEL_NOT_READY",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_MODEL_DOWNLOAD",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_DISK_FULL",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_CACHE_CORRUPT",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_NETWORK",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_INJECTION_FAILED",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_OVERLAY_FAILED",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_METHOD_NOT_FOUND",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_LANGUAGE_UNSUPPORTED",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    },
+    {
+      "type": "error_code",
+      "name": "E_INTERNAL",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/code_entry"
+    }
+  ],
+  "$defs": {
+    "code_entry": {
+      "$id": "./error.codes.v1.json#/$defs/code_entry",
+      "type": "object",
+      "required": [
+        "code",
+        "category",
+        "recoverable",
+        "description"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "recoverable": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
   "codes": [
     {
       "code": "E_SIDECAR_SPAWN",

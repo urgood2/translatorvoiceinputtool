@@ -1,4 +1,49 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "./tauri_wire.v1.json",
+  "version": 1,
+  "items": [
+    {
+      "type": "enum_snapshot",
+      "name": "cannot_record_reason",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/cannot_record_reason"
+    },
+    {
+      "type": "tagged_union_snapshot",
+      "name": "display_server",
+      "deprecated_aliases": [],
+      "schema_ref": "#/$defs/display_server"
+    }
+  ],
+  "$defs": {
+    "cannot_record_reason": {
+      "$id": "./tauri_wire.v1.json#/$defs/cannot_record_reason",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "display_server": {
+      "$id": "./tauri_wire.v1.json#/$defs/display_server",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "compositor": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
   "cannot_record_reason": [
     "paused",
     "model_loading",
