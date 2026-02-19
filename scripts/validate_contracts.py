@@ -531,7 +531,9 @@ def validate_tauri_event_payload_examples(repo_root: Path, events_contract: dict
     if not extracted:
         return [f"{fixture_file.relative_to(repo_root)}: no emitMockEvent/fireMockEventWithLog payload examples found"]
 
+    seen_event_names: set[str] = set()
     for line, event_name, payload_expr in extracted:
+        seen_event_names.add(event_name)
         schema = schema_map.get(event_name)
         if schema is None:
             errors.append(f"{fixture_file.relative_to(repo_root)}:{line}: event '{event_name}' not declared in tauri.events contract")
@@ -551,6 +553,36 @@ def validate_tauri_event_payload_examples(repo_root: Path, events_contract: dict
         ):
             errors.append(f"{fixture_file.relative_to(repo_root)}:{line}: {err}")
 
+    for err in validate_legacy_alias_fixture_coverage(events_contract, seen_event_names):
+        errors.append(f"{fixture_file.relative_to(repo_root)}: {err}")
+
+    return errors
+
+
+def validate_legacy_alias_fixture_coverage(
+    events_contract: dict[str, Any],
+    seen_event_names: set[str],
+) -> list[str]:
+    errors: list[str] = []
+    for item in events_contract.get("items", []):
+        if not isinstance(item, dict) or item.get("type") != "event":
+            continue
+        canonical = item.get("name")
+        aliases = item.get("deprecated_aliases")
+        if not isinstance(canonical, str) or not isinstance(aliases, list) or not aliases:
+            continue
+
+        if canonical not in seen_event_names:
+            errors.append(
+                f"missing payload fixture for canonical event '{canonical}' "
+                f"(deprecated aliases: {', '.join(str(a) for a in aliases if isinstance(a, str))})"
+            )
+
+        for alias in aliases:
+            if not isinstance(alias, str):
+                continue
+            if alias not in seen_event_names:
+                errors.append(f"missing payload fixture for deprecated alias event '{alias}' (canonical: '{canonical}')")
     return errors
 
 

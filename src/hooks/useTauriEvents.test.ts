@@ -217,6 +217,37 @@ describe('useTauriEvents', () => {
     unmount();
   });
 
+  test('processes transcription:complete alias payload fixture', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    act(() => {
+      emitMockEvent('transcription:complete', {
+        seq: 900,
+        entry: {
+          id: 'entry-legacy-alias',
+          text: 'Alias payload',
+          raw_text: 'Alias payload',
+          final_text: 'Alias payload',
+          timestamp: '2026-01-01T00:00:06.000Z',
+          audio_duration_ms: 1000,
+          transcription_duration_ms: 210,
+          session_id: 'session-alias-900',
+          injection_result: { status: 'injected' },
+        },
+      });
+    });
+
+    const history = useAppStore.getState().history;
+    expect(history).toHaveLength(1);
+    expect(history[0]?.id).toBe('entry-legacy-alias');
+
+    unmount();
+  });
+
   test('dedupes canonical and legacy state events by shared seq', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
@@ -285,6 +316,12 @@ describe('useTauriEvents', () => {
         state: 'ready',
         restart_count: 0,
       });
+      emitMockEvent('status:changed', {
+        seq: 8,
+        state: 'restarting',
+        restart_count: 1,
+        message: 'legacy status event',
+      });
     });
 
     const state = useAppStore.getState();
@@ -293,6 +330,41 @@ describe('useTauriEvents', () => {
       state: 'ready',
       restart_count: 0,
     });
+
+    unmount();
+  });
+
+  test('processes transcript:error payloads in canonical and legacy shapes', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    act(() => {
+      fireMockEventWithLog('transcript:error', {
+        seq: 601,
+        session_id: 'session-err-1',
+        error: {
+          code: 'E_TRANSCRIPTION_FAILED',
+          message: 'Canonical transcript error',
+          recoverable: true,
+        },
+      });
+      fireMockEventWithLog('transcription:error', {
+        seq: 602,
+        session_id: 'session-err-2',
+        error: 'Legacy transcript error',
+      });
+    });
+
+    const state = useAppStore.getState();
+    expect(state.lastTranscriptError).toMatchObject({
+      seq: 602,
+      session_id: 'session-err-2',
+      error: 'Legacy transcript error',
+    });
+    expect(state.errorDetail).toBe('Legacy transcript error');
 
     unmount();
   });

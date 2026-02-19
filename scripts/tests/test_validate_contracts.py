@@ -50,6 +50,39 @@ listen('sidecar:status', () => {});
         self.assertEqual(len(errors), 1)
         self.assertIn("state", errors[0])
 
+    def test_validate_legacy_alias_fixture_coverage_accepts_complete_pairs(self) -> None:
+        events_contract = {
+            "items": [
+                {
+                    "type": "event",
+                    "name": "state:changed",
+                    "deprecated_aliases": ["state_changed"],
+                },
+                {
+                    "type": "event",
+                    "name": "transcript:complete",
+                    "deprecated_aliases": ["transcription:complete"],
+                },
+            ]
+        }
+        seen = {"state:changed", "state_changed", "transcript:complete", "transcription:complete"}
+        errors = MODULE.validate_legacy_alias_fixture_coverage(events_contract, seen)
+        self.assertEqual(errors, [])
+
+    def test_validate_legacy_alias_fixture_coverage_reports_missing_alias_or_canonical(self) -> None:
+        events_contract = {
+            "items": [
+                {
+                    "type": "event",
+                    "name": "state:changed",
+                    "deprecated_aliases": ["state_changed"],
+                }
+            ]
+        }
+        errors = MODULE.validate_legacy_alias_fixture_coverage(events_contract, {"state:changed"})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("state_changed", errors[0])
+
     def test_extract_event_payload_examples_honors_ignore_marker(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             fixture = Path(tmpdir) / "fixture.test.ts"
