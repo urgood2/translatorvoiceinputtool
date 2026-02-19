@@ -644,6 +644,26 @@ fn is_valid_replacement_origin(origin: &str) -> bool {
             .is_some_and(|preset_name| !preset_name.trim().is_empty())
 }
 
+fn is_valid_replacement_rule_id(id: &str) -> bool {
+    if id.is_empty() || id.len() > 128 {
+        return false;
+    }
+
+    if Uuid::parse_str(id).is_ok() {
+        return true;
+    }
+
+    let mut chars = id.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+
+    chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | ':' | '-'))
+}
+
 fn generate_replacement_rule_id() -> String {
     Uuid::new_v4().to_string()
 }
@@ -851,7 +871,7 @@ fn ensure_replacement_rule_ids(config: &mut Value) {
             if let Value::Object(rule_obj) = rule {
                 let needs_id = !matches!(
                     rule_obj.get("id"),
-                    Some(Value::String(id)) if !id.trim().is_empty()
+                    Some(Value::String(id)) if is_valid_replacement_rule_id(id)
                 );
 
                 if needs_id {
@@ -1463,6 +1483,42 @@ mod tests {
         let reloaded_ids: HashSet<String> =
             reloaded.replacements.iter().map(|r| r.id.clone()).collect();
         assert_eq!(initial_ids, reloaded_ids);
+    }
+
+    #[test]
+    fn test_replacement_rules_with_malformed_non_empty_ids_are_regenerated() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        fs::write(
+            &config_path,
+            r#"{
+                "schema_version": 1,
+                "replacements": [
+                    {"id": "bad id!", "pattern": "BTW", "replacement": "by the way", "enabled": true},
+                    {"id": "legacy-no-kind", "pattern": "ASAP", "replacement": "as soon as possible", "enabled": true},
+                    {"id": "punctuation:period", "pattern": " period", "replacement": ".", "enabled": true}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = load_config_from_path(&config_path);
+        assert_eq!(loaded.replacements.len(), 3);
+
+        // Invalid non-empty ID is regenerated.
+        assert_ne!(loaded.replacements[0].id, "bad id!");
+        assert!(Uuid::parse_str(&loaded.replacements[0].id).is_ok());
+
+        // Valid legacy IDs remain unchanged.
+        assert_eq!(loaded.replacements[1].id, "legacy-no-kind");
+        assert_eq!(loaded.replacements[2].id, "punctuation:period");
+
+        // Generated ID is stable after save/reload.
+        let generated_id = loaded.replacements[0].id.clone();
+        save_config_to_path(&loaded, &config_path).unwrap();
+        let reloaded = load_config_from_path(&config_path);
+        assert_eq!(reloaded.replacements[0].id, generated_id);
     }
 
     #[test]
