@@ -14,6 +14,7 @@ use std::sync::Arc;
 use crate::capabilities::{Capabilities, CapabilityIssue};
 use crate::config::{self, AppConfig, ReplacementRule};
 use crate::history::{TranscriptEntry, TranscriptHistory};
+use crate::integration::SidecarAudioDevice;
 use crate::model_defaults;
 use crate::state::{AppStateManager, CannotRecordReason, StateEvent};
 use crate::IntegrationState;
@@ -213,23 +214,55 @@ pub struct AudioDevice {
 
 /// List available audio input devices.
 #[tauri::command]
-pub async fn list_audio_devices() -> Result<Vec<AudioDevice>, CommandError> {
-    // TODO: Implement via sidecar RPC call to audio.list_devices
-    Err(CommandError::NotImplemented {
-        message: "Audio device listing requires sidecar connection".to_string(),
-    })
+pub async fn list_audio_devices(
+    integration_state: tauri::State<'_, IntegrationState>,
+) -> Result<Vec<AudioDevice>, CommandError> {
+    let manager = integration_state.0.read().await;
+    let devices = manager
+        .list_audio_devices()
+        .await
+        .map_err(|message| CommandError::Audio { message })?;
+
+    Ok(devices
+        .into_iter()
+        .map(
+            |SidecarAudioDevice {
+                 uid,
+                 name,
+                 is_default,
+                 default_sample_rate,
+                 channels,
+             }| AudioDevice {
+                uid,
+                name,
+                is_default,
+                sample_rate: default_sample_rate,
+                channels,
+            },
+        )
+        .collect())
 }
 
 /// Set the audio input device.
 #[tauri::command]
-pub async fn set_audio_device(device_uid: Option<String>) -> Result<String, CommandError> {
-    // Update config
-    let mut config = config::load_config();
-    config.audio.device_uid = device_uid.clone();
-    config::save_config(&config)?;
+pub async fn set_audio_device(
+    integration_state: tauri::State<'_, IntegrationState>,
+    device_uid: Option<String>,
+) -> Result<String, CommandError> {
+    let manager = integration_state.0.read().await;
+    let active_device_uid = manager
+        .set_audio_device(device_uid.clone())
+        .await
+        .map_err(|message| CommandError::Audio { message })?;
 
-    // TODO: Notify sidecar of device change
-    Ok(device_uid.unwrap_or_else(|| "default".to_string()))
+    // Persist configured device selection once sidecar accepts the change.
+    let mut app_config = config::load_config();
+    app_config.audio.device_uid = device_uid.clone();
+    config::save_config(&app_config)?;
+
+    Ok(active_device_uid
+        .or(device_uid)
+        .unwrap_or_else(|| "default".to_string()))
 }
 
 /// Start microphone test (for level visualization).

@@ -178,6 +178,19 @@ struct AudioListResult {
     devices: Vec<AudioDeviceSummary>,
 }
 
+/// Audio device payload returned by sidecar `audio.list_devices`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SidecarAudioDevice {
+    pub uid: String,
+    pub name: String,
+    #[serde(default)]
+    pub is_default: bool,
+    #[serde(default)]
+    pub default_sample_rate: u32,
+    #[serde(default)]
+    pub channels: u32,
+}
+
 fn is_configured_device_available(
     configured_device_uid: Option<&str>,
     devices: &[AudioDeviceSummary],
@@ -1066,6 +1079,55 @@ impl IntegrationManager {
             .await
             .map_err(|e| format!("Failed to start mic test: {}", e))?;
         Ok(())
+    }
+
+    /// List available audio input devices via sidecar.
+    pub async fn list_audio_devices(&self) -> Result<Vec<SidecarAudioDevice>, String> {
+        let client = self.rpc_client.read().await;
+        let client = client
+            .as_ref()
+            .ok_or_else(|| "Sidecar not connected".to_string())?;
+
+        #[derive(Deserialize)]
+        struct ListDevicesResult {
+            #[serde(default)]
+            devices: Vec<SidecarAudioDevice>,
+        }
+
+        let result = client
+            .call::<ListDevicesResult>("audio.list_devices", None)
+            .await
+            .map_err(|e| format!("Failed to list audio devices: {}", e))?;
+
+        Ok(result.devices)
+    }
+
+    /// Set active audio input device via sidecar.
+    pub async fn set_audio_device(
+        &self,
+        device_uid: Option<String>,
+    ) -> Result<Option<String>, String> {
+        let client = self.rpc_client.read().await;
+        let client = client
+            .as_ref()
+            .ok_or_else(|| "Sidecar not connected".to_string())?;
+
+        #[derive(Deserialize)]
+        struct SetDeviceResult {
+            #[serde(default)]
+            active_device_uid: Option<String>,
+        }
+
+        let params = json!({
+            "device_uid": device_uid
+        });
+
+        let result = client
+            .call::<SetDeviceResult>("audio.set_device", Some(params))
+            .await
+            .map_err(|e| format!("Failed to set audio device: {}", e))?;
+
+        Ok(result.active_device_uid)
     }
 
     /// Stop microphone level meter via sidecar.
@@ -2445,6 +2507,30 @@ mod tests {
             .start_mic_test(Some("device-1".to_string()))
             .await
             .expect_err("start_mic_test should fail without sidecar");
+        assert!(error.contains("Sidecar not connected"));
+    }
+
+    #[tokio::test]
+    async fn test_list_audio_devices_requires_sidecar_connection() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+
+        let error = manager
+            .list_audio_devices()
+            .await
+            .expect_err("list_audio_devices should fail without sidecar");
+        assert!(error.contains("Sidecar not connected"));
+    }
+
+    #[tokio::test]
+    async fn test_set_audio_device_requires_sidecar_connection() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+
+        let error = manager
+            .set_audio_device(Some("device-1".to_string()))
+            .await
+            .expect_err("set_audio_device should fail without sidecar");
         assert!(error.contains("Sidecar not connected"));
     }
 
