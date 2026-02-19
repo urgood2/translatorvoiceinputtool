@@ -340,7 +340,9 @@ def extract_listen_event_names_from_text(text: str) -> list[tuple[int, str, str 
     string_constants = parse_string_constants(text)
     results: list[tuple[int, str, str | None]] = []
 
-    listen_re = re.compile(r"\blisten(?:<[^>]+>)?\s*\(\s*([A-Za-z_][A-Za-z0-9_\.]*|[\"'][^\"']+[\"'])")
+    listen_re = re.compile(
+        r"\b(?:listen|registerListener)(?:<[^>]+>)?\s*\(\s*([A-Za-z_][A-Za-z0-9_\.]*|[\"'][^\"']+[\"'])"
+    )
     for match in listen_re.finditer(text):
         expr = match.group(1).strip()
         line = line_number_for_offset(text, match.start())
@@ -379,11 +381,31 @@ def allowed_tauri_event_names(events_contract: dict[str, Any]) -> tuple[set[str]
     return allowed, schema_map
 
 
+def tauri_event_name_maps(events_contract: dict[str, Any]) -> tuple[set[str], dict[str, str]]:
+    canonical_names: set[str] = set()
+    alias_to_canonical: dict[str, str] = {}
+    for item in events_contract.get("items", []):
+        if not isinstance(item, dict) or item.get("type") != "event":
+            continue
+        canonical = item.get("name")
+        if not isinstance(canonical, str):
+            continue
+        canonical_names.add(canonical)
+        aliases = item.get("deprecated_aliases", [])
+        if not isinstance(aliases, list):
+            continue
+        for alias in aliases:
+            if isinstance(alias, str):
+                alias_to_canonical[alias] = canonical
+    return canonical_names, alias_to_canonical
+
+
 def validate_frontend_listener_events(repo_root: Path, events_contract: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     allowed, _ = allowed_tauri_event_names(events_contract)
+    canonical_names, alias_to_canonical = tauri_event_name_maps(events_contract)
 
-    seen_listeners = 0
+    registrations: list[ListenerRegistration] = []
     for pattern in FRONTEND_GLOB_PATTERNS:
         for path in sorted(repo_root.glob(pattern)):
             if not path.is_file():
@@ -395,18 +417,72 @@ def validate_frontend_listener_events(repo_root: Path, events_contract: dict[str
 
             text = path.read_text(encoding="utf-8")
             for line, expr, event_name in extract_listen_event_names_from_text(text):
-                seen_listeners += 1
-                if event_name is None:
-                    # Dynamic listener expression (for example function arg) is not validated here.
-                    continue
-                if event_name not in allowed:
-                    rel = path.relative_to(repo_root)
-                    errors.append(
-                        f"{rel}:{line}: listener '{expr}' resolved to undeclared event '{event_name}'"
+                registrations.append(
+                    ListenerRegistration(
+                        file=path,
+                        line=line,
+                        expression=expr,
+                        event_name=event_name,
                     )
+                )
 
-    if seen_listeners == 0:
+    if not registrations:
+        log("FAIL: no frontend listen(...) registrations found for event-name validation")
         errors.append("no frontend listen(...) registrations found for event-name validation")
+        return errors
+
+    canonical_seen = {r.event_name for r in registrations if isinstance(r.event_name, str) and r.event_name in canonical_names}
+    valid = 0
+    legacy_alias_listeners = 0
+    unresolved = 0
+    failed = 0
+
+    for reg in registrations:
+        rel = reg.file.relative_to(repo_root)
+        location = f"{rel}:{reg.line}"
+
+        if reg.event_name is None:
+            unresolved += 1
+            log(f"WARN: {location}: listener '{reg.expression}' could not be resolved statically")
+            continue
+
+        if reg.event_name not in allowed:
+            failed += 1
+            log(
+                f"FAIL: {location}: listener '{reg.expression}' resolved to undeclared event '{reg.event_name}'"
+            )
+            errors.append(
+                f"{location}: listener '{reg.expression}' resolved to undeclared event '{reg.event_name}'"
+            )
+            continue
+
+        canonical_for_alias = alias_to_canonical.get(reg.event_name)
+        if canonical_for_alias is not None:
+            legacy_alias_listeners += 1
+            valid += 1
+            if canonical_for_alias not in canonical_seen:
+                log(
+                    f"WARN: {location}: listener '{reg.expression}' uses legacy alias "
+                    f"'{reg.event_name}' without canonical listener '{canonical_for_alias}'"
+                )
+            else:
+                log(
+                    f"OK: {location}: listener '{reg.expression}' uses legacy alias "
+                    f"'{reg.event_name}' (canonical listener '{canonical_for_alias}' is present)"
+                )
+            continue
+
+        valid += 1
+        log(f"OK: {location}: listener '{reg.expression}' resolved to '{reg.event_name}'")
+
+    log(
+        "Frontend listener validation summary: "
+        f"{len(registrations)} listeners checked, "
+        f"{valid} valid, "
+        f"{legacy_alias_listeners} using legacy aliases, "
+        f"{unresolved} unresolved, "
+        f"{failed} failed"
+    )
     return errors
 
 

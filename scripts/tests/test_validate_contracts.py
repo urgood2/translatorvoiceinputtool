@@ -1,8 +1,10 @@
 import importlib.util
+import io
 import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 
@@ -28,6 +30,7 @@ const EVENTS = {
 } as const;
 
 listen(EVENTS.STATE_CHANGED, () => {});
+registerListener(EVENTS.SIDECAR_STATUS, () => {});
 listen('sidecar:status', () => {});
         """.strip()
         rows = MODULE.extract_listen_event_names_from_text(text)
@@ -193,6 +196,43 @@ listen('sidecar:status', () => {});
             self.assertEqual(len(errors), 1)
             self.assertIn("state:changd", errors[0])
             self.assertIn("undeclared event", errors[0])
+
+    def test_validate_frontend_listener_events_warns_alias_without_canonical_listener(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            hook_file = root / "src" / "hooks" / "useTauriEvents.ts"
+            hook_file.parent.mkdir(parents=True, exist_ok=True)
+            hook_file.write_text(
+                "\n".join(
+                    [
+                        "import { listen } from '@tauri-apps/api/event';",
+                        "void listen('state_changed', () => {});",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            events_contract = {
+                "items": [
+                    {
+                        "type": "event",
+                        "name": "state:changed",
+                        "deprecated_aliases": ["state_changed"],
+                        "payload_schema": {"type": "object"},
+                    }
+                ]
+            }
+
+            stream = io.StringIO()
+            with redirect_stdout(stream):
+                errors = MODULE.validate_frontend_listener_events(root, events_contract)
+            self.assertEqual(errors, [])
+
+            output = stream.getvalue()
+            self.assertIn("WARN:", output)
+            self.assertIn("uses legacy alias", output)
+            self.assertIn("without canonical listener 'state:changed'", output)
+            self.assertIn("1 listeners checked, 1 valid, 1 using legacy aliases", output)
 
     def test_validate_tauri_event_payload_examples_reports_schema_violation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
