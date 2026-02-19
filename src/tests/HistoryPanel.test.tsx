@@ -37,74 +37,89 @@ const mockEntries: TranscriptEntry[] = [
 
 describe('HistoryPanel', () => {
   it('renders empty state when no entries', () => {
-    render(<HistoryPanel entries={[]} onCopy={vi.fn()} />);
+    render(<HistoryPanel entries={[]} onCopy={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.getByText('No recent transcripts')).toBeDefined();
     expect(screen.getByText('Press the hotkey to start recording.')).toBeDefined();
   });
 
   it('renders transcript entries', () => {
-    render(<HistoryPanel entries={mockEntries} onCopy={vi.fn()} />);
+    render(<HistoryPanel entries={mockEntries} onCopy={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.getByText('This is a test transcript.')).toBeDefined();
     expect(screen.getByText('Another transcript that was clipboard only.')).toBeDefined();
     expect(screen.getByText('Failed transcript.')).toBeDefined();
   });
 
   it('shows entry count', () => {
-    render(<HistoryPanel entries={mockEntries} onCopy={vi.fn()} />);
+    render(<HistoryPanel entries={mockEntries} onCopy={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.getByText('3 entries')).toBeDefined();
   });
 
   it('shows singular "entry" for one entry', () => {
-    render(<HistoryPanel entries={[mockEntries[0]]} onCopy={vi.fn()} />);
+    render(<HistoryPanel entries={[mockEntries[0]]} onCopy={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.getByText('1 entry')).toBeDefined();
   });
 
-  it('calls onCopy when copy button clicked', () => {
-    const onCopy = vi.fn();
+  it('calls onCopy when copy button clicked', async () => {
+    const onCopy = vi.fn().mockResolvedValue(undefined);
     render(<HistoryPanel entries={[mockEntries[0]]} onCopy={onCopy} />);
 
     const copyButton = screen.getByText('Copy');
     fireEvent.click(copyButton);
 
     expect(onCopy).toHaveBeenCalledWith('1');
+    expect(await screen.findByText('✓ Copied')).toBeDefined();
   });
 
   it('shows copied feedback after clicking copy', async () => {
-    render(<HistoryPanel entries={[mockEntries[0]]} onCopy={vi.fn()} />);
+    render(<HistoryPanel entries={[mockEntries[0]]} onCopy={vi.fn().mockResolvedValue(undefined)} />);
 
     const copyButton = screen.getByText('Copy');
     fireEvent.click(copyButton);
 
-    expect(screen.getByText('✓ Copied')).toBeDefined();
+    expect(await screen.findByText('✓ Copied')).toBeDefined();
+  });
+
+  it('shows error feedback when copy fails', async () => {
+    render(
+      <HistoryPanel
+        entries={[mockEntries[0]]}
+        onCopy={vi.fn().mockRejectedValue(new Error('copy failed'))}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Copy'));
+
+    expect(await screen.findByText('copy failed')).toBeDefined();
+    expect(screen.queryByText('✓ Copied')).toBeNull();
   });
 
   it('displays injected badge correctly', () => {
-    render(<HistoryPanel entries={[mockEntries[0]]} onCopy={vi.fn()} />);
+    render(<HistoryPanel entries={[mockEntries[0]]} onCopy={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.getByText('✅')).toBeDefined();
     expect(screen.getByText('Injected')).toBeDefined();
   });
 
   it('displays clipboard-only badge correctly', () => {
-    render(<HistoryPanel entries={[mockEntries[1]]} onCopy={vi.fn()} />);
+    render(<HistoryPanel entries={[mockEntries[1]]} onCopy={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.getByText('📋')).toBeDefined();
     expect(screen.getByText('Clipboard')).toBeDefined();
   });
 
   it('displays error badge correctly', () => {
-    render(<HistoryPanel entries={[mockEntries[2]]} onCopy={vi.fn()} />);
+    render(<HistoryPanel entries={[mockEntries[2]]} onCopy={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.getByText('⚠️')).toBeDefined();
     expect(screen.getByText('Error')).toBeDefined();
   });
 
   it('displays relative timestamps', () => {
-    render(<HistoryPanel entries={mockEntries} onCopy={vi.fn()} />);
+    render(<HistoryPanel entries={mockEntries} onCopy={vi.fn().mockResolvedValue(undefined)} />);
     // Check for relative time format
     expect(screen.getByText('1 min ago')).toBeDefined();
     expect(screen.getByText('1 hr ago')).toBeDefined();
   });
 
   it('displays audio duration', () => {
-    render(<HistoryPanel entries={[mockEntries[0]]} onCopy={vi.fn()} />);
+    render(<HistoryPanel entries={[mockEntries[0]]} onCopy={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.getByText('3.5s audio')).toBeDefined();
   });
 
@@ -113,18 +128,22 @@ describe('HistoryPanel', () => {
       ...mockEntries[0],
       audio_duration_ms: 125000, // 2m 5s
     };
-    render(<HistoryPanel entries={[longEntry]} onCopy={vi.fn()} />);
+    render(<HistoryPanel entries={[longEntry]} onCopy={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.getByText('2m 5s audio')).toBeDefined();
   });
 
   it('has tooltip for clipboard-only reason', () => {
-    const { container } = render(<HistoryPanel entries={[mockEntries[1]]} onCopy={vi.fn()} />);
+    const { container } = render(
+      <HistoryPanel entries={[mockEntries[1]]} onCopy={vi.fn().mockResolvedValue(undefined)} />
+    );
     const badge = container.querySelector('[title="Focus changed"]');
     expect(badge).toBeDefined();
   });
 
   it('has tooltip for error message', () => {
-    const { container } = render(<HistoryPanel entries={[mockEntries[2]]} onCopy={vi.fn()} />);
+    const { container } = render(
+      <HistoryPanel entries={[mockEntries[2]]} onCopy={vi.fn().mockResolvedValue(undefined)} />
+    );
     const badge = container.querySelector('[title="Permission denied"]');
     expect(badge).toBeDefined();
   });

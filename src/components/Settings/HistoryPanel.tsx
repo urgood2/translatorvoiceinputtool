@@ -14,7 +14,7 @@ import type { TranscriptEntry, InjectionResult } from '../../types';
 
 interface HistoryPanelProps {
   entries: TranscriptEntry[];
-  onCopy: (id: string) => void;
+  onCopy: (id: string) => Promise<void>;
 }
 
 /** Format a timestamp as relative time. */
@@ -62,17 +62,24 @@ function getInjectionBadge(result: InjectionResult): { icon: string; label: stri
 
 interface TranscriptCardProps {
   entry: TranscriptEntry;
-  onCopy: () => void;
+  onCopy: () => Promise<void>;
 }
 
 function TranscriptCard({ entry, onCopy }: TranscriptCardProps) {
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const badge = getInjectionBadge(entry.injection_result);
 
-  const handleCopy = () => {
-    onCopy();
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    setCopyError(null);
+    try {
+      await onCopy();
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e) {
+      setCopied(false);
+      setCopyError(e instanceof Error ? e.message : 'Failed to copy transcript');
+    }
   };
 
   return (
@@ -109,6 +116,10 @@ function TranscriptCard({ entry, onCopy }: TranscriptCardProps) {
           {copied ? '✓ Copied' : 'Copy'}
         </button>
       </div>
+
+      {copyError && (
+        <p className="mt-2 text-sm text-red-600 dark:text-red-400">{copyError}</p>
+      )}
     </div>
   );
 }

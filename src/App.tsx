@@ -187,9 +187,7 @@ function App() {
         <div className="bg-gray-800 rounded-lg p-6">
           <HistoryPanel
             entries={history.slice(0, 5)}
-            onCopy={(id) => {
-              void copyTranscript(id);
-            }}
+            onCopy={copyTranscript}
           />
         </div>
 
