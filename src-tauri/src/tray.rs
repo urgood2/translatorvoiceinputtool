@@ -500,7 +500,10 @@ fn load_png_icon(bytes: &[u8]) -> Result<Image<'static>, String> {
     Ok(Image::new_owned(rgba, info.width, info.height))
 }
 
-fn build_system_tray_menu(app: &AppHandle, state: &TrayMenuState) -> Result<SystemTrayMenu, tauri::Error> {
+fn build_system_tray_menu(
+    app: &AppHandle,
+    state: &TrayMenuState,
+) -> Result<SystemTrayMenu, tauri::Error> {
     let menu = Menu::new(app)?;
     for entry in build_tray_menu(state) {
         append_entry_to_menu(app, &menu, &entry)?;
@@ -517,9 +520,8 @@ fn setup_tray(app: &AppHandle) -> Result<TrayIcon, tauri::Error> {
     let menu = build_system_tray_menu(app, &tray_menu_state)?;
 
     // Load the initial icon.
-    let icon = load_png_icon(get_icon_for_state(initial_state, initial_enabled)).map_err(|e| {
-        tauri::Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-    })?;
+    let icon = load_png_icon(get_icon_for_state(initial_state, initial_enabled))
+        .map_err(|e| tauri::Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
 
     // Build the tray icon.
     let tray = TrayIconBuilder::new()

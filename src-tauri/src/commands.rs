@@ -842,8 +842,7 @@ pub async fn load_preset(
 fn map_start_recording_error(message: String) -> CommandError {
     let lower = message.to_ascii_lowercase();
 
-    if lower.contains("sidecar") || lower.contains("recording.start") || lower.contains("session")
-    {
+    if lower.contains("sidecar") || lower.contains("recording.start") || lower.contains("session") {
         return CommandError::SidecarIpc { message };
     }
     if lower.contains("model not ready") {
@@ -851,6 +850,25 @@ fn map_start_recording_error(message: String) -> CommandError {
     }
     if lower.contains("disabled")
         || lower.contains("already in progress")
+        || lower.contains("transcribing")
+    {
+        return CommandError::Audio { message };
+    }
+
+    CommandError::Internal { message }
+}
+
+fn map_stop_recording_error(message: String) -> CommandError {
+    let lower = message.to_ascii_lowercase();
+
+    if lower.contains("sidecar")
+        || lower.contains("recording.stop")
+        || lower.contains("recording.cancel")
+    {
+        return CommandError::SidecarIpc { message };
+    }
+    if lower.contains("no recording in progress")
+        || lower.contains("not recording")
         || lower.contains("transcribing")
     {
         return CommandError::Audio { message };
@@ -869,6 +887,18 @@ pub async fn start_recording(
         .start_recording()
         .await
         .map_err(map_start_recording_error)
+}
+
+/// Stop the current recording session and begin transcription.
+#[tauri::command]
+pub async fn stop_recording(
+    integration_state: tauri::State<'_, IntegrationState>,
+) -> Result<(), CommandError> {
+    let manager = integration_state.0.read().await;
+    manager
+        .stop_recording()
+        .await
+        .map_err(map_stop_recording_error)
 }
 
 // ============================================================================
@@ -1024,6 +1054,19 @@ mod tests {
     fn test_map_start_recording_error_model_path() {
         let mapped = map_start_recording_error("Model not ready".to_string());
         assert!(matches!(mapped, CommandError::Model { .. }));
+    }
+
+    #[test]
+    fn test_map_stop_recording_error_sidecar_path() {
+        let mapped =
+            map_stop_recording_error("Failed to call recording.stop RPC: disconnected".to_string());
+        assert!(matches!(mapped, CommandError::SidecarIpc { .. }));
+    }
+
+    #[test]
+    fn test_map_stop_recording_error_no_session_path() {
+        let mapped = map_stop_recording_error("No recording in progress".to_string());
+        assert!(matches!(mapped, CommandError::Audio { .. }));
     }
 
     #[test]

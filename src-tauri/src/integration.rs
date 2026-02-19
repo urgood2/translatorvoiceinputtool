@@ -31,9 +31,7 @@ use crate::hotkey::{HotkeyAction, HotkeyManager, RecordingAction};
 use crate::injection::{inject_text, InjectionConfig, InjectionResult};
 use crate::ipc::{NotificationEvent, RpcClient, RpcError};
 use crate::model_defaults;
-use crate::recording::{
-    RecordingController, RecordingEvent, StopResult, TranscriptionResult,
-};
+use crate::recording::{RecordingController, RecordingEvent, StopResult, TranscriptionResult};
 use crate::sidecar::SidecarManager;
 use crate::state::{AppState, AppStateManager, CannotRecordReason, StateEvent};
 use crate::supervisor::{
@@ -1737,6 +1735,17 @@ impl IntegrationManager {
         .await
     }
 
+    /// Unified recording stop entry point for commands/UI/hotkey/tray/overlay.
+    pub async fn stop_recording(&self) -> Result<(), String> {
+        Self::stop_recording_flow(
+            &self.recording_controller,
+            &self.rpc_client,
+            &self.recording_context,
+            &self.current_session_id,
+        )
+        .await
+    }
+
     /// Start microphone level meter via sidecar.
     pub async fn start_mic_test(&self, device_uid: Option<String>) -> Result<(), String> {
         let client = self.rpc_client.read().await;
@@ -2273,13 +2282,16 @@ impl IntegrationManager {
                             }
                         } else if let Some(RecordingAction::Stop) = recording_action {
                             // Toggle mode: stop recording
-                            Self::stop_recording_flow(
+                            if let Err(err) = Self::stop_recording_flow(
                                 &recording_controller,
                                 &rpc_client,
                                 &recording_context,
                                 &current_session_id,
                             )
-                            .await;
+                            .await
+                            {
+                                log::warn!("Failed to stop recording: {}", err);
+                            }
                         }
                     }
                     HotkeyAction::PrimaryUp => {
@@ -2287,13 +2299,16 @@ impl IntegrationManager {
                         if config.hotkeys.mode == HotkeyMode::Hold {
                             let hk = hotkey_manager.read().await;
                             if let Some(RecordingAction::Stop) = hk.handle_primary_up() {
-                                Self::stop_recording_flow(
+                                if let Err(err) = Self::stop_recording_flow(
                                     &recording_controller,
                                     &rpc_client,
                                     &recording_context,
                                     &current_session_id,
                                 )
-                                .await;
+                                .await
+                                {
+                                    log::warn!("Failed to stop recording: {}", err);
+                                }
                             }
                         }
                     }
@@ -2319,23 +2334,23 @@ impl IntegrationManager {
         rpc_client: &Arc<RwLock<Option<RpcClient>>>,
         recording_context: &Arc<RwLock<Option<RecordingContext>>>,
         current_session_id: &Arc<RwLock<Option<String>>>,
-    ) {
-        match recording_controller.stop().await {
-            Ok(result) => {
-                log::info!("Recording stopped: {:?}", result);
-                Self::complete_stop_recording_flow(
-                    result,
-                    rpc_client,
-                    recording_context,
-                    current_session_id,
-                )
-                .await;
-            }
-            Err(e) => {
-                log::warn!("Failed to stop recording: {}", e);
-                *current_session_id.write().await = None;
-            }
+    ) -> Result<(), String> {
+        if current_session_id.read().await.is_none() {
+            return Err("No recording in progress".to_string());
         }
+
+        let result = recording_controller
+            .stop()
+            .await
+            .map_err(|e| format!("Failed to stop recording: {}", e))?;
+        log::info!("Recording stopped: {:?}", result);
+        Self::complete_stop_recording_flow(
+            result,
+            rpc_client,
+            recording_context,
+            current_session_id,
+        )
+        .await
     }
 
     async fn enforce_runtime_limits(
@@ -2348,13 +2363,16 @@ impl IntegrationManager {
         if state_manager.get() == AppState::Recording {
             if let Some(stop_result) = recording_controller.check_max_duration().await {
                 log::info!("Max recording duration reached; stopping recording");
-                Self::complete_stop_recording_flow(
+                if let Err(err) = Self::complete_stop_recording_flow(
                     stop_result,
                     rpc_client,
                     recording_context,
                     current_session_id,
                 )
-                .await;
+                .await
+                {
+                    log::warn!("Failed to complete max-duration stop flow: {}", err);
+                }
             }
             return;
         }
@@ -2389,7 +2407,7 @@ impl IntegrationManager {
         rpc_client: &Arc<RwLock<Option<RpcClient>>>,
         recording_context: &Arc<RwLock<Option<RecordingContext>>>,
         current_session_id: &Arc<RwLock<Option<String>>>,
-    ) {
+    ) -> Result<(), String> {
         let stop_rpc_method = stop_rpc_method_for_result(&result);
         let too_short = matches!(result, StopResult::TooShort);
 
@@ -2408,40 +2426,42 @@ impl IntegrationManager {
                 }
             };
 
-            if let Some(session_id) = session_id {
-                let params = json!({
-                    "session_id": session_id
-                });
-                if stop_rpc_method == "recording.stop" {
-                    #[derive(Deserialize)]
-                    struct StopResultPayload {
-                        audio_duration_ms: u64,
-                    }
+            let session_id =
+                session_id.ok_or_else(|| "No recording context for active session".to_string())?;
+            let params = json!({
+                "session_id": session_id
+            });
+            if stop_rpc_method == "recording.stop" {
+                #[derive(Deserialize)]
+                struct StopResultPayload {
+                    audio_duration_ms: u64,
+                }
 
-                    let stop_result: Result<StopResultPayload, _> =
-                        client.call(stop_rpc_method, Some(params)).await;
+                let stop_result: Result<StopResultPayload, _> =
+                    client.call(stop_rpc_method, Some(params)).await;
 
-                    let stop_rpc_returned_at = Instant::now();
-                    let mut ctx = recording_context.write().await;
-                    if let Some(ctx) = ctx.as_mut() {
-                        if ctx.session_id == session_id {
-                            ctx.timing_marks.t1_stop_rpc_returned = Some(stop_rpc_returned_at);
-                            if let Ok(stop_payload) = &stop_result {
-                                ctx.audio_duration_ms = Some(stop_payload.audio_duration_ms);
-                            }
+                let stop_rpc_returned_at = Instant::now();
+                let mut ctx = recording_context.write().await;
+                if let Some(ctx) = ctx.as_mut() {
+                    if ctx.session_id == session_id {
+                        ctx.timing_marks.t1_stop_rpc_returned = Some(stop_rpc_returned_at);
+                        if let Ok(stop_payload) = &stop_result {
+                            ctx.audio_duration_ms = Some(stop_payload.audio_duration_ms);
                         }
                     }
-                    if let Err(err) = stop_result {
-                        log::warn!("Failed to call {} RPC: {}", stop_rpc_method, err);
-                    }
-                } else {
-                    let cancel_result: Result<Value, _> =
-                        client.call(stop_rpc_method, Some(params)).await;
-                    if let Err(err) = cancel_result {
-                        log::warn!("Failed to call {} RPC: {}", stop_rpc_method, err);
-                    }
+                }
+                if let Err(err) = stop_result {
+                    return Err(format!("Failed to call {} RPC: {}", stop_rpc_method, err));
+                }
+            } else {
+                let cancel_result: Result<Value, _> =
+                    client.call(stop_rpc_method, Some(params)).await;
+                if let Err(err) = cancel_result {
+                    return Err(format!("Failed to call {} RPC: {}", stop_rpc_method, err));
                 }
             }
+        } else if !too_short {
+            return Err("Sidecar not connected".to_string());
         }
 
         // Too-short recordings don't produce transcription and should clear session context.
@@ -2449,6 +2469,8 @@ impl IntegrationManager {
             *current_session_id.write().await = None;
             *recording_context.write().await = None;
         }
+
+        Ok(())
     }
 
     /// Start state change event loop (for tray updates).
@@ -4567,7 +4589,25 @@ mod tests {
         assert!(error.contains("Sidecar not connected"));
         assert_eq!(state_manager.get(), AppState::Idle);
         assert!(manager.current_session_id.read().await.is_none());
-        assert!(manager.recording_controller.current_session_id().await.is_none());
+        assert!(manager
+            .recording_controller
+            .current_session_id()
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stop_recording_requires_active_session() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(Arc::clone(&state_manager));
+
+        let error = manager
+            .stop_recording()
+            .await
+            .expect_err("stop_recording should fail without an active session");
+        assert!(error.contains("No recording in progress"));
+        assert_eq!(state_manager.get(), AppState::Idle);
+        assert!(manager.current_session_id.read().await.is_none());
     }
 
     #[tokio::test]

@@ -97,6 +97,7 @@ pub fn run() {
             commands::load_preset,
             // Control commands
             commands::start_recording,
+            commands::stop_recording,
             commands::toggle_enabled,
             commands::is_enabled,
             commands::set_enabled,
