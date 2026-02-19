@@ -698,20 +698,45 @@ fn log_pipeline_timings(timings: &TranscriptTimings) {
     );
 }
 
+trait AppEventBroadcaster {
+    fn emit_all(&self, event: &str, payload: Value);
+}
+
+impl AppEventBroadcaster for AppHandle {
+    fn emit_all(&self, event: &str, payload: Value) {
+        let _ = self.emit(event, payload);
+    }
+}
+
+fn emit_with_existing_seq_to_all_windows<B: AppEventBroadcaster>(
+    broadcaster: &B,
+    event: &str,
+    payload: Value,
+    seq: u64,
+) {
+    broadcaster.emit_all(event, add_seq_to_payload(payload, seq));
+}
+
+fn emit_with_shared_seq_for_broadcaster<B: AppEventBroadcaster>(
+    broadcaster: &B,
+    events: &[&str],
+    payload: Value,
+    seq_counter: &Arc<AtomicU64>,
+) -> u64 {
+    let seq = next_seq(seq_counter);
+    for event in events {
+        emit_with_existing_seq_to_all_windows(broadcaster, event, payload.clone(), seq);
+    }
+    seq
+}
+
 fn emit_with_shared_seq(
     handle: &AppHandle,
     events: &[&str],
     payload: Value,
     seq_counter: &Arc<AtomicU64>,
 ) -> u64 {
-    let seq = next_seq(seq_counter);
-    let payload_with_seq = add_seq_to_payload(payload, seq);
-
-    for event in events {
-        let _ = handle.emit(*event, payload_with_seq.clone());
-    }
-
-    seq
+    emit_with_shared_seq_for_broadcaster(handle, events, payload, seq_counter)
 }
 
 fn next_seq(seq_counter: &Arc<AtomicU64>) -> u64 {
@@ -2623,11 +2648,18 @@ impl IntegrationManager {
                         // Emit canonical sidecar status and keep forwarding legacy raw payload.
                         if let Some(ref handle) = app_handle {
                             let seq = next_seq(&event_seq);
-                            let canonical_payload =
-                                add_seq_to_payload(canonical_sidecar_payload, seq);
-                            let legacy_payload = add_seq_to_payload(event.params, seq);
-                            let _ = handle.emit(EVENT_SIDECAR_STATUS, canonical_payload);
-                            let _ = handle.emit(EVENT_STATUS_CHANGED, legacy_payload);
+                            emit_with_existing_seq_to_all_windows(
+                                handle,
+                                EVENT_SIDECAR_STATUS,
+                                canonical_sidecar_payload,
+                                seq,
+                            );
+                            emit_with_existing_seq_to_all_windows(
+                                handle,
+                                EVENT_STATUS_CHANGED,
+                                event.params,
+                                seq,
+                            );
                         }
                     }
                     "event.audio_level" => {
@@ -2774,7 +2806,68 @@ impl PingCallback for RpcPinger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    #[derive(Clone, Default)]
+    struct MockBroadcaster {
+        windows: Arc<Vec<String>>,
+        received: Arc<Mutex<HashMap<String, Vec<(String, Value)>>>>,
+    }
+
+    impl MockBroadcaster {
+        fn with_windows(labels: &[&str]) -> Self {
+            let mut initial = HashMap::new();
+            for label in labels {
+                initial.insert((*label).to_string(), Vec::new());
+            }
+            Self {
+                windows: Arc::new(labels.iter().map(|label| (*label).to_string()).collect()),
+                received: Arc::new(Mutex::new(initial)),
+            }
+        }
+
+        fn received_event_names(&self, label: &str) -> Vec<String> {
+            self.received
+                .lock()
+                .expect("mock receiver lock poisoned")
+                .get(label)
+                .map(|events| {
+                    events
+                        .iter()
+                        .map(|(event, _payload)| event.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+
+        fn received_payloads(&self, label: &str) -> Vec<Value> {
+            self.received
+                .lock()
+                .expect("mock receiver lock poisoned")
+                .get(label)
+                .map(|events| {
+                    events
+                        .iter()
+                        .map(|(_event, payload)| payload.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+    }
+
+    impl AppEventBroadcaster for MockBroadcaster {
+        fn emit_all(&self, event: &str, payload: Value) {
+            let mut guard = self.received.lock().expect("mock receiver lock poisoned");
+            for label in self.windows.iter() {
+                guard
+                    .entry(label.clone())
+                    .or_default()
+                    .push((event.to_string(), payload.clone()));
+            }
+        }
+    }
 
     #[test]
     fn test_add_seq_to_object_payload() {
@@ -2799,6 +2892,130 @@ mod tests {
         let second = next_seq(&counter);
         assert_eq!(first, 1);
         assert_eq!(second, 2);
+    }
+
+    #[test]
+    fn test_emit_all_main_only() {
+        let broadcaster = MockBroadcaster::with_windows(&["main"]);
+        let seq_counter = Arc::new(AtomicU64::new(1));
+
+        println!("[EMIT_TEST] Emitting state:changed to all windows...");
+        emit_with_shared_seq_for_broadcaster(
+            &broadcaster,
+            &[EVENT_STATE_CHANGED],
+            json!({ "state": "idle" }),
+            &seq_counter,
+        );
+
+        let main_events = broadcaster.received_event_names("main");
+        println!(
+            "[EMIT_TEST] Main window received: {}",
+            if main_events.is_empty() { "✗" } else { "✓" }
+        );
+        assert_eq!(main_events, vec![EVENT_STATE_CHANGED.to_string()]);
+    }
+
+    #[test]
+    fn test_emit_all_main_and_overlay() {
+        let broadcaster = MockBroadcaster::with_windows(&["main", "overlay"]);
+        let seq_counter = Arc::new(AtomicU64::new(1));
+
+        println!("[EMIT_TEST] Emitting state:changed to all windows...");
+        emit_with_shared_seq_for_broadcaster(
+            &broadcaster,
+            &[EVENT_STATE_CHANGED],
+            json!({ "state": "idle" }),
+            &seq_counter,
+        );
+
+        let main_events = broadcaster.received_event_names("main");
+        let overlay_events = broadcaster.received_event_names("overlay");
+        println!(
+            "[EMIT_TEST] Main window received: {}",
+            if main_events.is_empty() { "✗" } else { "✓" }
+        );
+        println!(
+            "[EMIT_TEST] Overlay window received: {}",
+            if overlay_events.is_empty() {
+                "✗"
+            } else {
+                "✓"
+            }
+        );
+
+        assert_eq!(main_events, vec![EVENT_STATE_CHANGED.to_string()]);
+        assert_eq!(overlay_events, vec![EVENT_STATE_CHANGED.to_string()]);
+    }
+
+    #[test]
+    fn test_emit_all_overlay_disabled() {
+        let broadcaster = MockBroadcaster::with_windows(&["main"]);
+        let seq_counter = Arc::new(AtomicU64::new(1));
+
+        println!("[EMIT_TEST] Emitting recording:status to all windows...");
+        emit_with_shared_seq_for_broadcaster(
+            &broadcaster,
+            &[EVENT_RECORDING_STATUS],
+            json!({ "phase": "idle" }),
+            &seq_counter,
+        );
+
+        let main_events = broadcaster.received_event_names("main");
+        let overlay_events = broadcaster.received_event_names("overlay");
+        println!(
+            "[EMIT_TEST] Main window received: {}",
+            if main_events.is_empty() { "✗" } else { "✓" }
+        );
+        println!("[EMIT_TEST] Overlay window received: N/A (disabled)");
+
+        assert_eq!(main_events, vec![EVENT_RECORDING_STATUS.to_string()]);
+        assert!(overlay_events.is_empty());
+    }
+
+    #[test]
+    fn test_emit_all_covers_all_event_types() {
+        let broadcaster = MockBroadcaster::with_windows(&["main", "overlay", "future"]);
+        let seq_counter = Arc::new(AtomicU64::new(1));
+
+        let events = [
+            EVENT_STATE_CHANGED,
+            EVENT_RECORDING_STATUS,
+            EVENT_MODEL_STATUS,
+            EVENT_MODEL_PROGRESS,
+            EVENT_TRANSCRIPT_COMPLETE,
+            EVENT_TRANSCRIPT_ERROR,
+            EVENT_APP_ERROR,
+            EVENT_SIDECAR_STATUS,
+        ];
+        emit_with_shared_seq_for_broadcaster(
+            &broadcaster,
+            &events,
+            json!({ "sample": true }),
+            &seq_counter,
+        );
+
+        for label in ["main", "overlay", "future"] {
+            let received = broadcaster.received_event_names(label);
+            assert_eq!(
+                received,
+                events
+                    .iter()
+                    .map(|event| (*event).to_string())
+                    .collect::<Vec<_>>()
+            );
+            let payloads = broadcaster.received_payloads(label);
+            assert_eq!(payloads.len(), events.len());
+            for payload in payloads {
+                assert_eq!(payload.get("seq").and_then(Value::as_u64), Some(1));
+            }
+        }
+    }
+
+    #[test]
+    fn test_no_window_specific_emit_calls_for_app_events() {
+        let source = include_str!("integration.rs");
+        let forbidden = [".emit", "_to("].concat();
+        assert!(!source.contains(&forbidden));
     }
 
     #[test]
