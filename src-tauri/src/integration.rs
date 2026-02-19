@@ -276,6 +276,24 @@ fn model_status_to_event_fields(status: ModelStatus) -> (String, Option<String>)
     }
 }
 
+fn model_status_event_payload(
+    status: ModelStatus,
+    model_id: Option<String>,
+    revision: Option<String>,
+    cache_path: Option<String>,
+    progress: Option<ModelStatusProgress>,
+) -> ModelStatusPayload {
+    let (status_name, error) = model_status_to_event_fields(status);
+    ModelStatusPayload {
+        model_id: resolve_model_id(model_id),
+        status: status_name,
+        revision,
+        cache_path,
+        progress,
+        error,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct AudioDeviceSummary {
     uid: String,
@@ -1268,15 +1286,8 @@ impl IntegrationManager {
         progress: Option<ModelStatusProgress>,
     ) {
         if let Some(ref handle) = app_handle {
-            let (status_name, error) = model_status_to_event_fields(status);
-            let payload = ModelStatusPayload {
-                model_id: resolve_model_id(model_id),
-                status: status_name,
-                revision,
-                cache_path,
-                progress,
-                error,
-            };
+            let payload =
+                model_status_event_payload(status, model_id, revision, cache_path, progress);
 
             emit_with_shared_seq(handle, &[EVENT_MODEL_STATUS], json!(payload), seq_counter);
         }
@@ -3027,6 +3038,57 @@ mod tests {
         let (status, error) = model_status_to_event_fields(ModelStatus::Error("boom".to_string()));
         assert_eq!(status, "error");
         assert_eq!(error, Some("boom".to_string()));
+    }
+
+    #[test]
+    fn test_model_status_event_payload_includes_explicit_model_metadata() {
+        let progress = ModelStatusProgress {
+            current: 10,
+            total: Some(100),
+            unit: "bytes".to_string(),
+        };
+
+        let payload = model_status_event_payload(
+            ModelStatus::Loading,
+            Some("custom/model".to_string()),
+            Some("r1".to_string()),
+            Some("/tmp/model-cache".to_string()),
+            Some(progress.clone()),
+        );
+
+        assert_eq!(payload.model_id, "custom/model");
+        assert_eq!(payload.status, "loading");
+        assert_eq!(payload.revision.as_deref(), Some("r1"));
+        assert_eq!(payload.cache_path.as_deref(), Some("/tmp/model-cache"));
+        assert_eq!(payload.progress.as_ref().map(|p| p.current), Some(progress.current));
+        assert_eq!(payload.progress.as_ref().and_then(|p| p.total), progress.total);
+        assert_eq!(
+            payload.progress.as_ref().map(|p| p.unit.as_str()),
+            Some(progress.unit.as_str())
+        );
+        assert!(payload.error.is_none());
+    }
+
+    #[test]
+    fn test_model_status_event_payload_falls_back_to_configured_model_id() {
+        let payload = model_status_event_payload(ModelStatus::Ready, None, None, None, None);
+        assert_eq!(payload.model_id, configured_model_id());
+        assert_eq!(payload.status, "ready");
+        assert!(payload.error.is_none());
+    }
+
+    #[test]
+    fn test_model_status_event_payload_maps_error() {
+        let payload = model_status_event_payload(
+            ModelStatus::Error("download failed".to_string()),
+            Some("custom/model".to_string()),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(payload.model_id, "custom/model");
+        assert_eq!(payload.status, "error");
+        assert_eq!(payload.error.as_deref(), Some("download failed"));
     }
 
     #[test]
