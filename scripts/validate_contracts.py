@@ -52,6 +52,7 @@ FRONTEND_GLOB_PATTERNS = ("src/**/*.ts", "src/**/*.tsx")
 EXCLUDED_FRONTEND_PATH_PARTS = {"tests"}
 EXAMPLES_PATH = REPO_ROOT / "shared" / "ipc" / "examples" / "IPC_V1_EXAMPLES.jsonl"
 EVENT_PAYLOAD_EXAMPLES_PATH = REPO_ROOT / "src" / "hooks" / "useTauriEvents.test.ts"
+EVENT_PAYLOAD_IGNORE_MARKER = "contract-validate-ignore"
 
 METHOD_NAME_RE = re.compile(r"([a-z]+\.[a-z_]+)")
 
@@ -493,6 +494,21 @@ def extract_event_payload_examples_from_test_file(path: Path) -> list[tuple[int,
     examples: list[tuple[int, str, str]] = []
 
     for match in pattern.finditer(text):
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        line_end = text.find("\n", line_start)
+        if line_end == -1:
+            line_end = len(text)
+        call_line = text[line_start:line_end]
+        before_call = call_line[: max(0, match.start() - line_start)]
+        if EVENT_PAYLOAD_IGNORE_MARKER in before_call:
+            continue
+
+        prev_line_end = max(0, line_start - 1)
+        prev_line_start = text.rfind("\n", 0, prev_line_end) + 1
+        prev_line = text[prev_line_start:prev_line_end].strip()
+        if EVENT_PAYLOAD_IGNORE_MARKER in prev_line:
+            continue
+
         event_name = match.group(3)
         brace_start = match.end() - 1
         try:

@@ -155,6 +155,7 @@ describe('useTauriEvents', () => {
     };
 
     act(() => {
+      // contract-validate-ignore: this case intentionally exercises legacy transcript payload shape
       emitMockEvent('transcript:complete', {
         session_id: 'session-123',
         text: 'Legacy payload',
@@ -228,11 +229,13 @@ describe('useTauriEvents', () => {
         seq: 77,
         state: 'recording',
         enabled: true,
+        timestamp: '2026-01-01T00:00:00.000Z',
       });
       emitMockEvent('state_changed', {
         seq: 77,
         state: 'idle',
         enabled: false,
+        timestamp: '2026-01-01T00:00:01.000Z',
       });
     });
 
@@ -352,6 +355,7 @@ describe('useTauriEvents', () => {
         seq: 100,
         state: 'recording',
         enabled: true,
+        timestamp: '2026-01-01T00:00:02.000Z',
       });
       fireMockEventWithLog('transcript:complete', {
         seq: 1,
@@ -360,7 +364,7 @@ describe('useTauriEvents', () => {
           text: 'independent',
           raw_text: 'independent',
           final_text: 'independent',
-          timestamp: new Date().toISOString(),
+          timestamp: '2026-01-01T00:00:03.000Z',
           audio_duration_ms: 1200,
           transcription_duration_ms: 333,
           injection_result: { status: 'injected' as const },
@@ -387,6 +391,7 @@ describe('useTauriEvents', () => {
         seq: 50,
         state: 'recording',
         enabled: true,
+        timestamp: '2026-01-01T00:00:04.000Z',
       });
     });
     expect(useAppStore.getState().appState).toBe('recording');
@@ -402,6 +407,7 @@ describe('useTauriEvents', () => {
         seq: 50,
         state: 'idle',
         enabled: true,
+        timestamp: '2026-01-01T00:00:05.000Z',
       });
     });
     expect(useAppStore.getState().appState).toBe('idle');
@@ -447,6 +453,7 @@ describe('useTauriEvents', () => {
     });
 
     act(() => {
+      // contract-validate-ignore: this case intentionally exercises legacy app:error payload shape
       fireMockEventWithLog('app:error', {
         seq: 501,
         message: 'Legacy error shape',

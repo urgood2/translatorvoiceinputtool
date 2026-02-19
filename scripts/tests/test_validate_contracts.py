@@ -50,6 +50,24 @@ listen('sidecar:status', () => {});
         self.assertEqual(len(errors), 1)
         self.assertIn("state", errors[0])
 
+    def test_extract_event_payload_examples_honors_ignore_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fixture = Path(tmpdir) / "fixture.test.ts"
+            fixture.write_text(
+                "\n".join(
+                    [
+                        "emitMockEvent('state:changed', { seq: 1, state: 'idle', enabled: true });",
+                        "// contract-validate-ignore: legacy shape",
+                        "emitMockEvent('transcript:complete', { text: 'legacy' });",
+                        "fireMockEventWithLog('app:error', { seq: 2, error: { code: 'E', message: 'x', recoverable: false } });",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            rows = MODULE.extract_event_payload_examples_from_test_file(fixture)
+            names = [name for _line, name, _payload in rows]
+            self.assertEqual(names, ["state:changed", "app:error"])
+
     def test_validate_generated_files_detects_drift(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
