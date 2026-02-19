@@ -2358,6 +2358,18 @@ mod tests {
                 expected: "cpu".to_string(),
             },
             Case {
+                name: "device_cpu_wins_over_preferred_auto",
+                device: Some("cpu"),
+                preferred_device: Some("auto"),
+                expected: "cpu".to_string(),
+            },
+            Case {
+                name: "device_cpu_wins_over_preferred_cpu",
+                device: Some("cpu"),
+                preferred_device: Some("cpu"),
+                expected: "cpu".to_string(),
+            },
+            Case {
                 name: "model_absent_defaults_to_auto",
                 device: None,
                 preferred_device: None,
