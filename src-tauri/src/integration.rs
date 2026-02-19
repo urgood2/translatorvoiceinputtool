@@ -1709,7 +1709,6 @@ impl IntegrationManager {
 
         // Transition to loading state
         let _ = self.state_manager.transition(AppState::LoadingModel);
-        self.emit_tray_update(AppState::LoadingModel);
 
         let params = json!({
             "model_id": model_id,
@@ -1731,14 +1730,12 @@ impl IntegrationManager {
                 self.recording_controller.set_model_ready(true).await;
                 // Transition to idle
                 let _ = self.state_manager.transition(AppState::Idle);
-                self.emit_tray_update(AppState::Idle);
                 Ok(())
             }
             Err(e) => {
                 log::error!("ASR initialization failed: {}", e);
                 self.state_manager
                     .transition_to_error(format!("Model initialization failed: {}", e));
-                self.emit_tray_update(AppState::Error);
                 Err(format!("ASR initialization failed: {}", e))
             }
         }
@@ -2691,29 +2688,6 @@ impl IntegrationManager {
 
             log::info!("Notification loop ended");
         });
-    }
-
-    /// Emit tray update event.
-    fn emit_tray_update(&self, state: AppState) {
-        if let Some(ref handle) = self.app_handle {
-            let icon = match state {
-                AppState::Idle => "tray-idle",
-                AppState::Recording => "tray-recording",
-                AppState::Transcribing => "tray-transcribing",
-                AppState::LoadingModel => "tray-loading",
-                AppState::Error => "tray-error",
-            };
-
-            emit_with_shared_seq(
-                handle,
-                &[EVENT_TRAY_UPDATE],
-                json!({
-                    "icon": icon,
-                    "state": state,
-                }),
-                &self.event_seq,
-            );
-        }
     }
 
     /// Shutdown all components.
