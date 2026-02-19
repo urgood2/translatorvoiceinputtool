@@ -132,6 +132,7 @@ export interface AppStoreActions {
   // Diagnostics
   generateDiagnostics: () => Promise<DiagnosticsReport>;
   getRecentLogs: (count?: number) => Promise<string[]>;
+  restartSidecar: () => Promise<void>;
 
   // Toggle enabled
   toggleEnabled: () => Promise<void>;
@@ -729,6 +730,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
       return logs;
     } catch (error) {
       console.error('Failed to get recent logs:', error);
+      throw error;
+    }
+  },
+
+  restartSidecar: async () => {
+    try {
+      await invoke('restart_sidecar');
+    } catch (error) {
+      console.error('Failed to restart sidecar:', error);
       throw error;
     }
   },

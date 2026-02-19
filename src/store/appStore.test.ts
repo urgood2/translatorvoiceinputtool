@@ -447,6 +447,17 @@ describe('Model Actions', () => {
     expect(invoke).toHaveBeenCalledWith('purge_model_cache');
     expect(useAppStore.getState().modelStatus).toEqual(status);
   });
+
+  test('restartSidecar invokes restart command', async () => {
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'restart_sidecar') return undefined;
+      return undefined;
+    });
+
+    await useAppStore.getState().restartSidecar();
+
+    expect(invoke).toHaveBeenCalledWith('restart_sidecar');
+  });
 });
 
 // ============================================================================

@@ -1,6 +1,8 @@
 import { useCallback, useState } from 'react';
 import { useAppStore } from '../../store';
-import type { AppState } from '../../types';
+import type { AppState, TranscriptEntry } from '../../types';
+import { ModelBadge } from './ModelBadge';
+import { SidecarBadge } from './SidecarBadge';
 
 type BadgeConfig = {
   label: string;
@@ -28,13 +30,13 @@ function stateBadgeConfig(appState: AppState, enabled: boolean): BadgeConfig {
       return { label: 'Error', dotClass: 'bg-orange-400', animate: false };
     case 'idle':
     default:
-      return { label: 'Ready', dotClass: 'bg-emerald-400', animate: false };
+      return { label: 'Idle', dotClass: 'bg-emerald-400', animate: false };
   }
 }
 
 function formatMode(mode?: string): string {
   if (mode === 'toggle') return 'Toggle';
-  return 'Hold';
+  return 'Push-to-Talk';
 }
 
 function truncatePreview(text: string, maxChars = 140): string {
@@ -43,6 +45,37 @@ function truncatePreview(text: string, maxChars = 140): string {
     return trimmed;
   }
   return `${trimmed.slice(0, maxChars - 3)}...`;
+}
+
+function formatTranscriptTimestamp(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return 'Unknown time';
+  }
+
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 60_000) return 'Just now';
+  if (diffMs < 60 * 60_000) return `${Math.floor(diffMs / 60_000)}m ago`;
+  if (diffMs < 24 * 60 * 60_000) return `${Math.floor(diffMs / (60 * 60_000))}h ago`;
+  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function formatAudioDuration(audioDurationMs: number): string {
+  if (audioDurationMs < 1000) return `${audioDurationMs}ms`;
+  return `${(audioDurationMs / 1000).toFixed(1)}s`;
+}
+
+function injectionStatusLabel(entry: TranscriptEntry): string {
+  switch (entry.injection_result.status) {
+    case 'injected':
+      return 'Injected';
+    case 'clipboard_only':
+      return 'Clipboard';
+    case 'error':
+      return 'Injection Error';
+    default:
+      return 'Unknown';
+  }
 }
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
@@ -57,29 +90,33 @@ function SectionCard({ title, children }: { title: string; children: React.React
 export function StatusDashboard() {
   const appState = useAppStore((state) => state.appState);
   const enabled = useAppStore((state) => state.enabled);
+  const errorDetail = useAppStore((state) => state.errorDetail);
   const config = useAppStore((state) => state.config);
   const history = useAppStore((state) => state.history);
-  const modelStatus = useAppStore((state) => state.modelStatus);
-  const sidecarStatus = useAppStore((state) => state.sidecarStatus);
   const startRecording = useAppStore((state) => state.startRecording);
   const stopRecording = useAppStore((state) => state.stopRecording);
   const cancelRecording = useAppStore((state) => state.cancelRecording);
   const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'cancel' | null>(null);
 
   const badge = stateBadgeConfig(appState, enabled);
-  const hotkey = config?.hotkeys.primary ?? 'Not configured';
+  const hotkey = config?.hotkeys.primary?.trim() ?? '';
+  const hasHotkey = hotkey.length > 0;
   const mode = formatMode(config?.hotkeys.mode);
 
-  const lastTranscript = history[0]?.text;
-  const transcriptPreview = lastTranscript
-    ? truncatePreview(lastTranscript)
-    : 'No transcript available yet.';
+  const latestTranscript = history[0];
+  const transcriptPreview = latestTranscript
+    ? truncatePreview(latestTranscript.text, 100)
+    : 'No transcripts yet.';
+  const transcriptTimestamp = latestTranscript
+    ? formatTranscriptTimestamp(latestTranscript.timestamp)
+    : null;
+  const transcriptAudio = latestTranscript
+    ? formatAudioDuration(latestTranscript.audio_duration_ms)
+    : null;
+  const transcriptInjection = latestTranscript
+    ? injectionStatusLabel(latestTranscript)
+    : null;
 
-  const modelName = modelStatus?.model_id ?? config?.model?.model_id ?? 'Default';
-  const modelState = modelStatus?.status ?? 'unknown';
-
-  const sidecarState = sidecarStatus?.state ?? 'unknown';
-  const restartCount = sidecarStatus?.restart_count ?? 0;
   const canStart = enabled && appState === 'idle' && pendingAction === null;
   const canStop = appState === 'recording' && pendingAction === null;
   const canCancel = appState === 'recording' && pendingAction === null;
@@ -145,44 +182,46 @@ export function StatusDashboard() {
             </button>
           )}
         </div>
+        {appState === 'error' && errorDetail ? (
+          <p className="mt-3 text-xs text-orange-200" data-testid="app-state-error-detail">
+            {errorDetail}
+          </p>
+        ) : null}
       </SectionCard>
 
       <SectionCard title="Hotkey">
         <div className="space-y-1 text-sm text-gray-200">
-          <p>
-            <span className="text-gray-400">Primary:</span>{' '}
-            <code className="rounded bg-gray-700 px-1.5 py-0.5 text-xs text-sky-300">{hotkey}</code>
-          </p>
-          <p>
-            <span className="text-gray-400">Mode:</span> {mode}
-          </p>
+          {hasHotkey ? (
+            <p>
+              <span className="text-gray-400">Hotkey:</span>{' '}
+              <code className="rounded bg-gray-700 px-1.5 py-0.5 text-xs text-sky-300">{hotkey}</code>{' '}
+              <span className="text-gray-300">({mode})</span>
+            </p>
+          ) : (
+            <p>
+              <span className="text-gray-400">Hotkey:</span>{' '}
+              <span className="text-amber-300">No hotkey configured.</span>{' '}
+              <span className="text-gray-400">Configure it in Settings.</span>
+            </p>
+          )}
         </div>
       </SectionCard>
 
       <SectionCard title="Last Transcript">
         <p className="text-sm leading-relaxed text-gray-100">{transcriptPreview}</p>
+        {latestTranscript ? (
+          <p className="mt-2 text-xs text-gray-400">
+            {transcriptTimestamp} · {transcriptAudio} · {transcriptInjection}
+          </p>
+        ) : null}
       </SectionCard>
 
       <SectionCard title="Model">
-        <div className="space-y-1 text-sm text-gray-200">
-          <p>
-            <span className="text-gray-400">Name:</span> {modelName}
-          </p>
-          <p>
-            <span className="text-gray-400">Status:</span> {modelState}
-          </p>
-        </div>
+        <ModelBadge />
       </SectionCard>
 
       <SectionCard title="Sidecar">
-        <div className="space-y-1 text-sm text-gray-200">
-          <p>
-            <span className="text-gray-400">State:</span> {sidecarState}
-          </p>
-          <p>
-            <span className="text-gray-400">Restarts:</span> {restartCount}
-          </p>
-        </div>
+        <SidecarBadge />
       </SectionCard>
     </div>
   );
