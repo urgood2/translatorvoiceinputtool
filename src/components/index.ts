@@ -3,6 +3,7 @@
  */
 
 export { StatusIndicator } from './StatusIndicator';
+export { StatusDashboard } from './Status';
 export { HistoryPanel } from './Settings/HistoryPanel';
 export { MicrophoneSelect } from './Settings/MicrophoneSelect';
 export { HotkeyConfig } from './Settings/HotkeyConfig';
