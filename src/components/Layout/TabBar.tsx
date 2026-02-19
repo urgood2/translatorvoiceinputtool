@@ -85,7 +85,7 @@ export function TabBar({ tabs, activeTab, onTabChange }: TabBarProps) {
           >
             <span className="truncate">{tab.label}</span>
             {typeof tab.badge === 'number' && tab.badge > 0 ? (
-              <span className="rounded-full bg-sky-500/20 px-1.5 py-0.5 text-xs font-semibold text-sky-200">
+              <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-sky-500 px-1 text-[11px] font-semibold text-white">
                 {tab.badge}
               </span>
             ) : null}

@@ -14,6 +14,7 @@ import {
   selectDevices,
   selectHistory,
   selectConfig,
+  selectReplacementBadgeCount,
 } from './appStore';
 import {
   setMockInvokeHandler,
@@ -115,6 +116,52 @@ describe('Selectors', () => {
     const config = createMockConfig();
     useAppStore.setState({ config });
     expect(selectConfig(useAppStore.getState())).toEqual(config);
+  });
+
+  test('selectReplacementBadgeCount counts enabled rules and enabled presets', () => {
+    const config = createMockConfig();
+    useAppStore.setState({
+      config: {
+        ...config,
+        replacements: [
+          {
+            id: 'user-enabled',
+            enabled: true,
+            kind: 'literal',
+            pattern: 'alpha',
+            replacement: 'a',
+            word_boundary: true,
+            case_sensitive: false,
+            origin: 'user',
+          },
+          {
+            id: 'user-disabled',
+            enabled: false,
+            kind: 'literal',
+            pattern: 'beta',
+            replacement: 'b',
+            word_boundary: true,
+            case_sensitive: false,
+            origin: 'user',
+          },
+          {
+            id: 'preset-enabled',
+            enabled: true,
+            kind: 'literal',
+            pattern: 'gamma',
+            replacement: 'g',
+            word_boundary: true,
+            case_sensitive: false,
+            origin: 'preset:medical',
+          },
+        ],
+        presets: {
+          enabled_presets: ['medical'],
+        },
+      },
+    });
+
+    expect(selectReplacementBadgeCount(useAppStore.getState())).toBe(3);
   });
 });
 

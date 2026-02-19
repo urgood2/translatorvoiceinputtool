@@ -844,3 +844,17 @@ export const selectDevices = (state: AppStore) => state.devices;
 export const selectHistory = (state: AppStore) => state.history;
 export const selectConfig = (state: AppStore) => state.config;
 export const selectCapabilities = (state: AppStore) => state.capabilities;
+export const selectReplacementBadgeCount = (state: AppStore) => {
+  const replacements = state.config?.replacements ?? [];
+  const enabledRules = replacements.filter((rule) => rule.enabled).length;
+  const derivedEnabledPresetIds = new Set(
+    replacements
+      .map((rule) => rule.origin)
+      .filter((origin): origin is `preset:${string}` => typeof origin === 'string' && origin.startsWith('preset:'))
+      .map((origin) => origin.slice('preset:'.length))
+  );
+  const configuredPresetCount = state.config?.presets.enabled_presets.length ?? 0;
+  const enabledPresets = Math.max(configuredPresetCount, derivedEnabledPresetIds.size);
+
+  return enabledRules + enabledPresets;
+};

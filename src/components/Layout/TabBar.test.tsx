@@ -54,4 +54,19 @@ describe('TabBar', () => {
     fireEvent.keyDown(settingsTab, { key: ' ' });
     expect(onTabChange).toHaveBeenCalledWith('settings');
   });
+
+  it('hides badge when badge value is zero', () => {
+    render(
+      <TabBar
+        tabs={[
+          { id: 'status', label: 'Status' },
+          { id: 'replacements', label: 'Replacements', badge: 0 },
+        ]}
+        activeTab="status"
+        onTabChange={() => {}}
+      />
+    );
+
+    expect(screen.queryByText('0')).toBeNull();
+  });
 });

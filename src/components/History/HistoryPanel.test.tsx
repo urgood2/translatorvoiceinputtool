@@ -3,9 +3,10 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
-import { HistoryPanel } from '../components/Settings/HistoryPanel';
-import type { TranscriptEntry } from '../types';
+import { useState } from 'react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { HistoryPanel } from './HistoryPanel';
+import type { TranscriptEntry } from '../../types';
 
 // Mock entries for testing
 const mockEntries: TranscriptEntry[] = [
@@ -44,8 +45,9 @@ const mockEntries: TranscriptEntry[] = [
 describe('HistoryPanel', () => {
   it('renders empty state when no entries', () => {
     render(<HistoryPanel entries={[]} onCopy={vi.fn().mockResolvedValue(undefined)} />);
-    expect(screen.getByText('No recent transcripts')).toBeDefined();
+    expect(screen.getByText('No transcripts yet')).toBeDefined();
     expect(screen.getByText('Press the hotkey to start recording.')).toBeDefined();
+    expect(screen.getByTestId('history-clear-all-button')).toBeDisabled();
   });
 
   it('renders transcript entries', () => {
@@ -53,6 +55,7 @@ describe('HistoryPanel', () => {
     expect(screen.getByText('This is a test transcript.')).toBeDefined();
     expect(screen.getByText('Another transcript that was clipboard only.')).toBeDefined();
     expect(screen.getByText('Failed transcript.')).toBeDefined();
+    expect(screen.getByTestId('history-scroll-region')).toBeDefined();
   });
 
   it('renders legacy entries without additive fields', () => {
@@ -80,15 +83,29 @@ describe('HistoryPanel', () => {
       raw_text: 'Original raw text',
       language: 'en',
       confidence: 0.93,
-      session_id: 'session-123',
+      session_id: 'session-1234567890',
+      timings: {
+        ipc_ms: 12,
+        transcribe_ms: 230,
+        postprocess_ms: 17,
+        inject_ms: 9,
+        total_ms: 268,
+      },
     };
 
     render(<HistoryPanel entries={[enrichedEntry]} onCopy={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.getByText('Final text used for display')).toBeDefined();
-    expect(screen.getByText('Raw: Original raw text')).toBeDefined();
+    expect(screen.getByTestId('history-entry-toggle-1')).toBeDefined();
+    fireEvent.click(screen.getByTestId('history-entry-toggle-1'));
+    expect(screen.getByText('Original raw text')).toBeDefined();
     expect(screen.getByText('Language: en')).toBeDefined();
     expect(screen.getByText('Confidence: 93%')).toBeDefined();
-    expect(screen.getByText('Session: session-123')).toBeDefined();
+    expect(screen.getByTestId('history-entry-session-1').textContent).toContain('Session: session-');
+    expect(screen.getByText('IPC: 12ms')).toBeDefined();
+    expect(screen.getByText('Transcribe: 230ms')).toBeDefined();
+    expect(screen.getByText('Post: 17ms')).toBeDefined();
+    expect(screen.getByText('Inject: 9ms')).toBeDefined();
+    expect(screen.getByText('Total: 268ms')).toBeDefined();
   });
 
   it('shows entry count', () => {
@@ -188,5 +205,146 @@ describe('HistoryPanel', () => {
     );
     const badge = container.querySelector('[title="Permission denied"]');
     expect(badge).toBeDefined();
+  });
+
+  it('filters entries by text after debounce and shows match summary', () => {
+    vi.useFakeTimers();
+    try {
+      render(<HistoryPanel entries={mockEntries} onCopy={vi.fn().mockResolvedValue(undefined)} />);
+
+      fireEvent.change(screen.getByTestId('history-search-input'), { target: { value: 'clipboard' } });
+
+      expect(screen.getByText('Failed transcript.')).toBeDefined();
+
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+
+      expect(screen.getByText('Another transcript that was clipboard only.')).toBeDefined();
+      expect(screen.queryByText('This is a test transcript.')).toBeNull();
+      expect(screen.getByText('Showing 1 of 3 entries')).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('matches search query against language field', () => {
+    vi.useFakeTimers();
+    try {
+      const languageEntries: TranscriptEntry[] = [
+        {
+          ...mockEntries[0],
+          id: 'lang-fr',
+          text: 'Bonjour transcript',
+          raw_text: 'Bonjour transcript',
+          final_text: 'Bonjour transcript',
+          language: 'fr',
+        },
+        {
+          ...mockEntries[1],
+          id: 'lang-en',
+          text: 'Hello transcript',
+          raw_text: 'Hello transcript',
+          final_text: 'Hello transcript',
+          language: 'en',
+        },
+      ];
+
+      render(<HistoryPanel entries={languageEntries} onCopy={vi.fn().mockResolvedValue(undefined)} />);
+      fireEvent.change(screen.getByTestId('history-search-input'), { target: { value: 'fr' } });
+
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+
+      expect(screen.getByText('Bonjour transcript')).toBeDefined();
+      expect(screen.queryByText('Hello transcript')).toBeNull();
+      expect(screen.getByText('Showing 1 of 2 entries')).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows no-match state and clear button resets search', () => {
+    vi.useFakeTimers();
+    try {
+      render(<HistoryPanel entries={mockEntries} onCopy={vi.fn().mockResolvedValue(undefined)} />);
+
+      fireEvent.change(screen.getByTestId('history-search-input'), { target: { value: 'no-hit-term' } });
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+
+      expect(screen.getByText('No matching transcripts')).toBeDefined();
+      expect(screen.getByText('Showing 0 of 3 entries')).toBeDefined();
+      expect(screen.getByTestId('history-search-clear')).toBeDefined();
+
+      fireEvent.click(screen.getByTestId('history-search-clear'));
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+
+      expect(screen.queryByText('No matching transcripts')).toBeNull();
+      expect(screen.getByText('3 entries')).toBeDefined();
+      expect(screen.queryByTestId('history-search-clear')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('opens confirmation dialog and cancels clear-all', () => {
+    const onClearAll = vi.fn().mockResolvedValue(undefined);
+    render(
+      <HistoryPanel
+        entries={mockEntries}
+        onCopy={vi.fn().mockResolvedValue(undefined)}
+        onClearAll={onClearAll}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('history-clear-all-button'));
+    expect(screen.getByRole('dialog')).toBeDefined();
+    expect(screen.getByText('Clear all transcript history?')).toBeDefined();
+
+    fireEvent.click(screen.getByTestId('history-clear-cancel'));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(onClearAll).not.toHaveBeenCalled();
+  });
+
+  it('confirms clear-all and calls handler', async () => {
+    const onClearAll = vi.fn().mockResolvedValue(undefined);
+    render(
+      <HistoryPanel
+        entries={mockEntries}
+        onCopy={vi.fn().mockResolvedValue(undefined)}
+        onClearAll={onClearAll}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('history-clear-all-button'));
+    fireEvent.click(screen.getByTestId('history-clear-confirm'));
+
+    expect(onClearAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows empty placeholder after successful clear', async () => {
+    function Harness() {
+      const [entries, setEntries] = useState(mockEntries);
+      return (
+        <HistoryPanel
+          entries={entries}
+          onCopy={vi.fn().mockResolvedValue(undefined)}
+          onClearAll={async () => {
+            setEntries([]);
+          }}
+        />
+      );
+    }
+
+    render(<Harness />);
+    fireEvent.click(screen.getByTestId('history-clear-all-button'));
+    fireEvent.click(screen.getByTestId('history-clear-confirm'));
+
+    expect(await screen.findByText('No transcripts yet')).toBeDefined();
   });
 });

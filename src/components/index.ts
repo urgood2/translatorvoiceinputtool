@@ -6,7 +6,7 @@ export { StatusIndicator } from './StatusIndicator';
 export { StatusDashboard } from './Status';
 export { TabBar } from './Layout/TabBar';
 export { TabPanel } from './Layout/TabPanel';
-export { HistoryPanel } from './Settings/HistoryPanel';
+export { HistoryPanel } from './History/HistoryPanel';
 export { MicrophoneSelect } from './Settings/MicrophoneSelect';
 export { HotkeyConfig } from './Settings/HotkeyConfig';
 export { InjectionSettings } from './Settings/InjectionSettings';

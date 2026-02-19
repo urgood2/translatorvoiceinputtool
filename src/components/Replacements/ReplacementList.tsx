@@ -20,6 +20,13 @@ interface ReplacementListProps {
   isLoading?: boolean;
 }
 
+function isPresetOrigin(origin: ReplacementRule['origin'] | undefined): boolean {
+  if (!origin) {
+    return false;
+  }
+  return origin === 'preset' || origin.startsWith('preset:');
+}
+
 type ImportedRule = Omit<ReplacementRule, 'id' | 'origin'>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -111,7 +118,7 @@ function RuleRow({
   isFirst: boolean;
   isLast: boolean;
 }) {
-  const isPreset = rule.origin === 'preset';
+  const isPreset = isPresetOrigin(rule.origin);
 
   return (
     <div
@@ -234,7 +241,7 @@ export function ReplacementList({
   const [isAdding, setIsAdding] = useState(false);
 
   // Filter user rules (not preset)
-  const userRules = rules.filter((r) => r.origin !== 'preset');
+  const userRules = rules.filter((r) => !isPresetOrigin(r.origin));
   const existingPatterns = userRules.map((r) => r.pattern);
 
   const handleToggle = useCallback((id: string) => {
@@ -254,7 +261,7 @@ export function ReplacementList({
 
     const userRuleIndexes = rules
       .map((rule, index) => ({ rule, index }))
-      .filter(({ rule }) => rule.origin !== 'preset')
+      .filter(({ rule }) => !isPresetOrigin(rule.origin))
       .map(({ index }) => index);
 
     const currentIndex = userRuleIndexes[userIndex];
@@ -272,7 +279,7 @@ export function ReplacementList({
   const handleMoveDown = useCallback((userIndex: number) => {
     const userRuleIndexes = rules
       .map((rule, index) => ({ rule, index }))
-      .filter(({ rule }) => rule.origin !== 'preset')
+      .filter(({ rule }) => !isPresetOrigin(rule.origin))
       .map(({ index }) => index);
 
     if (userIndex >= userRuleIndexes.length - 1) return;

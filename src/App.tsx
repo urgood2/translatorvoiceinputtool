@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { useAppStore, selectAppState } from './store';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useAppStore, selectAppState, selectReplacementBadgeCount } from './store';
 import { useTauriEvents } from './hooks';
 import {
   SelfCheck,
@@ -10,8 +10,10 @@ import {
   StatusDashboard,
   TabBar,
   TabPanel,
+  ReplacementList,
+  PresetsPanel,
 } from './components';
-import type { DiagnosticsReport } from './types';
+import type { DiagnosticsReport, ReplacementRule } from './types';
 
 type AppTab = 'status' | 'history' | 'replacements' | 'settings';
 
@@ -21,6 +23,7 @@ function App() {
 
   // Get store state and actions
   const appState = useAppStore(selectAppState);
+  const replacementsBadgeCount = useAppStore(selectReplacementBadgeCount);
   const enabled = useAppStore((state) => state.enabled);
   const errorDetail = useAppStore((state) => state.errorDetail);
   const isInitialized = useAppStore((state) => state.isInitialized);
@@ -33,6 +36,7 @@ function App() {
   const selfCheckResult = useAppStore((state) => state.selfCheckResult);
   const config = useAppStore((state) => state.config);
   const capabilities = useAppStore((state) => state.capabilities);
+  const presets = useAppStore((state) => state.presets);
 
   const initialize = useAppStore((state) => state.initialize);
   const refreshDevices = useAppStore((state) => state.refreshDevices);
@@ -41,14 +45,18 @@ function App() {
   const updateAudioConfig = useAppStore((state) => state.updateAudioConfig);
   const updateHotkeyConfig = useAppStore((state) => state.updateHotkeyConfig);
   const updateInjectionConfig = useAppStore((state) => state.updateInjectionConfig);
+  const setReplacementRules = useAppStore((state) => state.setReplacementRules);
+  const loadPreset = useAppStore((state) => state.loadPreset);
   const startMicTest = useAppStore((state) => state.startMicTest);
   const stopMicTest = useAppStore((state) => state.stopMicTest);
   const copyTranscript = useAppStore((state) => state.copyTranscript);
+  const clearHistory = useAppStore((state) => state.clearHistory);
 
   const [isSelfCheckLoading, setIsSelfCheckLoading] = useState(false);
   const [isDiagnosticsLoading, setIsDiagnosticsLoading] = useState(false);
   const [diagnosticsReport, setDiagnosticsReport] = useState<DiagnosticsReport | null>(null);
   const [activeTab, setActiveTab] = useState<AppTab>('status');
+  const [presetRulesById, setPresetRulesById] = useState<Map<string, ReplacementRule[]>>(new Map());
 
   // Initialize store on mount
   useEffect(() => {
@@ -102,6 +110,66 @@ function App() {
     }
   }, []);
 
+  const handleReplacementRulesChange = useCallback((rules: ReplacementRule[]) => {
+    void setReplacementRules(rules).catch((error) => {
+      console.error('Failed to update replacement rules from tab', error);
+    });
+  }, [setReplacementRules]);
+
+  const enabledPresetIds = useMemo(() => {
+    if (!config) {
+      return [];
+    }
+
+    const enabled = new Set<string>(config.presets.enabled_presets);
+    for (const rule of config.replacements) {
+      if (typeof rule.origin === 'string' && rule.origin.startsWith('preset:')) {
+        enabled.add(rule.origin.slice('preset:'.length));
+      }
+    }
+    return [...enabled];
+  }, [config]);
+
+  const handleTogglePreset = useCallback((presetId: string, enabled: boolean) => {
+    if (!config) {
+      return;
+    }
+
+    const withoutPresetRules = config.replacements.filter((rule) => rule.origin !== `preset:${presetId}`);
+
+    if (!enabled) {
+      void setReplacementRules(withoutPresetRules).catch((error) => {
+        console.error(`Failed to disable preset '${presetId}'`, error);
+      });
+      return;
+    }
+
+    void (async () => {
+      try {
+        const cachedRules = presetRulesById.get(presetId);
+        const loadedRules = cachedRules ?? await loadPreset(presetId);
+        const normalizedRules = (Array.isArray(loadedRules) ? loadedRules : []).map((rule, index) => ({
+          ...rule,
+          id: `${presetId}-${rule.id || index}`,
+          origin: `preset:${presetId}` as const,
+          enabled: true,
+        }));
+
+        if (!cachedRules) {
+          setPresetRulesById((current) => {
+            const next = new Map(current);
+            next.set(presetId, normalizedRules);
+            return next;
+          });
+        }
+
+        await setReplacementRules([...withoutPresetRules, ...normalizedRules]);
+      } catch (error) {
+        console.error(`Failed to enable preset '${presetId}'`, error);
+      }
+    })();
+  }, [config, loadPreset, presetRulesById, setReplacementRules]);
+
   useEffect(() => {
     if (!isInitialized) {
       return;
@@ -125,7 +193,7 @@ function App() {
   const tabs = [
     { id: 'status', label: 'Status' },
     { id: 'history', label: 'History' },
-    { id: 'replacements', label: 'Replacements', badge: config?.replacements.length ?? 0 },
+    { id: 'replacements', label: 'Replacements', badge: replacementsBadgeCount },
     { id: 'settings', label: 'Settings' },
   ];
 
@@ -151,19 +219,35 @@ function App() {
           </TabPanel>
 
           <TabPanel id="history" activeTab={activeTab}>
-            <HistoryPanel entries={history.slice(0, 25)} onCopy={copyTranscript} />
+            <HistoryPanel
+              entries={history.slice(0, 25)}
+              onCopy={copyTranscript}
+              onClearAll={clearHistory}
+            />
           </TabPanel>
 
           <TabPanel id="replacements" activeTab={activeTab}>
-            <div className="space-y-3">
-              <h2 className="text-xl font-semibold">Replacements</h2>
-              <p className="text-sm text-gray-300">
-                Replacements tab integration is in progress.
-              </p>
-              <p className="text-sm text-gray-400">
-                Configured rules: {config?.replacements.length ?? 0}
-              </p>
-            </div>
+            {config ? (
+              <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto pr-1">
+                <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
+                  <PresetsPanel
+                    presets={presets}
+                    enabledPresets={enabledPresetIds}
+                    onTogglePreset={handleTogglePreset}
+                    presetRules={presetRulesById}
+                  />
+                </div>
+                <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
+                  <ReplacementList
+                    rules={config.replacements}
+                    onChange={handleReplacementRulesChange}
+                    isLoading={isLoading}
+                  />
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-gray-300">Loading replacement rules...</p>
+            )}
           </TabPanel>
 
           <TabPanel id="settings" activeTab={activeTab}>

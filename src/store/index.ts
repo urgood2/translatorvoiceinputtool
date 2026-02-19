@@ -13,6 +13,7 @@ export {
   selectHistory,
   selectConfig,
   selectCapabilities,
+  selectReplacementBadgeCount,
 } from './appStore';
 
 export type { AppStore, AppStoreState, AppStoreActions } from './appStore';

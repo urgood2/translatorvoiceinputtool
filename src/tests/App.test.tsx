@@ -95,7 +95,27 @@ describe('App diagnostics panels', () => {
         case 'copy_transcript':
           return undefined;
         case 'get_available_presets':
-          return [];
+          return [
+            {
+              id: 'medical',
+              name: 'Medical Dictation',
+              description: 'Common clinical terms',
+              rule_count: 1,
+            },
+          ];
+        case 'load_preset':
+          return [
+            {
+              id: 'med-1',
+              enabled: true,
+              kind: 'literal',
+              pattern: 'BP',
+              replacement: 'blood pressure',
+              word_boundary: true,
+              case_sensitive: false,
+              origin: 'preset',
+            },
+          ];
         case 'get_app_state':
           return { state: 'idle', enabled: true, detail: undefined };
         case 'run_self_check':
@@ -231,7 +251,19 @@ describe('App diagnostics panels', () => {
     fireEvent.click(replacementsTab);
     expect(replacementsTab.getAttribute('aria-selected')).toBe('true');
     expect(statusTab.getAttribute('aria-selected')).toBe('false');
-    expect(screen.getByText('Replacements tab integration is in progress.')).toBeDefined();
+    expect(screen.getByText('Replacement Rules')).toBeDefined();
+    expect(screen.getByText('Preset Rule Sets')).toBeDefined();
+    expect(screen.getByText('Medical Dictation')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Add Rule' })).toBeDefined();
+
+    fireEvent.click(screen.getByRole('checkbox'));
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('load_preset', { presetId: 'medical' });
+    });
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('set_replacement_rules', expect.anything());
+    });
+    expect(screen.getByRole('tab', { name: /Replacements/ }).textContent).toContain('2');
 
     fireEvent.click(historyTab);
     expect(historyTab.getAttribute('aria-selected')).toBe('true');
