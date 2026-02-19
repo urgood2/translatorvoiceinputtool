@@ -1,0 +1,295 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "./tauri.events.v1.json",
+  "id": "tauri.events.v1",
+  "version": 1,
+  "items": [
+    {
+      "type": "event",
+      "name": "state:changed",
+      "deprecated_aliases": ["state_changed"],
+      "payload_schema": { "$ref": "#/$defs/state_changed_payload" }
+    },
+    {
+      "type": "event",
+      "name": "recording:status",
+      "deprecated_aliases": [],
+      "payload_schema": { "$ref": "#/$defs/recording_status_payload" }
+    },
+    {
+      "type": "event",
+      "name": "model:status",
+      "deprecated_aliases": [],
+      "payload_schema": { "$ref": "#/$defs/model_status_payload" }
+    },
+    {
+      "type": "event",
+      "name": "model:progress",
+      "deprecated_aliases": [],
+      "payload_schema": { "$ref": "#/$defs/model_progress_payload" }
+    },
+    {
+      "type": "event",
+      "name": "audio:level",
+      "deprecated_aliases": [],
+      "payload_schema": { "$ref": "#/$defs/audio_level_payload" }
+    },
+    {
+      "type": "event",
+      "name": "transcript:complete",
+      "deprecated_aliases": ["transcription:complete"],
+      "payload_schema": { "$ref": "#/$defs/transcript_complete_payload" }
+    },
+    {
+      "type": "event",
+      "name": "transcript:error",
+      "deprecated_aliases": ["transcription:error"],
+      "payload_schema": { "$ref": "#/$defs/transcript_error_payload" }
+    },
+    {
+      "type": "event",
+      "name": "app:error",
+      "deprecated_aliases": [],
+      "payload_schema": { "$ref": "#/$defs/app_error_payload" }
+    },
+    {
+      "type": "event",
+      "name": "sidecar:status",
+      "deprecated_aliases": ["status:changed"],
+      "payload_schema": { "$ref": "#/$defs/sidecar_status_payload" }
+    }
+  ],
+  "$defs": {
+    "app_state": {
+      "$id": "./tauri.events.v1.json#/$defs/app_state",
+      "type": "string",
+      "enum": ["idle", "loading_model", "recording", "transcribing", "error"]
+    },
+    "app_error": {
+      "$id": "./tauri.events.v1.json#/$defs/app_error",
+      "type": "object",
+      "required": ["code", "message", "recoverable"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "details": {},
+        "recoverable": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "injection_result": {
+      "$id": "./tauri.events.v1.json#/$defs/injection_result",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status"],
+          "properties": {
+            "status": { "const": "injected" }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": ["status", "reason"],
+          "properties": {
+            "status": { "const": "clipboard_only" },
+            "reason": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": ["status"],
+          "properties": {
+            "status": { "enum": ["error", "failed"] },
+            "message": { "type": "string" },
+            "error": { "type": "string" }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "transcript_timings": {
+      "$id": "./tauri.events.v1.json#/$defs/transcript_timings",
+      "type": "object",
+      "properties": {
+        "ipc_ms": { "type": "integer", "minimum": 0 },
+        "transcribe_ms": { "type": "integer", "minimum": 0 },
+        "postprocess_ms": { "type": "integer", "minimum": 0 },
+        "inject_ms": { "type": "integer", "minimum": 0 },
+        "total_ms": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "transcript_entry": {
+      "$id": "./tauri.events.v1.json#/$defs/transcript_entry",
+      "type": "object",
+      "required": [
+        "id",
+        "text",
+        "timestamp",
+        "audio_duration_ms",
+        "transcription_duration_ms",
+        "injection_result"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string" },
+        "raw_text": { "type": "string" },
+        "final_text": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "audio_duration_ms": { "type": "integer", "minimum": 0 },
+        "transcription_duration_ms": { "type": "integer", "minimum": 0 },
+        "session_id": { "type": "string" },
+        "language": { "type": "string" },
+        "confidence": { "type": "number" },
+        "timings": { "$ref": "#/$defs/transcript_timings" },
+        "injection_result": { "$ref": "#/$defs/injection_result" }
+      },
+      "additionalProperties": true
+    },
+    "state_changed_payload": {
+      "$id": "./tauri.events.v1.json#/$defs/state_changed_payload",
+      "type": "object",
+      "required": ["seq", "state", "enabled", "timestamp"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "state": { "$ref": "#/$defs/app_state" },
+        "enabled": { "type": "boolean" },
+        "detail": { "type": ["string", "null"] },
+        "timestamp": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "recording_status_payload": {
+      "$id": "./tauri.events.v1.json#/$defs/recording_status_payload",
+      "type": "object",
+      "required": ["seq", "phase"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "phase": { "enum": ["idle", "recording", "transcribing", "loading_model", "error"] },
+        "session_id": { "type": "string" },
+        "started_at": { "type": "string" },
+        "audio_ms": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "model_status_progress": {
+      "$id": "./tauri.events.v1.json#/$defs/model_status_progress",
+      "type": "object",
+      "required": ["current", "unit"],
+      "properties": {
+        "current": { "type": "integer", "minimum": 0 },
+        "total": { "type": ["integer", "null"], "minimum": 0 },
+        "unit": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "model_status_payload": {
+      "$id": "./tauri.events.v1.json#/$defs/model_status_payload",
+      "type": "object",
+      "required": ["seq", "model_id", "status"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "model_id": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["missing", "downloading", "loading", "verifying", "ready", "error", "unknown"]
+        },
+        "revision": { "type": ["string", "null"] },
+        "cache_path": { "type": ["string", "null"] },
+        "progress": {
+          "oneOf": [
+            { "$ref": "#/$defs/model_status_progress" },
+            { "type": "null" }
+          ]
+        },
+        "error": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "model_progress_payload": {
+      "$id": "./tauri.events.v1.json#/$defs/model_progress_payload",
+      "type": "object",
+      "required": ["seq", "current"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "model_id": { "type": "string" },
+        "current": { "type": "integer", "minimum": 0 },
+        "total": { "type": ["integer", "null"], "minimum": 0 },
+        "unit": { "type": "string" },
+        "stage": { "type": "string" },
+        "current_file": { "type": "string" },
+        "files_completed": { "type": "integer", "minimum": 0 },
+        "files_total": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "audio_level_payload": {
+      "$id": "./tauri.events.v1.json#/$defs/audio_level_payload",
+      "type": "object",
+      "required": ["seq", "source", "rms", "peak"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "source": { "type": "string" },
+        "session_id": { "type": "string" },
+        "rms": { "type": "number" },
+        "peak": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+    "transcript_complete_payload": {
+      "$id": "./tauri.events.v1.json#/$defs/transcript_complete_payload",
+      "type": "object",
+      "required": ["seq", "entry"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "entry": { "$ref": "#/$defs/transcript_entry" }
+      },
+      "additionalProperties": false
+    },
+    "transcript_error_payload": {
+      "$id": "./tauri.events.v1.json#/$defs/transcript_error_payload",
+      "type": "object",
+      "required": ["seq", "error"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "session_id": { "type": "string" },
+        "error": {
+          "oneOf": [
+            { "$ref": "#/$defs/app_error" },
+            { "type": "string" }
+          ]
+        },
+        "message": { "type": "string" },
+        "recoverable": { "type": "boolean" },
+        "app_error": { "$ref": "#/$defs/app_error" }
+      },
+      "additionalProperties": false
+    },
+    "app_error_payload": {
+      "$id": "./tauri.events.v1.json#/$defs/app_error_payload",
+      "type": "object",
+      "required": ["seq", "error"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "error": { "$ref": "#/$defs/app_error" },
+        "message": { "type": "string" },
+        "recoverable": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "sidecar_status_payload": {
+      "$id": "./tauri.events.v1.json#/$defs/sidecar_status_payload",
+      "type": "object",
+      "required": ["seq", "state", "restart_count"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "state": { "type": "string" },
+        "restart_count": { "type": "integer", "minimum": 0 },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

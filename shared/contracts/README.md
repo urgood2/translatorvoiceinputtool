@@ -18,7 +18,7 @@ Use local `$id`/`$ref` targets such as `./<file>.v1.json#/$defs/<fragment_name>`
 
 - `sidecar.rpc.v1.json`: canonical sidecar RPC contract
 - `tauri.commands.v1.json`: canonical Tauri command contract
-- `tauri.events.v1.json`: canonical Tauri event contract (planned/additive)
+- `tauri.events.v1.json`: canonical Tauri event contract
 - `error.codes.v1.json`: canonical error code catalog contract
 - `tauri_wire.v1.json`: Rust↔TS wire snapshot contract
 - `MIGRATION.md`: compatibility windows and alias deprecation timeline
