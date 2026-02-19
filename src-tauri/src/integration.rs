@@ -330,6 +330,17 @@ fn is_stale_session(
     }
 }
 
+fn stale_notification_message(
+    notification_session_id: Option<&str>,
+    active_session_id: Option<&str>,
+) -> String {
+    format!(
+        "Dropping stale notification: session_id={}, current={}",
+        notification_session_id.unwrap_or("<none>"),
+        active_session_id.unwrap_or("<none>")
+    )
+}
+
 fn map_transcription_complete_durations(
     notification_duration_ms: u64,
     stop_audio_duration_ms: Option<u64>,
@@ -2153,21 +2164,21 @@ impl IntegrationManager {
 
                 log::debug!("Sidecar notification: method={}", event.method);
 
-                // Drop stale session-scoped notifications from old sessions.
-                let incoming_session_id = extract_session_id(&event.params);
-                let active_session_id = current_session_id.read().await.clone();
-                if is_stale_session(incoming_session_id, active_session_id.as_deref()) {
-                    log::debug!(
-                        "Dropping stale notification: method={} incoming_session_id={:?} active_session_id={:?}",
-                        event.method,
-                        incoming_session_id,
-                        active_session_id
-                    );
-                    continue;
-                }
-
                 match event.method.as_str() {
                     "event.transcription_complete" => {
+                        let incoming_session_id = extract_session_id(&event.params);
+                        let active_session_id = current_session_id.read().await.clone();
+                        if is_stale_session(incoming_session_id, active_session_id.as_deref()) {
+                            log::warn!(
+                                "{}",
+                                stale_notification_message(
+                                    incoming_session_id,
+                                    active_session_id.as_deref()
+                                )
+                            );
+                            continue;
+                        }
+
                         // Parse transcription result
                         #[derive(Deserialize)]
                         struct TranscriptionParams {
@@ -2209,6 +2220,19 @@ impl IntegrationManager {
                         }
                     }
                     "event.transcription_error" => {
+                        let incoming_session_id = extract_session_id(&event.params);
+                        let active_session_id = current_session_id.read().await.clone();
+                        if is_stale_session(incoming_session_id, active_session_id.as_deref()) {
+                            log::warn!(
+                                "{}",
+                                stale_notification_message(
+                                    incoming_session_id,
+                                    active_session_id.as_deref()
+                                )
+                            );
+                            continue;
+                        }
+
                         #[derive(Deserialize)]
                         struct ErrorParams {
                             session_id: String,
@@ -2366,6 +2390,24 @@ impl IntegrationManager {
                             if params.source == "recording" && params.session_id.is_none() {
                                 log::warn!("Ignoring invalid audio_level event: missing session_id for recording source");
                                 continue;
+                            }
+
+                            if params.source == "recording" {
+                                let active_session_id = current_session_id.read().await.clone();
+                                let incoming_session_id = params.session_id.as_deref();
+                                if is_stale_session(
+                                    incoming_session_id,
+                                    active_session_id.as_deref(),
+                                ) {
+                                    log::warn!(
+                                        "{}",
+                                        stale_notification_message(
+                                            incoming_session_id,
+                                            active_session_id.as_deref()
+                                        )
+                                    );
+                                    continue;
+                                }
                             }
 
                             let now = Instant::now();
@@ -2571,6 +2613,14 @@ mod tests {
         assert!(!is_stale_session(Some("active"), Some("active")));
         assert!(is_stale_session(Some("old"), Some("active")));
         assert!(is_stale_session(Some("old"), None));
+    }
+
+    #[test]
+    fn test_stale_notification_message_format() {
+        assert_eq!(
+            stale_notification_message(Some("old-session"), Some("active-session")),
+            "Dropping stale notification: session_id=old-session, current=active-session"
+        );
     }
 
     #[test]
