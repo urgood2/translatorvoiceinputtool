@@ -200,6 +200,10 @@ fn resolve_model_id(model_id: Option<String>) -> String {
         .unwrap_or_else(configured_model_id)
 }
 
+fn purge_affects_configured_model(purge_model_id: Option<&str>, configured_model_id: &str) -> bool {
+    purge_model_id.map_or(true, |requested| requested == configured_model_id)
+}
+
 fn model_download_params(model_id: Option<String>, force: Option<bool>) -> Option<Value> {
     let mut params = serde_json::Map::new();
     if let Some(model_id) = model_id {
@@ -1493,30 +1497,28 @@ impl IntegrationManager {
             .map_err(|e| format!("Failed to purge cache: {}", e))?;
 
         let configured_model_id = configured_model_id();
-        let affects_configured_model = purge_model_id
-            .as_deref()
-            .map_or(true, |requested| requested == configured_model_id.as_str());
+        let affects_configured_model =
+            purge_affects_configured_model(purge_model_id.as_deref(), configured_model_id.as_str());
 
         if affects_configured_model {
             *self.model_status.write().await = ModelStatus::Missing;
             self.recording_controller.set_model_ready(false).await;
+            // Emit global model status only when the purge impacts configured model.
+            Self::emit_model_status_with_details(
+                &self.app_handle,
+                ModelStatus::Missing,
+                &self.event_seq,
+                Some(
+                    purge_model_id
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or(configured_model_id),
+                ),
+                None,
+                None,
+                None,
+            );
         }
-
-        // Emit missing status for the purged model target.
-        Self::emit_model_status_with_details(
-            &self.app_handle,
-            ModelStatus::Missing,
-            &self.event_seq,
-            Some(
-                purge_model_id
-                    .as_ref()
-                    .cloned()
-                    .unwrap_or(configured_model_id),
-            ),
-            None,
-            None,
-            None,
-        );
 
         log::info!(
             "Model cache purged{}",
@@ -3614,6 +3616,23 @@ mod tests {
             resolve_model_id(Some("custom/model".to_string())),
             "custom/model"
         );
+    }
+
+    #[test]
+    fn test_purge_affects_configured_model_for_default_and_matching_target() {
+        assert!(purge_affects_configured_model(None, "configured/model"));
+        assert!(purge_affects_configured_model(
+            Some("configured/model"),
+            "configured/model"
+        ));
+    }
+
+    #[test]
+    fn test_purge_affects_configured_model_false_for_unrelated_target() {
+        assert!(!purge_affects_configured_model(
+            Some("other/model"),
+            "configured/model"
+        ));
     }
 
     #[test]
