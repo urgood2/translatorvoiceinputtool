@@ -592,6 +592,49 @@ mod tests {
         assert_eq!(state.start_calls, 1, "only first crash should auto-restart");
     }
 
+    #[tokio::test]
+    async fn circuit_breaker_trips_at_exact_configured_threshold() {
+        println!("[CIRCUIT_BREAKER_TEST] verifying exact threshold trip behavior");
+        let controller = FakeController::default();
+        controller.set_fail_start(true);
+        let mut supervisor = SidecarSupervisor::new(
+            controller.clone(),
+            SidecarSupervisorConfig {
+                max_restart_count: 3,
+                backoff_base_ms: 0,
+                backoff_factor: 2.0,
+                backoff_max_ms: 0,
+                circuit_breaker_window_ms: 60_000,
+                auto_restart_enabled: true,
+            },
+        );
+
+        let _ = supervisor
+            .handle_crash()
+            .await
+            .expect_err("attempt 1 should fail spawn while breaker remains closed");
+        assert!(!supervisor.circuit_breaker_open());
+
+        let _ = supervisor
+            .handle_crash()
+            .await
+            .expect_err("attempt 2 should fail spawn while breaker remains closed");
+        assert!(!supervisor.circuit_breaker_open());
+
+        supervisor
+            .handle_crash()
+            .await
+            .expect("attempt 3 should trip breaker and stop auto-restart");
+        assert!(supervisor.circuit_breaker_open());
+        assert_eq!(supervisor.state(), SidecarState::Failed);
+
+        let state = controller.state();
+        assert_eq!(
+            state.start_calls, 2,
+            "breaker should block the threshold attempt from restarting"
+        );
+    }
+
     #[test]
     fn circuit_breaker_failure_window_only_counts_rapid_failures() {
         println!("[SUPERVISOR_TEST] verifying circuit breaker failure window");
@@ -617,6 +660,71 @@ mod tests {
         supervisor.register_failure(t0 + Duration::from_millis(25));
         assert_eq!(supervisor.circuit_breaker.rapid_failure_count, 1);
         assert!(!supervisor.circuit_breaker.is_open);
+    }
+
+    #[tokio::test]
+    async fn max_restart_count_zero_trips_immediately() {
+        println!("[CIRCUIT_BREAKER_TEST] verifying max_restart_count=0 immediate trip");
+        let controller = FakeController::default();
+        let mut supervisor = SidecarSupervisor::new(
+            controller.clone(),
+            SidecarSupervisorConfig {
+                max_restart_count: 0,
+                backoff_base_ms: 0,
+                backoff_factor: 2.0,
+                backoff_max_ms: 0,
+                circuit_breaker_window_ms: 60_000,
+                auto_restart_enabled: true,
+            },
+        );
+
+        supervisor
+            .handle_crash()
+            .await
+            .expect("circuit breaker should open and short-circuit restart");
+        assert!(supervisor.circuit_breaker_open());
+        assert_eq!(supervisor.state(), SidecarState::Failed);
+        assert_eq!(
+            controller.state().start_calls,
+            0,
+            "no restart attempt should occur when max_restart_count is zero"
+        );
+    }
+
+    #[tokio::test]
+    async fn tripped_breaker_disables_auto_restart_until_manual_reset() {
+        println!("[CIRCUIT_BREAKER_TEST] verifying tripped state blocks auto-restart");
+        let controller = FakeController::default();
+        controller.set_fail_start(true);
+        let mut supervisor = SidecarSupervisor::new(
+            controller.clone(),
+            SidecarSupervisorConfig {
+                max_restart_count: 1,
+                backoff_base_ms: 0,
+                backoff_factor: 2.0,
+                backoff_max_ms: 0,
+                circuit_breaker_window_ms: 60_000,
+                auto_restart_enabled: true,
+            },
+        );
+
+        supervisor
+            .handle_crash()
+            .await
+            .expect("first crash should trip breaker without restart");
+        assert!(supervisor.circuit_breaker_open());
+        assert_eq!(controller.state().start_calls, 0);
+
+        supervisor
+            .handle_crash()
+            .await
+            .expect("subsequent crash should remain blocked by breaker");
+        assert!(supervisor.circuit_breaker_open());
+        assert_eq!(
+            controller.state().start_calls,
+            0,
+            "auto-restart must remain disabled while breaker is open"
+        );
     }
 
     #[tokio::test]
@@ -648,6 +756,53 @@ mod tests {
         assert_eq!(supervisor.state(), SidecarState::Ready);
         assert!(!supervisor.circuit_breaker_open());
         assert_eq!(supervisor.restart_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn manual_reset_reenables_auto_restart_path() {
+        println!("[CIRCUIT_BREAKER_TEST] verifying manual reset re-enables auto-restart");
+        let controller = FakeController::default();
+        controller.set_fail_start(true);
+        let mut supervisor = SidecarSupervisor::new(
+            controller.clone(),
+            SidecarSupervisorConfig {
+                max_restart_count: 2,
+                backoff_base_ms: 0,
+                backoff_factor: 2.0,
+                backoff_max_ms: 0,
+                circuit_breaker_window_ms: 60_000,
+                auto_restart_enabled: true,
+            },
+        );
+
+        let _ = supervisor
+            .handle_crash()
+            .await
+            .expect_err("first crash should attempt restart and fail spawn");
+        supervisor
+            .handle_crash()
+            .await
+            .expect("second rapid crash should trip breaker");
+        assert!(supervisor.circuit_breaker_open());
+
+        controller.set_fail_start(false);
+        supervisor
+            .restart()
+            .await
+            .expect("manual restart should reset breaker and reach ready");
+        assert!(!supervisor.circuit_breaker_open());
+        assert_eq!(supervisor.state(), SidecarState::Ready);
+
+        controller.set_fail_start(true);
+        let _ = supervisor
+            .handle_crash()
+            .await
+            .expect_err("auto-restart path should be active again after manual reset");
+        assert_eq!(
+            controller.state().start_calls,
+            3,
+            "one failed start before trip + one manual restart + one post-reset auto-restart attempt"
+        );
     }
 
     #[tokio::test]
