@@ -3128,6 +3128,61 @@ mod tests {
     }
 
     #[test]
+    fn test_transcription_error_event_payload_includes_structured_and_legacy_fields() {
+        let app_error = AppError::new(
+            ErrorKind::SidecarCrash.to_sidecar(),
+            "Sidecar crashed",
+            Some(json!({
+                "restart_count": 2,
+                "source": "watchdog"
+            })),
+            false,
+        );
+
+        let payload = transcription_error_event_payload("session-1", &app_error);
+
+        // Legacy flat compatibility fields.
+        assert_eq!(
+            payload.get("message").and_then(Value::as_str),
+            Some("Sidecar crashed")
+        );
+        assert_eq!(
+            payload.get("recoverable").and_then(Value::as_bool),
+            Some(false)
+        );
+
+        // Structured error shape for canonical consumers.
+        assert_eq!(
+            payload.pointer("/error/code").and_then(Value::as_str),
+            Some("E_SIDECAR_CRASH")
+        );
+        assert_eq!(
+            payload.pointer("/error/message").and_then(Value::as_str),
+            Some("Sidecar crashed")
+        );
+        assert_eq!(
+            payload.pointer("/error/recoverable").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            payload
+                .pointer("/error/details/restart_count")
+                .and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            payload.pointer("/error/details/source").and_then(Value::as_str),
+            Some("watchdog")
+        );
+
+        // Legacy structured alias retained during migration window.
+        assert_eq!(
+            payload.pointer("/app_error/code").and_then(Value::as_str),
+            Some("E_SIDECAR_CRASH")
+        );
+    }
+
+    #[test]
     fn test_state_changed_event_payload_shape() {
         let event = StateEvent {
             state: AppState::Idle,
