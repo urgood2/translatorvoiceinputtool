@@ -55,6 +55,13 @@ EVENT_PAYLOAD_EXAMPLES_PATH = REPO_ROOT / "src" / "hooks" / "useTauriEvents.test
 EVENT_PAYLOAD_IGNORE_MARKER = "contract-validate-ignore"
 
 METHOD_NAME_RE = re.compile(r"([a-z]+\.[a-z_]+)")
+ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    r"(?:"
+    r"/(?!/)(?:[^/\s\"']+/)+[^/\s\"']+"
+    r"|[A-Za-z]:\\\\(?:[^\\\\\s\"']+\\\\)+[^\\\\\s\"']+"
+    r")"
+)
 
 
 @dataclass(frozen=True)
@@ -173,6 +180,68 @@ def validate_generated_files(repo_root: Path) -> list[str]:
     errors: list[str] = []
     for script_rel, target_rel in GENERATED_TARGETS:
         errors.extend(run_generator_and_diff(repo_root, script_rel, target_rel))
+    return errors
+
+
+def run_generator_for_text(repo_root: Path, script_rel: str, out_path: Path) -> tuple[int, str]:
+    script_path = repo_root / script_rel
+    if not script_path.exists():
+        return (1, f"missing generator script: {script_rel}")
+    cmd = [sys.executable, str(script_path), "--repo-root", str(repo_root), "--out", str(out_path)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        details = proc.stderr.strip() or proc.stdout.strip() or "no output"
+        return (proc.returncode, f"generator failed ({script_rel}): {details}")
+    return (0, out_path.read_text(encoding="utf-8"))
+
+
+def validate_generator_determinism(repo_root: Path) -> list[str]:
+    errors: list[str] = []
+    seen_scripts: set[str] = set()
+    for script_rel, _target_rel in GENERATED_TARGETS:
+        if script_rel in seen_scripts:
+            continue
+        seen_scripts.add(script_rel)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            out_a = tmp / "a.out"
+            out_b = tmp / "b.out"
+
+            first_code, first_output = run_generator_for_text(repo_root, script_rel, out_a)
+            if first_code != 0:
+                errors.append(first_output)
+                continue
+            second_code, second_output = run_generator_for_text(repo_root, script_rel, out_b)
+            if second_code != 0:
+                errors.append(second_output)
+                continue
+
+            if first_output != second_output:
+                diff = "".join(
+                    difflib.unified_diff(
+                        first_output.splitlines(keepends=True),
+                        second_output.splitlines(keepends=True),
+                        fromfile=f"{script_rel} run #1",
+                        tofile=f"{script_rel} run #2",
+                        n=2,
+                    )
+                )
+                preview = "\n".join(diff.splitlines()[:40])
+                errors.append(f"{script_rel}: non-deterministic output across runs:\n{preview}")
+
+            if "Generated at" in first_output:
+                errors.append(f"{script_rel}: output includes timestamp marker 'Generated at'")
+            if str(repo_root.resolve()) in first_output:
+                errors.append(f"{script_rel}: output includes absolute repository path")
+            if "\r\n" in first_output:
+                errors.append(f"{script_rel}: output contains CRLF; expected LF-only output")
+
+            absolute_paths = sorted(set(ABSOLUTE_PATH_RE.findall(first_output)))
+            if absolute_paths:
+                preview_paths = ", ".join(absolute_paths[:3])
+                errors.append(f"{script_rel}: output includes absolute path-like values: {preview_paths}")
+
     return errors
 
 
@@ -649,6 +718,7 @@ def main(argv: list[str] | None = None) -> int:
 
         checks: list[tuple[str, list[str]]] = []
         checks.append(("Draft-07 schema fragment validation", validate_contract_schema_fragments(contracts)))
+        checks.append(("Generator determinism (stable output; no timestamps or paths)", validate_generator_determinism(repo_root)))
         checks.append(("Generated artifacts up-to-date", validate_generated_files(repo_root)))
         checks.append(
             (

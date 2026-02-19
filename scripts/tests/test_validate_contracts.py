@@ -130,6 +130,58 @@ listen('sidecar:status', () => {});
             self.assertEqual(len(errors), 1)
             self.assertIn("out of date", errors[0])
 
+    def test_validate_generator_determinism_accepts_stable_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scripts_dir = root / "scripts"
+            scripts_dir.mkdir(parents=True)
+            (root / "src").mkdir(parents=True)
+            (root / "src-tauri" / "src").mkdir(parents=True)
+
+            stable_script = "\n".join(
+                [
+                    "import argparse",
+                    "from pathlib import Path",
+                    "p=argparse.ArgumentParser()",
+                    "p.add_argument('--repo-root')",
+                    "p.add_argument('--out')",
+                    "a=p.parse_args()",
+                    "Path(a.out).write_text('stable\\n', encoding='utf-8')",
+                ]
+            )
+            (scripts_dir / "gen_contracts_ts.py").write_text(stable_script, encoding="utf-8")
+            (scripts_dir / "gen_contracts_rs.py").write_text(stable_script, encoding="utf-8")
+
+            errors = MODULE.validate_generator_determinism(root)
+            self.assertEqual(errors, [])
+
+    def test_validate_generator_determinism_detects_non_deterministic_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scripts_dir = root / "scripts"
+            scripts_dir.mkdir(parents=True)
+            (root / "src").mkdir(parents=True)
+            (root / "src-tauri" / "src").mkdir(parents=True)
+
+            noisy_script = "\n".join(
+                [
+                    "import argparse",
+                    "import uuid",
+                    "from pathlib import Path",
+                    "p=argparse.ArgumentParser()",
+                    "p.add_argument('--repo-root')",
+                    "p.add_argument('--out')",
+                    "a=p.parse_args()",
+                    "Path(a.out).write_text(str(uuid.uuid4()) + '\\n', encoding='utf-8')",
+                ]
+            )
+            (scripts_dir / "gen_contracts_ts.py").write_text(noisy_script, encoding="utf-8")
+            (scripts_dir / "gen_contracts_rs.py").write_text(noisy_script, encoding="utf-8")
+
+            errors = MODULE.validate_generator_determinism(root)
+            self.assertGreaterEqual(len(errors), 1)
+            self.assertTrue(any("non-deterministic output across runs" in err for err in errors))
+
     def test_self_test_mode_returns_success(self) -> None:
         self.assertEqual(MODULE.main(["--self-test"]), 0)
 
