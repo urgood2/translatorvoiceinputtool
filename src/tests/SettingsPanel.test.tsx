@@ -239,6 +239,29 @@ describe('HotkeyConfig', () => {
     expect(screen.getByText(/Using "toggle" mode instead of "hold"/)).toBeDefined();
     expect(screen.getByText(/Platform limitation/)).toBeDefined();
   });
+
+  it('does not capture key presses when disabled', () => {
+    const onPrimaryChange = vi.fn().mockResolvedValue(undefined);
+    render(
+      <HotkeyConfig
+        primaryHotkey="Ctrl+Shift+A"
+        copyLastHotkey="Ctrl+Shift+C"
+        mode="hold"
+        onPrimaryChange={onPrimaryChange}
+        onCopyLastChange={vi.fn()}
+        onModeChange={vi.fn()}
+        isLoading={true}
+      />
+    );
+
+    const hotkeyInput = screen.getByText('Ctrl+Shift+A');
+    fireEvent.focus(hotkeyInput);
+    fireEvent.keyDown(hotkeyInput, { key: 'x', ctrlKey: true });
+
+    expect(hotkeyInput).toHaveAttribute('tabIndex', '-1');
+    expect(screen.queryByText('Press keys...')).toBeNull();
+    expect(onPrimaryChange).not.toHaveBeenCalled();
+  });
 });
 
 describe('InjectionSettings', () => {

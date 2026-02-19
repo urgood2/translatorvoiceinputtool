@@ -8,7 +8,7 @@
  * - Shows effective mode with reason if different
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { HotkeyMode, EffectiveMode, ActivationMode } from '../../types';
 
 interface HotkeyConfigProps {
@@ -36,6 +36,7 @@ function HotkeyInput({ label, description, value, onChange, disabled }: HotkeyIn
   const [pendingValue, setPendingValue] = useState<string | null>(null);
 
   const handleKeyDown = async (e: React.KeyboardEvent) => {
+    if (disabled) return;
     if (!isRecording) return;
 
     e.preventDefault();
@@ -69,6 +70,12 @@ function HotkeyInput({ label, description, value, onChange, disabled }: HotkeyIn
 
   const displayValue = pendingValue || value;
 
+  useEffect(() => {
+    if (disabled) {
+      setIsRecording(false);
+    }
+  }, [disabled]);
+
   return (
     <div>
       <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -76,10 +83,14 @@ function HotkeyInput({ label, description, value, onChange, disabled }: HotkeyIn
       </label>
       <div className="flex gap-2">
         <div
-          tabIndex={0}
+          tabIndex={disabled ? -1 : 0}
           role="button"
           onKeyDown={handleKeyDown}
-          onFocus={() => setIsRecording(true)}
+          aria-disabled={disabled}
+          onFocus={() => {
+            if (disabled) return;
+            setIsRecording(true);
+          }}
           onBlur={() => setIsRecording(false)}
           className={`flex-1 px-3 py-2 border rounded-md text-sm
                      ${isRecording
