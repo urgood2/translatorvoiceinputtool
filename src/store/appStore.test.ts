@@ -40,6 +40,9 @@ const getInitialState = () => ({
   audioLevel: null,
   isMeterRunning: false,
   history: [],
+  recordingStatus: null,
+  sidecarStatus: null,
+  lastTranscriptError: null,
   config: null,
   capabilities: null,
   hotkeyStatus: null,
@@ -643,7 +646,20 @@ describe('Internal Actions', () => {
     const status = createMockModelStatus();
     useAppStore.getState()._setModelStatus(status);
 
-    expect(useAppStore.getState().modelStatus).toEqual(status);
+    expect(useAppStore.getState().modelStatus).toEqual({
+      status: status.status,
+      model_id: status.model_id,
+    });
+  });
+
+  test('_setModelStatus accepts legacy payload without model_id', () => {
+    useAppStore.setState({ modelStatus: { status: 'ready', model_id: 'existing-model' } });
+    useAppStore.getState()._setModelStatus({ status: 'loading' });
+
+    expect(useAppStore.getState().modelStatus).toEqual({
+      status: 'loading',
+      model_id: 'existing-model',
+    });
   });
 
   test('_setDownloadProgress updates progress', () => {
@@ -733,6 +749,64 @@ describe('Internal Actions', () => {
     useAppStore.getState()._setError('Test error');
 
     expect(useAppStore.getState().errorDetail).toBe('Test error');
+  });
+
+  test('_setError accepts structured app:error payload', () => {
+    useAppStore.getState()._setError({
+      error: {
+        code: 'E_INTERNAL',
+        message: 'Structured app error',
+        recoverable: false,
+      },
+    });
+
+    expect(useAppStore.getState().errorDetail).toBe('Structured app error');
+  });
+
+  test('_setRecordingStatus updates recording state and app state', () => {
+    useAppStore.getState()._setRecordingStatus({
+      phase: 'recording',
+      session_id: 'session-1',
+    });
+
+    expect(useAppStore.getState().recordingStatus).toEqual({
+      phase: 'recording',
+      session_id: 'session-1',
+    });
+    expect(useAppStore.getState().appState).toBe('recording');
+  });
+
+  test('_setSidecarStatus updates sidecar status slice', () => {
+    useAppStore.getState()._setSidecarStatus({
+      state: 'ready',
+      restart_count: 0,
+    });
+
+    expect(useAppStore.getState().sidecarStatus).toEqual({
+      state: 'ready',
+      restart_count: 0,
+    });
+  });
+
+  test('_setTranscriptError stores payload and error detail', () => {
+    useAppStore.getState()._setTranscriptError({
+      session_id: 'session-1',
+      error: {
+        code: 'E_TRANSCRIPTION_FAILED',
+        message: 'Transcript failed',
+        recoverable: true,
+      },
+    });
+
+    expect(useAppStore.getState().lastTranscriptError).toEqual({
+      session_id: 'session-1',
+      error: {
+        code: 'E_TRANSCRIPTION_FAILED',
+        message: 'Transcript failed',
+        recoverable: true,
+      },
+    });
+    expect(useAppStore.getState().errorDetail).toBe('Transcript failed');
   });
 });
 

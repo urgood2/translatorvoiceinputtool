@@ -9,21 +9,27 @@ import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import type {
   AppState,
+  AppError,
   AppConfig,
   AudioConfig,
   AudioDevice,
   AudioLevelEvent,
   Capabilities,
+  ErrorEvent,
   HotkeyConfig,
   HotkeyStatus,
   InjectionConfig,
   ModelStatus,
+  ModelStatusPayload,
   PresetInfo,
   Progress,
+  RecordingStatusEvent,
   ReplacementRule,
   DiagnosticsReport,
+  SidecarStatusEvent,
   SelfCheckResult,
-  StateEvent,
+  StateEventPayload,
+  TranscriptErrorEvent,
   TranscriptEntry,
 } from '../types';
 
@@ -49,6 +55,9 @@ export interface AppStoreState {
 
   // Transcript history
   history: TranscriptEntry[];
+  recordingStatus: RecordingStatusEvent | null;
+  sidecarStatus: SidecarStatusEvent | null;
+  lastTranscriptError: TranscriptErrorEvent | null;
 
   // Configuration (mirrors Rust config)
   config: AppConfig | null;
@@ -126,12 +135,15 @@ export interface AppStoreActions {
   setEnabled: (enabled: boolean) => Promise<void>;
 
   // Internal actions (called by event handlers)
-  _setAppState: (event: StateEvent) => void;
-  _setModelStatus: (status: ModelStatus) => void;
+  _setAppState: (event: StateEventPayload) => void;
+  _setModelStatus: (status: ModelStatusPayload) => void;
   _setDownloadProgress: (progress: Progress | null) => void;
   _setAudioLevel: (level: AudioLevelEvent | null) => void;
   _addHistoryEntry: (entry: TranscriptEntry) => void;
-  _setError: (message: string) => void;
+  _setRecordingStatus: (status: RecordingStatusEvent) => void;
+  _setSidecarStatus: (status: SidecarStatusEvent) => void;
+  _setTranscriptError: (payload: TranscriptErrorEvent) => void;
+  _setError: (payload: string | ErrorEvent | TranscriptErrorEvent) => void;
 }
 
 // ============================================================================
@@ -155,6 +167,9 @@ const defaultState: AppStoreState = {
   audioLevel: null,
   isMeterRunning: false,
   history: [],
+  recordingStatus: null,
+  sidecarStatus: null,
+  lastTranscriptError: null,
   config: null,
   capabilities: null,
   hotkeyStatus: null,
@@ -163,6 +178,102 @@ const defaultState: AppStoreState = {
   isInitialized: false,
   isLoading: false,
 };
+
+function stateDetailFromPayload(payload: StateEventPayload): string | undefined {
+  if ('detail' in payload && typeof payload.detail === 'string' && payload.detail.length > 0) {
+    return payload.detail;
+  }
+  if (
+    'error_detail' in payload
+    && typeof payload.error_detail === 'string'
+    && payload.error_detail.length > 0
+  ) {
+    return payload.error_detail;
+  }
+  return undefined;
+}
+
+function normalizeModelStatusPayload(
+  payload: ModelStatusPayload,
+  current: ModelStatus | null
+): ModelStatus {
+  const next: ModelStatus = {
+    status: payload.status,
+  };
+
+  if ('seq' in payload && typeof payload.seq === 'number') {
+    next.seq = payload.seq;
+  }
+
+  if ('model_id' in payload && typeof payload.model_id === 'string' && payload.model_id.length > 0) {
+    next.model_id = payload.model_id;
+  } else if (current?.model_id) {
+    next.model_id = current.model_id;
+  }
+
+  if ('revision' in payload && typeof payload.revision === 'string' && payload.revision.length > 0) {
+    next.revision = payload.revision;
+  } else if (current?.revision) {
+    next.revision = current.revision;
+  }
+
+  if ('cache_path' in payload && typeof payload.cache_path === 'string' && payload.cache_path.length > 0) {
+    next.cache_path = payload.cache_path;
+  } else if (current?.cache_path) {
+    next.cache_path = current.cache_path;
+  }
+
+  if ('progress' in payload) {
+    next.progress = payload.progress;
+  } else if (current?.progress) {
+    next.progress = current.progress;
+  }
+
+  if ('error' in payload && typeof payload.error === 'string' && payload.error.length > 0) {
+    next.error = payload.error;
+  } else if (payload.status !== 'error' && current?.error) {
+    next.error = undefined;
+  } else if (current?.error) {
+    next.error = current.error;
+  }
+
+  return next;
+}
+
+function messageFromAppError(error: AppError): string {
+  return typeof error.message === 'string' && error.message.length > 0
+    ? error.message
+    : 'Unknown error';
+}
+
+function normalizeErrorMessage(payload: string | ErrorEvent | TranscriptErrorEvent): string {
+  if (typeof payload === 'string') {
+    return payload;
+  }
+  if (typeof payload.message === 'string' && payload.message.length > 0) {
+    return payload.message;
+  }
+  if (typeof payload.error === 'string' && payload.error.length > 0) {
+    return payload.error;
+  }
+  if (payload.error && typeof payload.error === 'object') {
+    return messageFromAppError(payload.error);
+  }
+  if (payload.app_error && typeof payload.app_error === 'object') {
+    return messageFromAppError(payload.app_error);
+  }
+  return 'Unknown error';
+}
+
+function appStateFromRecordingPhase(phase: string): AppState | null {
+  if (phase === 'recording' || phase === 'transcribing' || phase === 'idle') {
+    return phase;
+  }
+  if (phase === 'loading_model' || phase === 'error') {
+    return phase;
+  }
+  return null;
+}
 
 // ============================================================================
 // STORE IMPLEMENTATION
@@ -193,11 +304,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       ]);
 
       // Get current app state
-      const stateEvent = await invoke<StateEvent>('get_app_state');
+      const stateEvent = await invoke<StateEventPayload>('get_app_state');
       set({
         appState: stateEvent.state,
         enabled: stateEvent.enabled,
-        errorDetail: stateEvent.detail,
+        errorDetail: stateDetailFromPayload(stateEvent),
       });
 
       set({ isInitialized: true });
@@ -594,12 +705,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({
       appState: event.state,
       enabled: event.enabled,
-      errorDetail: event.detail,
+      errorDetail: stateDetailFromPayload(event),
     });
   },
 
   _setModelStatus: (status) => {
-    set({ modelStatus: status });
+    set((state) => ({
+      modelStatus: normalizeModelStatusPayload(status, state.modelStatus),
+    }));
   },
 
   _setDownloadProgress: (progress) => {
@@ -621,8 +734,29 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }));
   },
 
-  _setError: (message) => {
-    set({ errorDetail: message });
+  _setRecordingStatus: (status) => {
+    set((state) => {
+      const nextAppState = appStateFromRecordingPhase(status.phase);
+      return {
+        recordingStatus: status,
+        appState: nextAppState ?? state.appState,
+      };
+    });
+  },
+
+  _setSidecarStatus: (status) => {
+    set({ sidecarStatus: status });
+  },
+
+  _setTranscriptError: (payload) => {
+    set({
+      lastTranscriptError: payload,
+      errorDetail: normalizeErrorMessage(payload),
+    });
+  },
+
+  _setError: (payload) => {
+    set({ errorDetail: normalizeErrorMessage(payload) });
   },
 }));
 

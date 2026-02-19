@@ -25,6 +25,19 @@ export interface StateEvent {
   timestamp: string;
 }
 
+/** Legacy state payload shape emitted by older backend paths. */
+export interface LegacyStateEvent {
+  state: AppState;
+  enabled: boolean;
+  error_detail?: string;
+  detail?: string;
+  timestamp?: string;
+  seq?: number;
+}
+
+/** State payload accepted during compatibility window. */
+export type StateEventPayload = StateEvent | LegacyStateEvent;
+
 /** Reason why recording cannot start. */
 export type CannotRecordReason =
   | 'paused'
@@ -229,13 +242,23 @@ export interface Progress {
 /** Model status information. */
 export interface ModelStatus {
   seq?: number;
-  model_id: string;
+  model_id?: string;
   status: ModelState;
   revision?: string;
   cache_path?: string;
   progress?: Progress;
   error?: string;
 }
+
+/** Legacy model status payload shape emitted by older backend paths. */
+export interface LegacyModelStatus {
+  seq?: number;
+  status: ModelState;
+  error?: string;
+}
+
+/** Model status payload accepted during compatibility window. */
+export type ModelStatusPayload = ModelStatus | LegacyModelStatus;
 
 // ============================================================================
 // HISTORY TYPES
@@ -453,9 +476,36 @@ export type TranscriptEventPayload = TranscriptEvent | LegacyTranscriptEvent;
 
 /** Error event. */
 export interface ErrorEvent {
-  message: string;
-  recoverable: boolean;
+  message?: string;
+  recoverable?: boolean;
   error?: string | AppError;
   app_error?: AppError;
   seq?: number;
+}
+
+/** Canonical recording status event payload. */
+export interface RecordingStatusEvent {
+  seq?: number;
+  phase: AppState | 'idle' | 'recording' | 'transcribing';
+  session_id?: string;
+  started_at?: string;
+  audio_ms?: number;
+}
+
+/** Canonical sidecar status event payload. */
+export interface SidecarStatusEvent {
+  seq?: number;
+  state: 'starting' | 'ready' | 'failed' | 'restarting' | 'stopped' | string;
+  restart_count: number;
+  message?: string;
+}
+
+/** Canonical transcript error payload emitted by transcript:error events. */
+export interface TranscriptErrorEvent {
+  seq?: number;
+  session_id?: string;
+  error?: string | AppError;
+  message?: string;
+  recoverable?: boolean;
+  app_error?: AppError;
 }

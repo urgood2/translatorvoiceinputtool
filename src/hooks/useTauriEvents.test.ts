@@ -25,6 +25,9 @@ beforeEach(() => {
     audioLevel: null,
     isMeterRunning: false,
     history: [],
+    recordingStatus: null,
+    sidecarStatus: null,
+    lastTranscriptError: null,
     config: null,
     capabilities: null,
     hotkeyStatus: null,
@@ -230,6 +233,57 @@ describe('useTauriEvents', () => {
     const currentState = useAppStore.getState();
     expect(currentState.appState).toBe('recording');
     expect(currentState.enabled).toBe(true);
+
+    unmount();
+  });
+
+  test('recording:status updates recording slice and app state', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    act(() => {
+      emitMockEvent('recording:status', {
+        seq: 101,
+        phase: 'recording',
+        session_id: 'session-101',
+      });
+    });
+
+    const state = useAppStore.getState();
+    expect(state.recordingStatus).toMatchObject({
+      seq: 101,
+      phase: 'recording',
+      session_id: 'session-101',
+    });
+    expect(state.appState).toBe('recording');
+
+    unmount();
+  });
+
+  test('sidecar:status updates sidecar status slice', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    act(() => {
+      emitMockEvent('sidecar:status', {
+        seq: 7,
+        state: 'ready',
+        restart_count: 0,
+      });
+    });
+
+    const state = useAppStore.getState();
+    expect(state.sidecarStatus).toMatchObject({
+      seq: 7,
+      state: 'ready',
+      restart_count: 0,
+    });
 
     unmount();
   });
