@@ -16,6 +16,7 @@ use crate::config::{self, AppConfig, ReplacementRule};
 use crate::history::{TranscriptEntry, TranscriptHistory};
 use crate::model_defaults;
 use crate::state::{AppStateManager, CannotRecordReason, StateEvent};
+use crate::IntegrationState;
 
 /// Command error types.
 #[derive(Debug, Error, Serialize)]
@@ -233,20 +234,27 @@ pub async fn set_audio_device(device_uid: Option<String>) -> Result<String, Comm
 
 /// Start microphone test (for level visualization).
 #[tauri::command]
-pub async fn start_mic_test() -> Result<(), CommandError> {
-    // TODO: Implement via sidecar
-    Err(CommandError::NotImplemented {
-        message: "Microphone test requires sidecar connection".to_string(),
-    })
+pub async fn start_mic_test(
+    integration_state: tauri::State<'_, IntegrationState>,
+) -> Result<(), CommandError> {
+    let device_uid = config::load_config().audio.device_uid;
+    let manager = integration_state.0.read().await;
+    manager
+        .start_mic_test(device_uid)
+        .await
+        .map_err(|message| CommandError::Audio { message })
 }
 
 /// Stop microphone test.
 #[tauri::command]
-pub async fn stop_mic_test() -> Result<(), CommandError> {
-    // TODO: Implement via sidecar
-    Err(CommandError::NotImplemented {
-        message: "Microphone test requires sidecar connection".to_string(),
-    })
+pub async fn stop_mic_test(
+    integration_state: tauri::State<'_, IntegrationState>,
+) -> Result<(), CommandError> {
+    let manager = integration_state.0.read().await;
+    manager
+        .stop_mic_test()
+        .await
+        .map_err(|message| CommandError::Audio { message })
 }
 
 // ============================================================================
@@ -786,12 +794,11 @@ mod tests {
         crate::log_buffer::log_to_buffer(log::Level::Info, "commands::tests", "diagnostics-log");
 
         let report = generate_diagnostics();
-        assert!(
-            report
-                .recent_logs
-                .iter()
-                .any(|entry| entry.target == "commands::tests" && entry.message.contains("diagnostics-log"))
-        );
+        assert!(report
+            .recent_logs
+            .iter()
+            .any(|entry| entry.target == "commands::tests"
+                && entry.message.contains("diagnostics-log")));
     }
 
     #[test]

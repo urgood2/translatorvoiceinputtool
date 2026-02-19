@@ -976,6 +976,53 @@ impl IntegrationManager {
         Ok(())
     }
 
+    /// Start microphone level meter via sidecar.
+    pub async fn start_mic_test(&self, device_uid: Option<String>) -> Result<(), String> {
+        let client = self.rpc_client.read().await;
+        let client = client
+            .as_ref()
+            .ok_or_else(|| "Sidecar not connected".to_string())?;
+
+        #[derive(Deserialize)]
+        struct MeterStartResult {
+            #[allow(dead_code)]
+            running: bool,
+            #[allow(dead_code)]
+            interval_ms: u64,
+        }
+
+        let params = json!({
+            "device_uid": device_uid,
+            "interval_ms": 80u64
+        });
+
+        client
+            .call::<MeterStartResult>("audio.meter_start", Some(params))
+            .await
+            .map_err(|e| format!("Failed to start mic test: {}", e))?;
+        Ok(())
+    }
+
+    /// Stop microphone level meter via sidecar.
+    pub async fn stop_mic_test(&self) -> Result<(), String> {
+        let client = self.rpc_client.read().await;
+        let client = client
+            .as_ref()
+            .ok_or_else(|| "Sidecar not connected".to_string())?;
+
+        #[derive(Deserialize)]
+        struct MeterStopResult {
+            #[allow(dead_code)]
+            stopped: bool,
+        }
+
+        client
+            .call::<MeterStopResult>("audio.meter_stop", None)
+            .await
+            .map_err(|e| format!("Failed to stop mic test: {}", e))?;
+        Ok(())
+    }
+
     /// Start the sidecar process and connect RPC client.
     pub async fn start_sidecar(&self) -> Result<(), String> {
         log::info!("Starting sidecar process");
@@ -2173,5 +2220,29 @@ mod tests {
         // Verify watchdog is initialized with default status
         let status = manager.watchdog.get_status().await;
         assert_eq!(status, crate::watchdog::HealthStatus::NotRunning);
+    }
+
+    #[tokio::test]
+    async fn test_start_mic_test_requires_sidecar_connection() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+
+        let error = manager
+            .start_mic_test(Some("device-1".to_string()))
+            .await
+            .expect_err("start_mic_test should fail without sidecar");
+        assert!(error.contains("Sidecar not connected"));
+    }
+
+    #[tokio::test]
+    async fn test_stop_mic_test_requires_sidecar_connection() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+
+        let error = manager
+            .stop_mic_test()
+            .await
+            .expect_err("stop_mic_test should fail without sidecar");
+        assert!(error.contains("Sidecar not connected"));
     }
 }
