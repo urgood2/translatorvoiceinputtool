@@ -49,12 +49,26 @@ from openvoicy_sidecar.server import (
 )
 
 
+CONTRACT_PATH = (
+    Path(__file__).resolve().parents[2] / "shared" / "contracts" / "sidecar.rpc.v1.json"
+)
+
+
 def _log(message: str) -> None:
     print(f"[IPC_COMPLIANCE] {message}")
 
 
 def _request(method: str, req_id: int, params: dict[str, Any] | None = None) -> Request:
     return Request(method=method, id=req_id, params=params or {})
+
+
+def _required_contract_methods() -> set[str]:
+    contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+    return {
+        item["name"]
+        for item in contract["items"]
+        if item.get("type") == "method" and item.get("required") is True
+    }
 
 
 @dataclass
@@ -175,29 +189,14 @@ def patch_recording_async(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_required_ipc_methods_exist() -> None:
-    required_methods = [
-        "system.ping",
-        "system.info",
-        "system.shutdown",
-        "status.get",
-        "audio.list_devices",
-        "audio.set_device",
-        "audio.meter_start",
-        "audio.meter_stop",
-        "audio.meter_status",
-        "recording.start",
-        "recording.stop",
-        "recording.cancel",
-        "recording.status",
-        "replacements.get_rules",
-        "replacements.set_rules",
-        "replacements.get_presets",
-        "replacements.preview",
-        "asr.status",
-    ]
+    required_methods = _required_contract_methods()
+    assert required_methods, "Expected non-empty required method set from sidecar contract"
+
     _log("Testing required method registration in handler dispatch table")
-    for method in required_methods:
-        assert method in HANDLERS
+    missing_methods = sorted(method for method in required_methods if method not in HANDLERS)
+    assert not missing_methods, (
+        "Missing required IPC handlers from contract: " + ", ".join(missing_methods)
+    )
     _log("Assertion: all required methods registered -> PASS")
 
 
