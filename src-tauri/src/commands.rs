@@ -671,6 +671,11 @@ fn preview_replacement_local(
     }
 }
 
+fn is_sidecar_unavailable_preview_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("sidecar not connected") || normalized.contains("disconnected from sidecar")
+}
+
 /// Get current replacement rules.
 #[tauri::command]
 pub fn get_replacement_rules() -> Vec<ReplacementRule> {
@@ -709,11 +714,15 @@ pub async fn preview_replacement(
             applied_rules_count: applied_rules_count.unwrap_or_default(),
         }),
         Err(message) => {
-            log::warn!(
-                "Sidecar replacements.preview unavailable ({}); falling back to local preview, which may differ from injected output",
-                message
-            );
-            Ok(preview_replacement_local(input, rules))
+            if is_sidecar_unavailable_preview_error(&message) {
+                log::warn!(
+                    "Sidecar replacements.preview unavailable ({}); falling back to local preview, which may differ from injected output",
+                    message
+                );
+                Ok(preview_replacement_local(input, rules))
+            } else {
+                Err(CommandError::SidecarIpc { message })
+            }
         }
     }
 }
@@ -1083,6 +1092,26 @@ mod tests {
         assert_eq!(result.result, "Total: [PRICE]");
         assert!(!result.truncated);
         assert_eq!(result.applied_rules_count, 1);
+    }
+
+    #[test]
+    fn test_is_sidecar_unavailable_preview_error_detects_not_connected() {
+        assert!(is_sidecar_unavailable_preview_error(
+            "Sidecar not connected"
+        ));
+        assert!(is_sidecar_unavailable_preview_error(
+            "Failed to preview replacements: Disconnected from sidecar"
+        ));
+    }
+
+    #[test]
+    fn test_is_sidecar_unavailable_preview_error_rejects_other_errors() {
+        assert!(!is_sidecar_unavailable_preview_error(
+            "Failed to preview replacements: Remote error: E_METHOD_NOT_FOUND - replacements.preview unsupported"
+        ));
+        assert!(!is_sidecar_unavailable_preview_error(
+            "Failed to preview replacements: Timeout waiting for response to replacements.preview"
+        ));
     }
 
     #[test]
