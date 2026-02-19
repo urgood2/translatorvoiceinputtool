@@ -9,7 +9,6 @@ drift-prevention checks.
 from __future__ import annotations
 
 import argparse
-import json
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -120,37 +119,59 @@ def validate_fixture_category(
             "shared/ipc/examples/IPC_V1_EXAMPLES.jsonl"
         )
 
+    rows: list[tuple[int, dict[str, Any]]] = []
     if not expected_fixture.exists():
         errors.append("missing canonical fixture source: shared/ipc/examples/IPC_V1_EXAMPLES.jsonl")
     else:
-        line_count = sum(1 for _ in expected_fixture.open("r", encoding="utf-8"))
+        rows = vc.parse_jsonl(expected_fixture)
+        line_count = len(rows)
         summaries.append(f"IPC_V1_EXAMPLES.jsonl: {line_count} entries scanned")
 
     errors.extend(vc.validate_sidecar_examples_against_contract(repo_root, contracts["sidecar.rpc"]))
     errors.extend(vc.validate_tauri_event_payload_examples(repo_root, contracts["tauri.events"]))
 
-    examples_file = repo_root / "src" / "hooks" / "useTauriEvents.test.ts"
-    extracted = vc.extract_event_payload_examples_from_test_file(examples_file)
-    seen_names = {event_name for _line, event_name, _payload in extracted}
+    mapped_event_names: set[str] = set()
+    model_payloads: list[dict[str, Any]] = []
+    for _line, obj in rows:
+        if obj.get("type") != "notification":
+            continue
+        data = obj.get("data")
+        if not isinstance(data, dict):
+            continue
+        params = data.get("params")
+        if not isinstance(params, dict):
+            continue
+
+        mapped_event_name = params.get("mapped_tauri_event")
+        if not isinstance(mapped_event_name, str):
+            continue
+
+        mapped_event_names.add(mapped_event_name)
+        if mapped_event_name == "model:status":
+            for payload_key in (
+                "mapped_tauri_payload",
+                "mapped_tauri_payload_canonical",
+                "mapped_tauri_payload_legacy",
+            ):
+                payload = params.get(payload_key)
+                if isinstance(payload, dict):
+                    model_payloads.append(payload)
 
     for required_name in ["transcript:complete", "transcription:complete", "state:changed", "model:status"]:
-        if required_name not in seen_names:
-            errors.append(f"useTauriEvents.test.ts: missing drift-guard payload fixture for '{required_name}'")
-
-    model_payloads: list[dict[str, Any]] = []
-    for line, event_name, payload_expr in extracted:
-        if event_name != "model:status":
-            continue
-        try:
-            payload = json.loads(vc.coerce_js_object_literal_to_json_text(payload_expr))
-            model_payloads.append(payload)
-        except Exception as exc:  # pragma: no cover - defensive parse guard
-            errors.append(f"useTauriEvents.test.ts:{line}: unable to parse model:status payload: {exc}")
+        if required_name not in mapped_event_names:
+            errors.append(
+                "shared/ipc/examples/IPC_V1_EXAMPLES.jsonl: "
+                f"missing drift-guard mapped_tauri_event fixture for '{required_name}'"
+            )
 
     if not model_payloads:
-        errors.append("useTauriEvents.test.ts: missing model:status payload fixture")
+        errors.append(
+            "shared/ipc/examples/IPC_V1_EXAMPLES.jsonl: missing mapped payload fixture for 'model:status'"
+        )
     elif not any("status" in payload for payload in model_payloads):
-        errors.append("useTauriEvents.test.ts: model:status fixtures must include 'status' field")
+        errors.append(
+            "shared/ipc/examples/IPC_V1_EXAMPLES.jsonl: model:status mapped payload fixtures must include 'status' field"
+        )
 
     events_contract_text = (repo_root / "shared" / "contracts" / "tauri.events.v1.json").read_text(
         encoding="utf-8"
@@ -160,7 +181,7 @@ def validate_fixture_category(
     if '"detail"' not in events_contract_text:
         errors.append("tauri.events contract must include canonical 'detail' field")
 
-    summaries.append(f"event payload fixtures: {len(extracted)} examples")
+    summaries.append(f"canonical mapped tauri fixtures: {len(mapped_event_names)} event names")
     return summaries, errors
 
 
