@@ -31,7 +31,9 @@ use crate::hotkey::{HotkeyAction, HotkeyManager, RecordingAction};
 use crate::injection::{inject_text, InjectionConfig, InjectionResult};
 use crate::ipc::{NotificationEvent, RpcClient, RpcError};
 use crate::model_defaults;
-use crate::recording::{RecordingController, RecordingEvent, StopResult, TranscriptionResult};
+use crate::recording::{
+    CancelReason, RecordingController, RecordingEvent, StopResult, TranscriptionResult,
+};
 use crate::sidecar::SidecarManager;
 use crate::state::{AppState, AppStateManager, CannotRecordReason, StateEvent};
 use crate::supervisor::{
@@ -1746,6 +1748,17 @@ impl IntegrationManager {
         .await
     }
 
+    /// Unified recording cancel entry point for commands/UI/hotkey/tray/overlay.
+    pub async fn cancel_recording(&self) -> Result<(), String> {
+        Self::cancel_recording_flow(
+            &self.recording_controller,
+            &self.rpc_client,
+            &self.recording_context,
+            &self.current_session_id,
+        )
+        .await
+    }
+
     /// Start microphone level meter via sidecar.
     pub async fn start_mic_test(&self, device_uid: Option<String>) -> Result<(), String> {
         let client = self.rpc_client.read().await;
@@ -2298,7 +2311,9 @@ impl IntegrationManager {
                         // Only relevant for hold mode
                         if config.hotkeys.mode == HotkeyMode::Hold {
                             let hk = hotkey_manager.read().await;
-                            if let Some(RecordingAction::Stop) = hk.handle_primary_up() {
+                            if let Some(RecordingAction::Stop) =
+                                hk.handle_primary_up(&state_manager)
+                            {
                                 if let Err(err) = Self::stop_recording_flow(
                                     &recording_controller,
                                     &rpc_client,
@@ -2351,6 +2366,60 @@ impl IntegrationManager {
             current_session_id,
         )
         .await
+    }
+
+    /// Cancel recording and discard audio without transcription.
+    async fn cancel_recording_flow(
+        recording_controller: &Arc<RecordingController>,
+        rpc_client: &Arc<RwLock<Option<RpcClient>>>,
+        recording_context: &Arc<RwLock<Option<RecordingContext>>>,
+        current_session_id: &Arc<RwLock<Option<String>>>,
+    ) -> Result<(), String> {
+        let session_id = current_session_id
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| "No recording in progress".to_string())?;
+
+        recording_controller
+            .cancel(CancelReason::UserButton)
+            .await
+            .map_err(|err| match err {
+                crate::recording::RecordingError::NotRecording => {
+                    "No recording in progress".to_string()
+                }
+                other => format!("Failed to cancel recording: {}", other),
+            })?;
+
+        // Clear host correlation state immediately so any late sidecar notifications are stale.
+        *current_session_id.write().await = None;
+        *recording_context.write().await = None;
+
+        let params = json!({ "session_id": session_id });
+        if let Some(client) = rpc_client.read().await.as_ref() {
+            let cancel_result: Result<Value, RpcError> =
+                client.call("recording.cancel", Some(params.clone())).await;
+            match cancel_result {
+                Ok(_) => {}
+                Err(RpcError::Remote { kind, .. }) if kind == "E_METHOD_NOT_FOUND" => {
+                    log::warn!(
+                        "recording.cancel not supported; falling back to recording.stop and ignoring transcription result"
+                    );
+                    let fallback: Result<Value, RpcError> =
+                        client.call("recording.stop", Some(params)).await;
+                    if let Err(err) = fallback {
+                        log::error!("Fallback recording.stop after cancel failed: {}", err);
+                    }
+                }
+                Err(err) => {
+                    log::error!("Failed to call recording.cancel RPC: {}", err);
+                }
+            }
+        } else {
+            log::warn!("Sidecar not connected during cancel; completed host cancellation only");
+        }
+
+        Ok(())
     }
 
     async fn enforce_runtime_limits(
@@ -2802,12 +2871,17 @@ impl IntegrationManager {
                         *recording_context.write().await = None;
                         *current_session_id.write().await = None;
                     }
-                    RecordingEvent::Cancelled { .. } => {
+                    RecordingEvent::Cancelled { session_id, .. } => {
                         if let Some(ref handle) = app_handle {
                             emit_with_shared_seq(
                                 handle,
                                 &[EVENT_RECORDING_STATUS],
-                                recording_status_event_payload("idle", None, None, None),
+                                recording_status_event_payload(
+                                    "idle",
+                                    Some(session_id.as_str()),
+                                    None,
+                                    None,
+                                ),
                                 &event_seq,
                             );
                         }
@@ -4394,6 +4468,19 @@ mod tests {
     }
 
     #[test]
+    fn test_recording_status_event_payload_idle_can_include_session_id() {
+        let payload = recording_status_event_payload("idle", Some("session-3"), None, None);
+
+        assert_eq!(payload.get("phase").and_then(Value::as_str), Some("idle"));
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some("session-3")
+        );
+        assert!(payload.get("started_at").is_none());
+        assert!(payload.get("audio_ms").is_none());
+    }
+
+    #[test]
     fn test_transcription_failure_app_error_preserves_sidecar_error_kind() {
         let app_error =
             transcription_failure_app_error("session-1", "E_ASR_INIT: model initialization failed");
@@ -4608,6 +4695,58 @@ mod tests {
         assert!(error.contains("No recording in progress"));
         assert_eq!(state_manager.get(), AppState::Idle);
         assert!(manager.current_session_id.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_recording_requires_active_session() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(Arc::clone(&state_manager));
+
+        let error = manager
+            .cancel_recording()
+            .await
+            .expect_err("cancel_recording should fail without an active session");
+        assert!(error.contains("No recording in progress"));
+        assert_eq!(state_manager.get(), AppState::Idle);
+        assert!(manager.current_session_id.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_recording_without_sidecar_is_best_effort_and_clears_state() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(Arc::clone(&state_manager));
+        manager.recording_controller.set_model_ready(true).await;
+
+        let session_id = "session-cancel-1".to_string();
+        manager
+            .recording_controller
+            .start_with_session_id(session_id.clone())
+            .await
+            .expect("host recording should start for cancel flow test");
+
+        *manager.current_session_id.write().await = Some(session_id.clone());
+        *manager.recording_context.write().await = Some(RecordingContext {
+            focus_before: capture_focus(),
+            session_id,
+            audio_duration_ms: None,
+            raw_text: None,
+            final_text: None,
+            timing_marks: PipelineTimingMarks::default(),
+        });
+
+        manager
+            .cancel_recording()
+            .await
+            .expect("cancel_recording should succeed even without sidecar connection");
+
+        assert_eq!(state_manager.get(), AppState::Idle);
+        assert!(manager.current_session_id.read().await.is_none());
+        assert!(manager.recording_context.read().await.is_none());
+        assert!(manager
+            .recording_controller
+            .current_session_id()
+            .await
+            .is_none());
     }
 
     #[tokio::test]

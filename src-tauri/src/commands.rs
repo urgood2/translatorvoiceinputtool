@@ -901,6 +901,28 @@ pub async fn stop_recording(
         .map_err(map_stop_recording_error)
 }
 
+fn map_cancel_recording_error(message: String) -> CommandError {
+    let lower = message.to_ascii_lowercase();
+
+    if lower.contains("no recording in progress") || lower.contains("not recording") {
+        return CommandError::Audio { message };
+    }
+
+    CommandError::Internal { message }
+}
+
+/// Cancel the current recording session without transcription.
+#[tauri::command]
+pub async fn cancel_recording(
+    integration_state: tauri::State<'_, IntegrationState>,
+) -> Result<(), CommandError> {
+    let manager = integration_state.0.read().await;
+    manager
+        .cancel_recording()
+        .await
+        .map_err(map_cancel_recording_error)
+}
+
 // ============================================================================
 // CONTROL COMMANDS
 // ============================================================================
@@ -1066,6 +1088,12 @@ mod tests {
     #[test]
     fn test_map_stop_recording_error_no_session_path() {
         let mapped = map_stop_recording_error("No recording in progress".to_string());
+        assert!(matches!(mapped, CommandError::Audio { .. }));
+    }
+
+    #[test]
+    fn test_map_cancel_recording_error_no_session_path() {
+        let mapped = map_cancel_recording_error("No recording in progress".to_string());
         assert!(matches!(mapped, CommandError::Audio { .. }));
     }
 

@@ -98,6 +98,7 @@ pub fn run() {
             // Control commands
             commands::start_recording,
             commands::stop_recording,
+            commands::cancel_recording,
             commands::toggle_enabled,
             commands::is_enabled,
             commands::set_enabled,
