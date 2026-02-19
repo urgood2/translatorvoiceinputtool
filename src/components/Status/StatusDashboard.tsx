@@ -1,3 +1,4 @@
+import { useCallback, useState } from 'react';
 import { useAppStore } from '../../store';
 import type { AppState } from '../../types';
 
@@ -60,6 +61,10 @@ export function StatusDashboard() {
   const history = useAppStore((state) => state.history);
   const modelStatus = useAppStore((state) => state.modelStatus);
   const sidecarStatus = useAppStore((state) => state.sidecarStatus);
+  const startRecording = useAppStore((state) => state.startRecording);
+  const stopRecording = useAppStore((state) => state.stopRecording);
+  const cancelRecording = useAppStore((state) => state.cancelRecording);
+  const [pendingAction, setPendingAction] = useState<'start' | 'stop' | 'cancel' | null>(null);
 
   const badge = stateBadgeConfig(appState, enabled);
   const hotkey = config?.hotkeys.primary ?? 'Not configured';
@@ -75,6 +80,21 @@ export function StatusDashboard() {
 
   const sidecarState = sidecarStatus?.state ?? 'unknown';
   const restartCount = sidecarStatus?.restart_count ?? 0;
+  const canStart = enabled && appState === 'idle' && pendingAction === null;
+  const canStop = appState === 'recording' && pendingAction === null;
+  const canCancel = appState === 'recording' && pendingAction === null;
+
+  const runRecordingAction = useCallback(
+    async (action: 'start' | 'stop' | 'cancel', command: () => Promise<void>) => {
+      setPendingAction(action);
+      try {
+        await command();
+      } finally {
+        setPendingAction(null);
+      }
+    },
+    []
+  );
 
   return (
     <div className="grid gap-3 sm:gap-4" data-testid="status-dashboard">
@@ -88,6 +108,40 @@ export function StatusDashboard() {
             />
             <span>{badge.label}</span>
           </span>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {appState === 'recording' ? (
+            <>
+              <button
+                type="button"
+                data-testid="recording-stop-button"
+                className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={!canStop}
+                onClick={() => void runRecordingAction('stop', stopRecording)}
+              >
+                Stop Recording
+              </button>
+              <button
+                type="button"
+                data-testid="recording-cancel-button"
+                className="rounded-md border border-gray-600 px-3 py-1.5 text-xs font-semibold text-gray-100 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={!canCancel}
+                onClick={() => void runRecordingAction('cancel', cancelRecording)}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              data-testid="recording-start-button"
+              className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={!canStart}
+              onClick={() => void runRecordingAction('start', startRecording)}
+            >
+              Start Recording
+            </button>
+          )}
         </div>
       </SectionCard>
 

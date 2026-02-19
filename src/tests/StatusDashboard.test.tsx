@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { StatusDashboard } from '../components/Status/StatusDashboard';
 import { useAppStore } from '../store';
 import type { AppConfig, TranscriptEntry } from '../types';
@@ -69,7 +69,15 @@ function buildTranscript(text: string): TranscriptEntry {
 }
 
 describe('StatusDashboard', () => {
+  let startRecordingMock: ReturnType<typeof vi.fn>;
+  let stopRecordingMock: ReturnType<typeof vi.fn>;
+  let cancelRecordingMock: ReturnType<typeof vi.fn>;
+
   beforeEach(() => {
+    startRecordingMock = vi.fn(async () => {});
+    stopRecordingMock = vi.fn(async () => {});
+    cancelRecordingMock = vi.fn(async () => {});
+
     useAppStore.setState({
       appState: 'idle',
       enabled: true,
@@ -77,6 +85,9 @@ describe('StatusDashboard', () => {
       history: [],
       modelStatus: { status: 'ready', model_id: 'nvidia/parakeet-tdt-0.6b-v3' },
       sidecarStatus: { state: 'ready', restart_count: 0 },
+      startRecording: startRecordingMock,
+      stopRecording: stopRecordingMock,
+      cancelRecording: cancelRecordingMock,
     });
   });
 
@@ -96,6 +107,7 @@ describe('StatusDashboard', () => {
     expect(screen.getByText('nvidia/parakeet-tdt-0.6b-v3')).toBeDefined();
     expect(screen.getAllByText('ready').length).toBeGreaterThan(0);
     expect(screen.getByText('0')).toBeDefined();
+    expect(screen.getByTestId('recording-start-button')).toBeDefined();
   });
 
   it('updates reactively when store state changes', async () => {
@@ -132,5 +144,33 @@ describe('StatusDashboard', () => {
 
     const pulseDot = container.querySelector('.animate-pulse');
     expect(pulseDot).not.toBeNull();
+  });
+
+  it('invokes startRecording action when start button is pressed', async () => {
+    render(<StatusDashboard />);
+
+    fireEvent.click(screen.getByTestId('recording-start-button'));
+
+    await waitFor(() => {
+      expect(startRecordingMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('invokes stop and cancel actions when recording controls are pressed', async () => {
+    useAppStore.setState({ appState: 'recording' });
+
+    render(<StatusDashboard />);
+
+    fireEvent.click(screen.getByTestId('recording-stop-button'));
+
+    await waitFor(() => {
+      expect(stopRecordingMock).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByTestId('recording-cancel-button'));
+
+    await waitFor(() => {
+      expect(cancelRecordingMock).toHaveBeenCalledTimes(1);
+    });
   });
 });
