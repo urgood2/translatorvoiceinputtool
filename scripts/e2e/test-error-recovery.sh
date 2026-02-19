@@ -60,18 +60,17 @@ dump_failure_context() {
 # Stateful RPC for already-running sidecar process (via FIFO fds from common.sh).
 sidecar_rpc_session() {
     local method="$1"
-    local params="${2:-{}}"
+    local params="$2"
     [[ -z "$params" ]] && params='{}'
     local timeout="${3:-10}"
 
     local request_id
     request_id=$((RANDOM * RANDOM))
     local request
-    request=$(jq -nc \
-        --arg method "$method" \
-        --argjson params "$params" \
-        --argjson id "$request_id" \
-        '{jsonrpc:"2.0",id:$id,method:$method,params:$params}')
+    request=$(printf '{"jsonrpc":"2.0","id":%s,"method":"%s","params":%s}' \
+        "$request_id" \
+        "$method" \
+        "$params")
 
     printf '%s\n' "$request" >&3
 
