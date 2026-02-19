@@ -167,9 +167,9 @@
       "required": ["seq", "phase"],
       "properties": {
         "seq": { "type": "integer", "minimum": 0 },
-        "phase": { "enum": ["idle", "recording", "transcribing", "loading_model", "error"] },
-        "session_id": { "type": "string" },
-        "started_at": { "type": "string" },
+        "phase": { "enum": ["idle", "recording", "transcribing"] },
+        "session_id": { "type": "string", "format": "uuid" },
+        "started_at": { "type": "string", "format": "date-time" },
         "audio_ms": { "type": "integer", "minimum": 0 }
       },
       "additionalProperties": false
@@ -285,7 +285,7 @@
       "required": ["seq", "state", "restart_count"],
       "properties": {
         "seq": { "type": "integer", "minimum": 0 },
-        "state": { "type": "string" },
+        "state": { "enum": ["starting", "ready", "failed", "restarting", "stopped"] },
         "restart_count": { "type": "integer", "minimum": 0 },
         "message": { "type": "string" }
       },

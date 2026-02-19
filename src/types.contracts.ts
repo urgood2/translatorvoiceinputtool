@@ -156,7 +156,7 @@ export type TauriEventDefModelStatusProgress = {
 
 export type TauriEventDefRecordingStatusPayload = {
   audio_ms?: number;
-  phase: "idle" | "recording" | "transcribing" | "loading_model" | "error";
+  phase: "idle" | "recording" | "transcribing";
   seq: number;
   session_id?: string;
   started_at?: string;
@@ -166,7 +166,7 @@ export type TauriEventDefSidecarStatusPayload = {
   message?: string;
   restart_count: number;
   seq: number;
-  state: string;
+  state: "starting" | "ready" | "failed" | "restarting" | "stopped";
 };
 
 export type TauriEventDefStateChangedPayload = {
