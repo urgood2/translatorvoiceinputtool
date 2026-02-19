@@ -6,8 +6,11 @@ on:
       - 'shared/ipc/**'
       - 'shared/model/**'
       - 'shared/contracts/**'
+      - 'shared/BROWNFIELD_COMPATIBILITY.md'
       - 'scripts/validate_*.py'
       - 'scripts/check_contract_aliases.py'
+      - 'scripts/check_brownfield_compatibility.py'
+      - 'scripts/tests/test_check_brownfield_compatibility.py'
       - 'src-tauri/src/integration.rs'
       - 'src/hooks/useTauriEvents.ts'
   pull_request:
@@ -15,8 +18,11 @@ on:
       - 'shared/ipc/**'
       - 'shared/model/**'
       - 'shared/contracts/**'
+      - 'shared/BROWNFIELD_COMPATIBILITY.md'
       - 'scripts/validate_*.py'
       - 'scripts/check_contract_aliases.py'
+      - 'scripts/check_brownfield_compatibility.py'
+      - 'scripts/tests/test_check_brownfield_compatibility.py'
       - 'src-tauri/src/integration.rs'
       - 'src/hooks/useTauriEvents.ts'
 
@@ -51,6 +57,12 @@ jobs:
 
       - name: Validate compatibility window aliases
         run: python3 scripts/check_contract_aliases.py
+
+      - name: Validate brownfield compatibility reference integrity
+        run: python3 scripts/check_brownfield_compatibility.py
+
+      - name: Validate brownfield compatibility guard regression tests
+        run: python3 -m unittest scripts/tests/test_check_brownfield_compatibility.py
 
       - name: Validate examples match protocol spec
         run: python3 scripts/validate_ipc_examples.py

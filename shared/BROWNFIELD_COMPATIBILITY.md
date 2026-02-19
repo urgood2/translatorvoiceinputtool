@@ -36,3 +36,9 @@ Use it before touching any existing module to avoid greenfield rewrites and prot
 3. Include migration, risk, and testing steps for any runtime behavior change.
 4. Every additive IPC change must update both `shared/ipc/IPC_PROTOCOL_V1.md` and `shared/contracts/sidecar.rpc.v1.json` in the same PR.
 5. Generated files (`src/types.contracts.ts`, `src-tauri/src/contracts.rs`) are committed read-only artifacts; manual edits belong in wrappers/modules around them.
+
+## Integrity Guard
+
+- CI runs `python3 scripts/check_brownfield_compatibility.py`.
+- The guard fails if required module mappings are removed, mapped paths disappear, or critical rules drift.
+- Regression tests for the guard live in `scripts/tests/test_check_brownfield_compatibility.py`.
