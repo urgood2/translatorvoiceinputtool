@@ -15,6 +15,8 @@ function App() {
   const isInitialized = useAppStore((state) => state.isInitialized);
   const isLoading = useAppStore((state) => state.isLoading);
   const devices = useAppStore((state) => state.devices);
+  const audioLevel = useAppStore((state) => state.audioLevel);
+  const isMeterRunning = useAppStore((state) => state.isMeterRunning);
   const history = useAppStore((state) => state.history);
   const modelStatus = useAppStore((state) => state.modelStatus);
   const selfCheckResult = useAppStore((state) => state.selfCheckResult);
@@ -28,6 +30,8 @@ function App() {
   const updateAudioConfig = useAppStore((state) => state.updateAudioConfig);
   const updateHotkeyConfig = useAppStore((state) => state.updateHotkeyConfig);
   const updateInjectionConfig = useAppStore((state) => state.updateInjectionConfig);
+  const startMicTest = useAppStore((state) => state.startMicTest);
+  const stopMicTest = useAppStore((state) => state.stopMicTest);
 
   const [isSelfCheckLoading, setIsSelfCheckLoading] = useState(false);
   const [isDiagnosticsLoading, setIsDiagnosticsLoading] = useState(false);
@@ -185,7 +189,11 @@ function App() {
             <SettingsPanel
               config={config}
               devices={devices}
+              audioLevel={audioLevel}
+              isMeterRunning={isMeterRunning}
               effectiveHotkeyMode={capabilities?.hotkey_mode}
+              onStartMicTest={startMicTest}
+              onStopMicTest={stopMicTest}
               onConfigChange={handleSettingsChange}
               isLoading={isLoading}
             />

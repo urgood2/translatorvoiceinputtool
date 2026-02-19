@@ -184,5 +184,7 @@ describe('App diagnostics panels', () => {
     expect(screen.getByText('Settings')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Hotkeys' })).toBeDefined();
     expect(screen.getByRole('button', { name: 'Injection' })).toBeDefined();
+    expect(screen.getByText('Microphone Test')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Start Test' })).toBeDefined();
   });
 });

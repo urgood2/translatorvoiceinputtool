@@ -8,17 +8,28 @@
  */
 
 import { useState } from 'react';
-import type { AppConfig, AudioDevice, EffectiveMode, ActivationMode } from '../../types';
+import type {
+  AppConfig,
+  AudioDevice,
+  AudioLevelEvent,
+  EffectiveMode,
+  ActivationMode,
+} from '../../types';
 import { MicrophoneSelect } from './MicrophoneSelect';
 import { HotkeyConfig } from './HotkeyConfig';
 import { InjectionSettings } from './InjectionSettings';
+import { MicrophoneTest } from './MicrophoneTest';
 
 type SettingsTab = 'audio' | 'hotkeys' | 'injection';
 
 interface SettingsPanelProps {
   config: AppConfig;
   devices: AudioDevice[];
+  audioLevel?: AudioLevelEvent | null;
+  isMeterRunning?: boolean;
   effectiveHotkeyMode?: EffectiveMode<ActivationMode>;
+  onStartMicTest?: () => Promise<void>;
+  onStopMicTest?: () => Promise<void>;
   onConfigChange: (path: string[], value: any) => Promise<void>;
   isLoading?: boolean;
 }
@@ -49,7 +60,11 @@ function TabButton({
 export function SettingsPanel({
   config,
   devices,
+  audioLevel,
+  isMeterRunning = false,
   effectiveHotkeyMode,
+  onStartMicTest,
+  onStopMicTest,
   onConfigChange,
   isLoading,
 }: SettingsPanelProps) {
@@ -66,6 +81,16 @@ export function SettingsPanel({
 
   const handleInjectionChange = async (key: string, value: any) => {
     await onConfigChange(['injection', key], value);
+  };
+
+  const handleStartMicTest = async () => {
+    if (!onStartMicTest) return;
+    await onStartMicTest();
+  };
+
+  const handleStopMicTest = async () => {
+    if (!onStopMicTest) return;
+    await onStopMicTest();
   };
 
   return (
@@ -95,14 +120,23 @@ export function SettingsPanel({
       {/* Tab content */}
       <div className="p-4 bg-white dark:bg-gray-800 rounded-b-lg">
         {activeTab === 'audio' && (
-          <MicrophoneSelect
-            devices={devices}
-            selectedUid={config.audio.device_uid}
-            audioCuesEnabled={config.audio.audio_cues_enabled}
-            onDeviceChange={(uid) => handleAudioChange('device_uid', uid)}
-            onAudioCuesChange={(enabled) => handleAudioChange('audio_cues_enabled', enabled)}
-            isLoading={isLoading}
-          />
+          <div className="space-y-6">
+            <MicrophoneSelect
+              devices={devices}
+              selectedUid={config.audio.device_uid}
+              audioCuesEnabled={config.audio.audio_cues_enabled}
+              onDeviceChange={(uid) => handleAudioChange('device_uid', uid)}
+              onAudioCuesChange={(enabled) => handleAudioChange('audio_cues_enabled', enabled)}
+              isLoading={isLoading}
+            />
+            <MicrophoneTest
+              deviceUid={config.audio.device_uid}
+              onStartTest={handleStartMicTest}
+              onStopTest={handleStopMicTest}
+              audioLevel={audioLevel ?? null}
+              isRunning={isMeterRunning}
+            />
+          </div>
         )}
 
         {activeTab === 'hotkeys' && (

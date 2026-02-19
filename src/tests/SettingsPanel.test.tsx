@@ -393,6 +393,8 @@ describe('SettingsPanel', () => {
       />
     );
     expect(screen.getByText('Microphone')).toBeDefined();
+    expect(screen.getByText('Microphone Test')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Start Test' })).toBeDefined();
   });
 
   it('switches to hotkeys tab', () => {
