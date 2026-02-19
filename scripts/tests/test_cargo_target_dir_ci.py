@@ -30,6 +30,16 @@ class CargoTargetDirWorkflowTests(unittest.TestCase):
         self.assertIn("Validate contracts and generated artifacts", test_workflow)
         self.assertIn("python scripts/validate_contracts.py", test_workflow)
 
+    def test_python_workflow_runs_sidecar_self_test_after_pytest(self) -> None:
+        test_workflow = TEST_WORKFLOW.read_text()
+
+        self.assertIn("Sidecar Self-Test", test_workflow)
+        self.assertIn("python -m openvoicy_sidecar.self_test", test_workflow)
+
+        pytest_index = test_workflow.index("Run pytest")
+        self_test_index = test_workflow.index("Sidecar Self-Test")
+        self.assertGreater(self_test_index, pytest_index)
+
 
 if __name__ == "__main__":
     unittest.main()

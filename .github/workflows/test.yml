@@ -93,6 +93,11 @@ jobs:
         run: |
           python -m pytest -v --tb=short --junitxml=test-results.xml
 
+      - name: Sidecar Self-Test
+        working-directory: sidecar
+        run: |
+          python -m openvoicy_sidecar.self_test
+
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
