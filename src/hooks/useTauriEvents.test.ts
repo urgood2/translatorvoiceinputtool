@@ -49,13 +49,19 @@ describe('useTauriEvents', () => {
     });
 
     // Verify listen was called for expected events
+    expect(listen).toHaveBeenCalledWith('state:changed', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('state_changed', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('model:status', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('model:progress', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('audio:level', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('transcript:complete', expect.any(Function));
+    expect(listen).toHaveBeenCalledWith('transcription:complete', expect.any(Function));
+    expect(listen).toHaveBeenCalledWith('transcript:error', expect.any(Function));
+    expect(listen).toHaveBeenCalledWith('transcription:error', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('app:error', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('sidecar:status', expect.any(Function));
+    expect(listen).toHaveBeenCalledWith('status:changed', expect.any(Function));
+    expect(listen).toHaveBeenCalledWith('recording:status', expect.any(Function));
 
     unmount();
   });
@@ -163,6 +169,40 @@ describe('useTauriEvents', () => {
       timings,
     });
     expect(new Date(entry.timestamp).toString()).not.toBe('Invalid Date');
+
+    unmount();
+  });
+
+  test('dedupes canonical and legacy transcript events by shared seq', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    const canonicalPayload = {
+      seq: 42,
+      entry: {
+        id: 'entry-42',
+        text: 'Canonical payload',
+        raw_text: 'Canonical payload',
+        final_text: 'Canonical payload',
+        timestamp: new Date().toISOString(),
+        audio_duration_ms: 1000,
+        transcription_duration_ms: 220,
+        session_id: 'session-42',
+        injection_result: { status: 'injected' as const },
+      },
+    };
+
+    act(() => {
+      emitMockEvent('transcript:complete', canonicalPayload);
+      emitMockEvent('transcription:complete', canonicalPayload);
+    });
+
+    const history = useAppStore.getState().history;
+    expect(history).toHaveLength(1);
+    expect(history[0]?.id).toBe('entry-42');
 
     unmount();
   });
