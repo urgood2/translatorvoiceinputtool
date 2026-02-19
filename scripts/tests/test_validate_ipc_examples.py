@@ -253,6 +253,49 @@ class ValidateIPCExamplesTests(unittest.TestCase):
             errors = MODULE.validate_status_get_idle_fixture_variants(examples_file)
             self.assertEqual(errors, [])
 
+    def test_contract_method_coverage_reports_missing_required_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            examples_file = Path(tmpdir) / "examples.jsonl"
+            contract_file = Path(tmpdir) / "sidecar.rpc.v1.json"
+            contract_file.write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {"type": "method", "name": "status.get", "required": True},
+                            {"type": "method", "name": "system.ping", "required": False},
+                        ]
+                    }
+                )
+            )
+            self._write_jsonl(
+                examples_file,
+                [
+                    {
+                        "type": "request",
+                        "data": {"jsonrpc": "2.0", "id": 1, "method": "system.ping"},
+                    }
+                ],
+            )
+
+            errors, covered, total = MODULE.validate_contract_method_coverage(examples_file, contract_file)
+            self.assertEqual((covered, total), (1, 2))
+            self.assertEqual(len(errors), 1)
+            self.assertIn("status.get", errors[0])
+
+    def test_validate_example_request_uses_dynamic_contract_method_set(self) -> None:
+        obj = {
+            "_comment": "custom request",
+            "type": "request",
+            "data": {"jsonrpc": "2.0", "id": 1, "method": "custom.method"},
+        }
+        errors = MODULE.validate_example(
+            obj,
+            1,
+            request_methods={"custom.method"},
+            notification_methods=set(),
+        )
+        self.assertEqual(errors, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft7Validator, RefResolver
+
 # Valid error kind strings from the protocol
 VALID_ERROR_KINDS = {
     "E_METHOD_NOT_FOUND",
@@ -45,66 +47,47 @@ JSONRPC_SERVER_ERROR_RANGE = range(-32099, -31999)  # -32099 to -32000
 # Valid message types
 VALID_MESSAGE_TYPES = {"request", "response", "notification", "error"}
 
-# Valid method prefixes
-VALID_METHOD_PREFIXES = {"system", "audio", "model", "asr", "recording", "replacements", "status", "event"}
-
-# Valid notification methods
-VALID_NOTIFICATION_METHODS = {
-    "event.status_changed",
-    "event.audio_level",
-    "event.transcription_complete",
-    "event.transcription_error",
-}
-
-# Valid request methods
-VALID_REQUEST_METHODS = {
-    "system.ping",
-    "system.info",
-    "system.shutdown",
-    "audio.list_devices",
-    "audio.set_device",
-    "audio.meter_start",
-    "audio.meter_stop",
-    "audio.meter_status",
-    "model.get_status",
-    "model.download",
-    "model.purge_cache",
-    "asr.initialize",
-    "asr.status",
-    "asr.transcribe",
-    "recording.start",
-    "recording.stop",
-    "recording.cancel",
-    "recording.status",
-    "replacements.get_rules",
-    "replacements.set_rules",
-    "replacements.get_presets",
-    "replacements.get_preset_rules",
-    "replacements.preview",
-    "status.get",
-}
-
-
 METHOD_NAME_RE = re.compile(r"([a-z]+\.[a-z_]+)")
+
+
+def load_contract_inventory(contract_file: Path) -> dict[str, Any]:
+    """Load method/notification schemas and coverage metadata from sidecar.rpc.v1 contract."""
+    contract_data = json.loads(contract_file.read_text())
+    methods: dict[str, dict[str, Any]] = {}
+    notifications: dict[str, dict[str, Any]] = {}
+    required_methods: set[str] = set()
+
+    for item in contract_data.get("items", []):
+        item_type = item.get("type")
+        name = item.get("name")
+        if not isinstance(name, str):
+            continue
+
+        if item_type == "method":
+            methods[name] = {
+                "params_schema": item.get("params_schema"),
+                "result_schema": item.get("result_schema"),
+                "required": item.get("required") is True,
+            }
+            if item.get("required") is True:
+                required_methods.add(name)
+        elif item_type == "notification":
+            notifications[name] = {
+                "params_schema": item.get("params_schema"),
+            }
+
+    return {
+        "contract": contract_data,
+        "methods": methods,
+        "notifications": notifications,
+        "required_methods": required_methods,
+        "optional_methods": set(methods.keys()) - required_methods,
+    }
 
 
 def load_contract_method_schemas(contract_file: Path) -> dict[str, dict[str, Any]]:
     """Load method -> params/result schema objects from sidecar.rpc.v1 contract."""
-    contract_data = json.loads(contract_file.read_text())
-    result: dict[str, dict[str, Any]] = {}
-
-    for item in contract_data.get("items", []):
-        if item.get("type") != "method":
-            continue
-        method_name = item.get("name")
-        if not isinstance(method_name, str):
-            continue
-        result[method_name] = {
-            "params_schema": item.get("params_schema"),
-            "result_schema": item.get("result_schema"),
-        }
-
-    return result
+    return load_contract_inventory(contract_file)["methods"]
 
 
 def _json_type_matches(value: Any, expected_type: str) -> bool:
@@ -208,14 +191,46 @@ def infer_response_method(
     return None
 
 
+def _format_validation_error(err: Any, path_prefix: str) -> str:
+    location = ".".join(str(p) for p in err.path)
+    prefix = f"{path_prefix}.{location}" if location else path_prefix
+
+    if err.validator == "required":
+        marker = "'"
+        if marker in err.message:
+            field = err.message.split(marker, 2)[1]
+            return f"{prefix}: missing required field '{field}'"
+    if err.validator == "additionalProperties":
+        marker = "('"
+        if marker in err.message:
+            field = err.message.split(marker, 1)[1].split("'", 1)[0]
+            return f"{prefix}: unexpected field '{field}'"
+    if err.validator == "enum":
+        return f"{prefix}: expected one of {err.validator_value}, got {err.instance!r}"
+    if err.validator == "minLength":
+        return f"{prefix}: minLength violation ({err.message})"
+    return f"{prefix}: {err.message}"
+
+
+def validate_against_schema(instance: Any, schema: Any, root_schema: dict[str, Any], path_prefix: str) -> list[str]:
+    if not isinstance(schema, dict):
+        return []
+    resolver = RefResolver.from_schema(root_schema)
+    validator = Draft7Validator(schema, resolver=resolver)
+    return [_format_validation_error(err, path_prefix) for err in validator.iter_errors(instance)]
+
+
 def validate_method_level_contract_shapes(examples_file: Path, contract_file: Path) -> list[str]:
-    """Validate request params/response results against per-method contract schemas."""
+    """Validate request/response/notification payloads against sidecar.rpc.v1 schemas."""
     errors: list[str] = []
 
     try:
-        method_schemas = load_contract_method_schemas(contract_file)
+        inventory = load_contract_inventory(contract_file)
     except Exception as e:
         return [f"Contract parse error: {e}"]
+    contract_data = inventory["contract"]
+    method_schemas = inventory["methods"]
+    notification_schemas = inventory["notifications"]
 
     request_method_by_id: dict[Any, str] = {}
     lines: list[tuple[int, dict[str, Any]]] = []
@@ -240,6 +255,7 @@ def validate_method_level_contract_shapes(examples_file: Path, contract_file: Pa
             request_method_by_id[msg_id] = method_name
 
     known_methods = set(method_schemas.keys())
+    known_notifications = set(notification_schemas.keys())
 
     for line_num, obj in lines:
         msg_type = obj.get("type")
@@ -255,7 +271,12 @@ def validate_method_level_contract_shapes(examples_file: Path, contract_file: Pa
                 continue
 
             params = data.get("params", {})
-            params_errors = validate_schema_value(params, method_schema.get("params_schema"), f"{method_name}.params")
+            params_errors = validate_against_schema(
+                params,
+                method_schema.get("params_schema"),
+                contract_data,
+                f"{method_name}.params",
+            )
             errors.extend(f"Line {line_num}: {err}" for err in params_errors)
             continue
 
@@ -269,12 +290,66 @@ def validate_method_level_contract_shapes(examples_file: Path, contract_file: Pa
             if not method_schema:
                 continue
 
-            result_errors = validate_schema_value(
-                data["result"], method_schema.get("result_schema"), f"{method_name}.result"
+            result_errors = validate_against_schema(
+                data["result"],
+                method_schema.get("result_schema"),
+                contract_data,
+                f"{method_name}.result",
             )
             errors.extend(f"Line {line_num}: {err}" for err in result_errors)
+            continue
+
+        if msg_type == "notification":
+            method_name = data.get("method")
+            if not isinstance(method_name, str):
+                continue
+            if method_name not in known_notifications:
+                continue
+            params = data.get("params", {})
+            params_errors = validate_against_schema(
+                params,
+                notification_schemas[method_name].get("params_schema"),
+                contract_data,
+                f"{method_name}.params",
+            )
+            errors.extend(f"Line {line_num}: {err}" for err in params_errors)
 
     return errors
+
+
+def validate_contract_method_coverage(examples_file: Path, contract_file: Path) -> tuple[list[str], int, int]:
+    """Validate fixture request coverage against contract method inventory."""
+    inventory = load_contract_inventory(contract_file)
+    methods = inventory["methods"]
+    required_methods = inventory["required_methods"]
+    errors: list[str] = []
+
+    seen_request_methods: set[str] = set()
+    for line_num, line in enumerate(examples_file.read_text().splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        if obj.get("type") != "request":
+            continue
+        data = obj.get("data", {})
+        method_name = data.get("method")
+        if not isinstance(method_name, str):
+            continue
+        if method_name not in methods:
+            errors.append(f"Line {line_num}: Unknown request method in fixture: {method_name}")
+            continue
+        seen_request_methods.add(method_name)
+
+    missing_required = sorted(required_methods - seen_request_methods)
+    for method in missing_required:
+        errors.append(f"Missing fixture request for required method '{method}'")
+
+    return errors, len(seen_request_methods), len(methods)
 
 
 def validate_status_get_idle_fixture_variants(examples_file: Path) -> list[str]:
@@ -347,7 +422,7 @@ def validate_error_kind(kind: str) -> str | None:
     return f"Invalid error kind: {kind}"
 
 
-def validate_jsonrpc_request(data: dict[str, Any], line_num: int) -> list[str]:
+def validate_jsonrpc_request(data: dict[str, Any], line_num: int, request_methods: set[str] | None = None) -> list[str]:
     """Validate JSON-RPC request structure."""
     errors = []
 
@@ -358,7 +433,7 @@ def validate_jsonrpc_request(data: dict[str, Any], line_num: int) -> list[str]:
         errors.append(f"Line {line_num}: Request missing 'method' field")
     else:
         method = data["method"]
-        if method not in VALID_REQUEST_METHODS:
+        if request_methods is not None and method not in request_methods:
             errors.append(f"Line {line_num}: Unknown request method: {method}")
 
     return errors
@@ -380,7 +455,11 @@ def validate_jsonrpc_response(data: dict[str, Any], line_num: int) -> list[str]:
     return errors
 
 
-def validate_jsonrpc_notification(data: dict[str, Any], line_num: int) -> list[str]:
+def validate_jsonrpc_notification(
+    data: dict[str, Any],
+    line_num: int,
+    notification_methods: set[str] | None = None,
+) -> list[str]:
     """Validate JSON-RPC notification structure."""
     errors = []
 
@@ -391,7 +470,7 @@ def validate_jsonrpc_notification(data: dict[str, Any], line_num: int) -> list[s
         errors.append(f"Line {line_num}: Notification missing 'method' field")
     else:
         method = data["method"]
-        if method not in VALID_NOTIFICATION_METHODS:
+        if notification_methods is not None and method not in notification_methods:
             errors.append(f"Line {line_num}: Unknown notification method: {method}")
 
     if "params" not in data:
@@ -430,7 +509,12 @@ def validate_jsonrpc_error(data: dict[str, Any], line_num: int) -> list[str]:
     return errors
 
 
-def validate_example(obj: dict[str, Any], line_num: int) -> list[str]:
+def validate_example(
+    obj: dict[str, Any],
+    line_num: int,
+    request_methods: set[str] | None = None,
+    notification_methods: set[str] | None = None,
+) -> list[str]:
     """Validate a single example object."""
     errors = []
 
@@ -458,11 +542,11 @@ def validate_example(obj: dict[str, Any], line_num: int) -> list[str]:
 
     # Type-specific validation
     if msg_type == "request":
-        errors.extend(validate_jsonrpc_request(data, line_num))
+        errors.extend(validate_jsonrpc_request(data, line_num, request_methods))
     elif msg_type == "response":
         errors.extend(validate_jsonrpc_response(data, line_num))
     elif msg_type == "notification":
-        errors.extend(validate_jsonrpc_notification(data, line_num))
+        errors.extend(validate_jsonrpc_notification(data, line_num, notification_methods))
     elif msg_type == "error":
         errors.extend(validate_jsonrpc_error(data, line_num))
 
@@ -484,6 +568,20 @@ def main() -> int:
     if not contract_file.exists():
         print(f"ERROR: Contract file not found: {contract_file}", file=sys.stderr)
         return 1
+
+    try:
+        contract_inventory = load_contract_inventory(contract_file)
+    except Exception as e:
+        print(f"ERROR: Contract parse error: {e}", file=sys.stderr)
+        return 1
+    request_methods = set(contract_inventory["methods"].keys())
+    notification_methods = set(contract_inventory["notifications"].keys())
+    required_methods = set(contract_inventory["required_methods"])
+    optional_methods = set(contract_inventory["optional_methods"])
+    print(
+        "Contract defines "
+        f"{len(request_methods)} methods ({len(required_methods)} required, {len(optional_methods)} optional)"
+    )
 
     all_errors: list[str] = []
     line_count = 0
@@ -512,7 +610,7 @@ def main() -> int:
                 continue
 
             # Validate structure
-            errors = validate_example(obj, line_num)
+            errors = validate_example(obj, line_num, request_methods, notification_methods)
             all_errors.extend(errors)
 
             # Update stats
@@ -520,7 +618,10 @@ def main() -> int:
                 stats[obj["type"]] += 1
 
     all_errors.extend(validate_method_level_contract_shapes(examples_file, contract_file))
+    coverage_errors, covered_count, total_methods = validate_contract_method_coverage(examples_file, contract_file)
+    all_errors.extend(coverage_errors)
     all_errors.extend(validate_status_get_idle_fixture_variants(examples_file))
+    print(f"Fixture covers {covered_count}/{total_methods} methods")
 
     # Print results
     if all_errors:
