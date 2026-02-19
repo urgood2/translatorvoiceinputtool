@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 
 use crate::config::{self, HotkeyMode};
 use crate::history::TranscriptHistory;
-use crate::state::AppStateManager;
+use crate::state::{AppState, AppStateManager};
 
 /// Sound types for audio cues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,8 +79,6 @@ pub struct HotkeyStatus {
 struct HotkeyState {
     /// Whether the primary key is currently held down.
     key_is_down: AtomicBool,
-    /// Whether recording is active (for toggle mode).
-    recording: AtomicBool,
     /// Whether audio cues are enabled.
     audio_cues_enabled: AtomicBool,
     /// Current hotkey mode.
@@ -91,7 +89,6 @@ impl HotkeyState {
     fn new(mode: HotkeyMode, audio_cues_enabled: bool) -> Self {
         Self {
             key_is_down: AtomicBool::new(false),
-            recording: AtomicBool::new(false),
             audio_cues_enabled: AtomicBool::new(audio_cues_enabled),
             mode,
         }
@@ -260,9 +257,8 @@ impl HotkeyManager {
                     return None; // Already down, this is auto-repeat
                 }
 
-                if self.state.recording.load(Ordering::SeqCst) {
-                    // Currently recording, stop
-                    self.state.recording.store(false, Ordering::SeqCst);
+                if state_manager.get() == AppState::Recording {
+                    // Recording state is authoritative, so toggle requests stop from that state.
                     play_sound(
                         Sound::Stop,
                         self.state.audio_cues_enabled.load(Ordering::Relaxed),
@@ -278,7 +274,6 @@ impl HotkeyManager {
                         return None;
                     }
 
-                    self.state.recording.store(true, Ordering::SeqCst);
                     play_sound(
                         Sound::Start,
                         self.state.audio_cues_enabled.load(Ordering::Relaxed),
@@ -292,7 +287,7 @@ impl HotkeyManager {
     /// Handle primary key up event.
     ///
     /// Returns true if recording should stop.
-    pub fn handle_primary_up(&self) -> Option<RecordingAction> {
+    pub fn handle_primary_up(&self, state_manager: &AppStateManager) -> Option<RecordingAction> {
         // Clear the key-down state
         if !self.state.key_is_down.swap(false, Ordering::SeqCst) {
             return None; // Was not down (shouldn't happen)
@@ -300,6 +295,9 @@ impl HotkeyManager {
 
         match self.state.mode {
             HotkeyMode::Hold => {
+                if state_manager.get() != AppState::Recording {
+                    return None;
+                }
                 play_sound(
                     Sound::Stop,
                     self.state.audio_cues_enabled.load(Ordering::Relaxed),
@@ -574,7 +572,6 @@ mod tests {
     fn test_hotkey_state_creation() {
         let state = HotkeyState::new(HotkeyMode::Hold, true);
         assert!(!state.key_is_down.load(Ordering::Relaxed));
-        assert!(!state.recording.load(Ordering::Relaxed));
         assert!(state.audio_cues_enabled.load(Ordering::Relaxed));
     }
 
@@ -596,17 +593,24 @@ mod tests {
     }
 
     #[test]
-    fn test_toggle_mode_state() {
-        let state = HotkeyState::new(HotkeyMode::Toggle, false);
+    fn test_toggle_mode_uses_app_state_for_stop_decision() {
+        let mut manager = HotkeyManager::new();
+        manager.state = Arc::new(HotkeyState::new(HotkeyMode::Toggle, false));
+        let state_manager = AppStateManager::new();
 
-        // First press: start recording
-        assert!(!state.recording.load(Ordering::SeqCst));
-        state.recording.store(true, Ordering::SeqCst);
-        assert!(state.recording.load(Ordering::SeqCst));
+        assert!(matches!(
+            manager.handle_primary_down(&state_manager),
+            Some(RecordingAction::Start)
+        ));
 
-        // Second press: stop recording
-        state.recording.store(false, Ordering::SeqCst);
-        assert!(!state.recording.load(Ordering::SeqCst));
+        // Clear key-down latch as if key was released.
+        assert!(manager.handle_primary_up(&state_manager).is_none());
+
+        state_manager.transition(AppState::Recording).unwrap();
+        assert!(matches!(
+            manager.handle_primary_down(&state_manager),
+            Some(RecordingAction::Stop)
+        ));
     }
 
     #[test]
