@@ -73,6 +73,12 @@ pub struct TranscriptEntry {
     pub id: Uuid,
     /// The transcribed text.
     pub text: String,
+    /// Raw transcript text before optional sidecar post-processing.
+    #[serde(default)]
+    pub raw_text: String,
+    /// Final transcript text after sidecar post-processing.
+    #[serde(default)]
+    pub final_text: String,
     /// When the transcription was created.
     pub timestamp: DateTime<Utc>,
     /// Duration of the audio recording in milliseconds.
@@ -82,6 +88,12 @@ pub struct TranscriptEntry {
     /// Recording session ID correlated to the sidecar session, if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<Uuid>,
+    /// Optional detected language code (for example, "en").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Optional confidence score in [0.0, 1.0].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
     /// Result of injection attempt.
     pub injection_result: HistoryInjectionResult,
     /// Optional stop -> injection timing breakdown.
@@ -97,13 +109,19 @@ impl TranscriptEntry {
         transcription_duration_ms: u32,
         injection_result: HistoryInjectionResult,
     ) -> Self {
+        let raw_text = text.clone();
+        let final_text = text.clone();
         Self {
             id: Uuid::new_v4(),
             text,
+            raw_text,
+            final_text,
             timestamp: Utc::now(),
             audio_duration_ms,
             transcription_duration_ms,
             session_id: None,
+            language: None,
+            confidence: None,
             injection_result,
             timings: None,
         }
@@ -112,6 +130,13 @@ impl TranscriptEntry {
     /// Attach recording session ID.
     pub fn with_session_id(mut self, session_id: Option<Uuid>) -> Self {
         self.session_id = session_id;
+        self
+    }
+
+    /// Attach optional language and confidence metadata.
+    pub fn with_asr_metadata(mut self, language: Option<String>, confidence: Option<f32>) -> Self {
+        self.language = language;
+        self.confidence = confidence;
         self
     }
 
@@ -291,6 +316,8 @@ mod tests {
 
         let retrieved = history.last().unwrap();
         assert_eq!(retrieved.text, "Hello, world!");
+        assert_eq!(retrieved.raw_text, "Hello, world!");
+        assert_eq!(retrieved.final_text, "Hello, world!");
         assert_eq!(retrieved.id, entry_id);
     }
 
@@ -473,6 +500,8 @@ mod tests {
 
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"text\":\"Test text\""));
+        assert!(json.contains("\"raw_text\":\"Test text\""));
+        assert!(json.contains("\"final_text\":\"Test text\""));
         assert!(json.contains("\"audio_duration_ms\":2000"));
         assert!(json.contains("\"transcription_duration_ms\":350"));
     }
@@ -491,6 +520,10 @@ mod tests {
         let entry: TranscriptEntry =
             serde_json::from_value(value).expect("legacy entry should deserialize");
         assert!(entry.session_id.is_none());
+        assert!(entry.language.is_none());
+        assert!(entry.confidence.is_none());
+        assert!(entry.raw_text.is_empty());
+        assert!(entry.final_text.is_empty());
     }
 
     #[test]
@@ -510,6 +543,44 @@ mod tests {
             value.get("session_id").and_then(serde_json::Value::as_str),
             Some(expected.as_str())
         );
+    }
+
+    #[test]
+    fn test_entry_with_asr_metadata_serialization() {
+        let entry = TranscriptEntry::new(
+            "Test text".to_string(),
+            2000,
+            350,
+            HistoryInjectionResult::Injected,
+        )
+        .with_asr_metadata(Some("en".to_string()), Some(0.93));
+
+        let value = serde_json::to_value(&entry).unwrap();
+        assert_eq!(
+            value.get("language").and_then(serde_json::Value::as_str),
+            Some("en")
+        );
+        let confidence = value
+            .get("confidence")
+            .and_then(serde_json::Value::as_f64)
+            .expect("confidence should serialize");
+        assert!((confidence - 0.93_f64).abs() < 1e-6_f64);
+    }
+
+    #[test]
+    fn test_entry_serialization_omits_optional_metadata_when_absent() {
+        let entry = TranscriptEntry::new(
+            "Test text".to_string(),
+            2000,
+            350,
+            HistoryInjectionResult::Injected,
+        );
+
+        let value = serde_json::to_value(&entry).unwrap();
+        assert!(value.get("session_id").is_none());
+        assert!(value.get("language").is_none());
+        assert!(value.get("confidence").is_none());
+        assert!(value.get("timings").is_none());
     }
 
     #[test]

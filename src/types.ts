@@ -260,9 +260,14 @@ export interface TranscriptTimings {
 export interface TranscriptEntry {
   id: string;
   text: string;
+  raw_text: string;
+  final_text: string;
   timestamp: string;
   audio_duration_ms: number;
   transcription_duration_ms: number;
+  session_id?: string;
+  language?: string;
+  confidence?: number;
   injection_result: InjectionResult;
   timings?: TranscriptTimings;
 }
@@ -433,6 +438,10 @@ export type LegacyInjectionResult =
 export interface LegacyTranscriptEvent {
   session_id: string;
   text: string;
+  raw_text?: string;
+  final_text?: string;
+  language?: string;
+  confidence?: number;
   audio_duration_ms: number;
   processing_duration_ms: number;
   injection_result?: InjectionResult | LegacyInjectionResult;

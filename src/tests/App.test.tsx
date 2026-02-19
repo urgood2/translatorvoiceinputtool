@@ -77,6 +77,8 @@ describe('App diagnostics panels', () => {
             {
               id: 'entry-1',
               text: 'Sample transcript text.',
+              raw_text: 'Sample transcript text.',
+              final_text: 'Sample transcript text.',
               timestamp: new Date().toISOString(),
               audio_duration_ms: 2400,
               transcription_duration_ms: 500,

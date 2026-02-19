@@ -153,9 +153,14 @@ export function createMockDevice(overrides: Partial<{
 export function createMockTranscript(overrides: Partial<{
   id: string;
   text: string;
+  raw_text: string;
+  final_text: string;
   timestamp: string;
   audio_duration_ms: number;
   transcription_duration_ms: number;
+  session_id?: string;
+  language?: string;
+  confidence?: number;
   injection_result:
     | { status: 'injected' }
     | { status: 'clipboard_only'; reason: string }
@@ -171,6 +176,8 @@ export function createMockTranscript(overrides: Partial<{
   return {
     id: 'test-transcript-id',
     text: 'Hello, world!',
+    raw_text: 'Hello, world!',
+    final_text: 'Hello, world!',
     timestamp: new Date().toISOString(),
     audio_duration_ms: 2000,
     transcription_duration_ms: 500,

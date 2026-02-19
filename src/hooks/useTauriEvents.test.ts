@@ -109,6 +109,8 @@ describe('useTauriEvents', () => {
     store._addHistoryEntry({
       id: 'test',
       text: 'Hello',
+      raw_text: 'Hello',
+      final_text: 'Hello',
       timestamp: new Date().toISOString(),
       audio_duration_ms: 1000,
       transcription_duration_ms: 200,
@@ -152,6 +154,9 @@ describe('useTauriEvents', () => {
     expect(entry).toMatchObject({
       id: 'session-123',
       text: 'Legacy payload',
+      raw_text: 'Legacy payload',
+      final_text: 'Legacy payload',
+      session_id: 'session-123',
       audio_duration_ms: 1200,
       transcription_duration_ms: 450,
       injection_result: { status: 'error', message: 'paste failed' },

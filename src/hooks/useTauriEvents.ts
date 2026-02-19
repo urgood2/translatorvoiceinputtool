@@ -87,15 +87,42 @@ function normalizeInjectionResult(result: unknown): InjectionResult {
 
 function normalizeTranscriptPayload(payload: TranscriptEventPayload): TranscriptEntry {
   if ('entry' in payload) {
-    return payload.entry;
+    const rawText =
+      typeof payload.entry.raw_text === 'string' && payload.entry.raw_text.length > 0
+        ? payload.entry.raw_text
+        : payload.entry.text;
+    const finalText =
+      typeof payload.entry.final_text === 'string' && payload.entry.final_text.length > 0
+        ? payload.entry.final_text
+        : payload.entry.text;
+    return {
+      ...payload.entry,
+      text: finalText,
+      raw_text: rawText,
+      final_text: finalText,
+    };
   }
+
+  const rawText =
+    typeof payload.raw_text === 'string' && payload.raw_text.length > 0
+      ? payload.raw_text
+      : payload.text;
+  const finalText =
+    typeof payload.final_text === 'string' && payload.final_text.length > 0
+      ? payload.final_text
+      : payload.text;
 
   return {
     id: payload.session_id,
-    text: payload.text,
+    text: finalText,
+    raw_text: rawText,
+    final_text: finalText,
     timestamp: new Date().toISOString(),
     audio_duration_ms: payload.audio_duration_ms,
     transcription_duration_ms: payload.processing_duration_ms,
+    session_id: payload.session_id,
+    language: typeof payload.language === 'string' ? payload.language : undefined,
+    confidence: typeof payload.confidence === 'number' ? payload.confidence : undefined,
     injection_result: normalizeInjectionResult(payload.injection_result),
     timings: payload.timings,
   };

@@ -12,6 +12,8 @@ const mockEntries: TranscriptEntry[] = [
   {
     id: '1',
     text: 'This is a test transcript.',
+    raw_text: 'This is a test transcript.',
+    final_text: 'This is a test transcript.',
     timestamp: new Date(Date.now() - 60000).toISOString(), // 1 minute ago
     audio_duration_ms: 3500,
     transcription_duration_ms: 1200,
@@ -20,6 +22,8 @@ const mockEntries: TranscriptEntry[] = [
   {
     id: '2',
     text: 'Another transcript that was clipboard only.',
+    raw_text: 'Another transcript that was clipboard only.',
+    final_text: 'Another transcript that was clipboard only.',
     timestamp: new Date(Date.now() - 3600000).toISOString(), // 1 hour ago
     audio_duration_ms: 5000,
     transcription_duration_ms: 1800,
@@ -28,6 +32,8 @@ const mockEntries: TranscriptEntry[] = [
   {
     id: '3',
     text: 'Failed transcript.',
+    raw_text: 'Failed transcript.',
+    final_text: 'Failed transcript.',
     timestamp: new Date(Date.now() - 86400000).toISOString(), // 1 day ago
     audio_duration_ms: 2000,
     transcription_duration_ms: 500,
