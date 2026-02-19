@@ -253,6 +253,19 @@ fn map_status_event_model_state(model_state: &str, detail: Option<String>) -> Mo
     }
 }
 
+fn transcription_error_event_payload(session_id: &str, app_error: &AppError) -> Value {
+    let legacy_message = app_error.message.clone();
+    json!({
+        "session_id": session_id,
+        "message": legacy_message,
+        "recoverable": app_error.recoverable,
+        // Backward-compatible legacy field used by older clients.
+        "error": legacy_message,
+        // Canonical structured error payload.
+        "app_error": app_error,
+    })
+}
+
 #[derive(Debug, Clone, Default)]
 struct PipelineTimingMarks {
     t0_stop_called: Option<Instant>,
@@ -1614,17 +1627,10 @@ impl IntegrationManager {
                                 })),
                                 true,
                             );
-                            let legacy_message = app_error.message.clone();
-                            let legacy_recoverable = app_error.recoverable;
                             emit_with_shared_seq(
                                 handle,
                                 &[EVENT_TRANSCRIPTION_ERROR, EVENT_APP_ERROR],
-                                json!({
-                                    "session_id": session_id,
-                                    "message": legacy_message,
-                                    "recoverable": legacy_recoverable,
-                                    "error": app_error,
-                                }),
+                                transcription_error_event_payload(&session_id, &app_error),
                                 &event_seq,
                             );
                         }
@@ -2180,6 +2186,36 @@ mod tests {
         assert_eq!(
             map_status_event_model_state("verifying", None),
             ModelStatus::Loading
+        );
+    }
+
+    #[test]
+    fn test_transcription_error_event_payload_preserves_legacy_error_string() {
+        let app_error = AppError::new(
+            ErrorKind::TranscriptionFailed.to_sidecar(),
+            "Transcription failed",
+            Some(json!({
+                "session_id": "session-1",
+                "error_kind": ErrorKind::TranscriptionFailed.to_sidecar()
+            })),
+            true,
+        );
+
+        let payload = transcription_error_event_payload("session-1", &app_error);
+        assert_eq!(
+            payload.get("error").and_then(Value::as_str),
+            Some("Transcription failed")
+        );
+        assert_eq!(
+            payload.get("message").and_then(Value::as_str),
+            Some("Transcription failed")
+        );
+        assert_eq!(payload.get("recoverable").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            payload
+                .pointer("/app_error/code")
+                .and_then(Value::as_str),
+            Some("E_TRANSCRIPTION_FAILED")
         );
     }
 

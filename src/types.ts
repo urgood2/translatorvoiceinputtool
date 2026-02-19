@@ -403,6 +403,7 @@ export interface TranscriptEvent {
 export interface ErrorEvent {
   message: string;
   recoverable: boolean;
-  error?: AppError;
+  error?: string | AppError;
+  app_error?: AppError;
   seq?: number;
 }
