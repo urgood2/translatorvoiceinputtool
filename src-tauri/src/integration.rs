@@ -50,6 +50,9 @@ const EVENT_MODEL_PROGRESS: &str = "model:progress";
 /// Model status event name.
 const EVENT_MODEL_STATUS: &str = "model:status";
 
+/// Canonical sidecar status event name.
+const EVENT_SIDECAR_STATUS: &str = "sidecar:status";
+
 /// Model status tracking.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -389,6 +392,76 @@ fn map_status_event_model_state(model_state: &str, detail: Option<String>) -> Mo
     }
 }
 
+fn infer_sidecar_state_from_detail(detail: Option<&str>) -> Option<&'static str> {
+    let normalized = detail?.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if normalized.contains("restart") {
+        return Some("restarting");
+    }
+
+    if normalized.contains("failed") || normalized.contains("crash") || normalized.contains("error")
+    {
+        return Some("failed");
+    }
+
+    if normalized.contains("stop") || normalized.contains("shutdown") {
+        return Some("stopped");
+    }
+
+    None
+}
+
+fn map_status_event_sidecar_state(state: Option<&str>, detail: Option<&str>) -> &'static str {
+    let normalized_state = state
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+
+    match normalized_state.as_deref() {
+        Some("starting") => "starting",
+        Some("ready") | Some("running") => "ready",
+        Some("failed") | Some("error") => "failed",
+        Some("restarting") => "restarting",
+        Some("stopped") | Some("stopping") | Some("shutdown") | Some("shutting_down") => "stopped",
+        Some("idle") | Some("loading_model") | Some("recording") | Some("transcribing") => "ready",
+        Some(_) | None => infer_sidecar_state_from_detail(detail).unwrap_or("ready"),
+    }
+}
+
+fn sidecar_status_payload_from_status_event(
+    state: Option<&str>,
+    detail: Option<String>,
+    restart_count: Option<u32>,
+) -> Value {
+    let normalized_detail = detail.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    let sidecar_state = map_status_event_sidecar_state(state, normalized_detail.as_deref());
+    let mut payload = json!({
+        "state": sidecar_state,
+        "restart_count": restart_count.unwrap_or(0),
+    });
+
+    if matches!(sidecar_state, "failed" | "restarting") {
+        if let Some(message) = normalized_detail {
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("message".to_string(), json!(message));
+            }
+        }
+    }
+
+    payload
+}
+
 fn transcription_error_event_payload(session_id: &str, app_error: &AppError) -> Value {
     json!({
         "session_id": session_id,
@@ -567,9 +640,9 @@ fn emit_with_shared_seq(
     handle: &AppHandle,
     events: &[&str],
     payload: Value,
-    _seq_counter: &Arc<AtomicU64>,
+    seq_counter: &Arc<AtomicU64>,
 ) -> u64 {
-    let seq = crate::event_seq::next_event_seq();
+    let seq = next_seq(seq_counter);
     let payload_with_seq = add_seq_to_payload(payload, seq);
 
     for event in events {
@@ -577,6 +650,10 @@ fn emit_with_shared_seq(
     }
 
     seq
+}
+
+fn next_seq(seq_counter: &Arc<AtomicU64>) -> u64 {
+    seq_counter.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Integration manager configuration.
@@ -2319,6 +2396,8 @@ impl IntegrationManager {
                             model: Option<Value>,
                             #[serde(default)]
                             progress: Option<ProgressParams>,
+                            #[serde(default)]
+                            restart_count: Option<u32>,
                         }
 
                         #[derive(Deserialize)]
@@ -2343,6 +2422,9 @@ impl IntegrationManager {
                             #[serde(default)]
                             stage: Option<String>,
                         }
+
+                        let mut canonical_sidecar_payload =
+                            sidecar_status_payload_from_status_event(None, None, None);
 
                         if let Ok(params) =
                             serde_json::from_value::<StatusParams>(event.params.clone())
@@ -2418,16 +2500,22 @@ impl IntegrationManager {
                                     );
                                 }
                             }
+
+                            canonical_sidecar_payload = sidecar_status_payload_from_status_event(
+                                params.state.as_deref(),
+                                params.detail.clone(),
+                                params.restart_count,
+                            );
                         }
 
-                        // Also forward raw event to frontend
+                        // Emit canonical sidecar status and keep forwarding legacy raw payload.
                         if let Some(ref handle) = app_handle {
-                            emit_with_shared_seq(
-                                handle,
-                                &[EVENT_STATUS_CHANGED],
-                                event.params,
-                                &event_seq,
-                            );
+                            let seq = next_seq(&event_seq);
+                            let canonical_payload =
+                                add_seq_to_payload(canonical_sidecar_payload, seq);
+                            let legacy_payload = add_seq_to_payload(event.params, seq);
+                            let _ = handle.emit(EVENT_SIDECAR_STATUS, canonical_payload);
+                            let _ = handle.emit(EVENT_STATUS_CHANGED, legacy_payload);
                         }
                     }
                     "event.audio_level" => {
@@ -2618,8 +2706,8 @@ mod tests {
     #[test]
     fn test_event_seq_is_monotonic() {
         let counter = Arc::new(AtomicU64::new(1));
-        let first = counter.fetch_add(1, Ordering::Relaxed);
-        let second = counter.fetch_add(1, Ordering::Relaxed);
+        let first = next_seq(&counter);
+        let second = next_seq(&counter);
         assert_eq!(first, 1);
         assert_eq!(second, 2);
     }
@@ -2855,6 +2943,63 @@ mod tests {
             map_status_event_model_state("verifying", None),
             ModelStatus::Loading
         );
+    }
+
+    #[test]
+    fn test_map_status_event_sidecar_state_maps_runtime_states_to_ready() {
+        assert_eq!(map_status_event_sidecar_state(Some("idle"), None), "ready");
+        assert_eq!(
+            map_status_event_sidecar_state(Some("recording"), None),
+            "ready"
+        );
+        assert_eq!(
+            map_status_event_sidecar_state(Some("transcribing"), None),
+            "ready"
+        );
+    }
+
+    #[test]
+    fn test_map_status_event_sidecar_state_uses_error_and_restart_signals() {
+        assert_eq!(
+            map_status_event_sidecar_state(Some("error"), Some("decoder crash")),
+            "failed"
+        );
+        assert_eq!(
+            map_status_event_sidecar_state(Some("unknown"), Some("restarting sidecar")),
+            "restarting"
+        );
+    }
+
+    #[test]
+    fn test_sidecar_status_payload_from_status_event_includes_message_for_failed() {
+        let payload = sidecar_status_payload_from_status_event(
+            Some("error"),
+            Some("Crash loop detected".to_string()),
+            Some(3),
+        );
+
+        assert_eq!(payload.get("state").and_then(Value::as_str), Some("failed"));
+        assert_eq!(
+            payload.get("restart_count").and_then(Value::as_u64),
+            Some(3)
+        );
+        assert_eq!(
+            payload.get("message").and_then(Value::as_str),
+            Some("Crash loop detected")
+        );
+    }
+
+    #[test]
+    fn test_sidecar_status_payload_from_status_event_omits_message_when_ready() {
+        let payload =
+            sidecar_status_payload_from_status_event(Some("idle"), Some("Ready".to_string()), None);
+
+        assert_eq!(payload.get("state").and_then(Value::as_str), Some("ready"));
+        assert_eq!(
+            payload.get("restart_count").and_then(Value::as_u64),
+            Some(0)
+        );
+        assert!(payload.get("message").is_none());
     }
 
     #[test]
