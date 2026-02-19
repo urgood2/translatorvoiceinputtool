@@ -55,20 +55,36 @@ pub struct SidecarLogRecord {
 
 #[derive(Debug, Clone)]
 pub struct SidecarSupervisorConfig {
+    /// Max rapid restarts before circuit breaker opens.
     pub max_restart_count: u32,
-    pub rapid_failure_window: Duration,
-    pub backoff_initial: Duration,
-    pub backoff_max: Duration,
+    /// Initial delay before restart (milliseconds).
+    pub backoff_base_ms: u64,
+    /// Exponential multiplier for each subsequent retry.
+    pub backoff_factor: f64,
+    /// Maximum restart delay cap (milliseconds).
+    pub backoff_max_ms: u64,
+    /// Rolling window for counting rapid failures (milliseconds).
+    pub circuit_breaker_window_ms: u64,
+    /// Master switch for auto-restart policy.
+    pub auto_restart_enabled: bool,
 }
 
 impl Default for SidecarSupervisorConfig {
     fn default() -> Self {
         Self {
             max_restart_count: 5,
-            rapid_failure_window: Duration::from_secs(60),
-            backoff_initial: Duration::from_millis(250),
-            backoff_max: Duration::from_secs(10),
+            backoff_base_ms: 1000,
+            backoff_factor: 2.0,
+            backoff_max_ms: 30_000,
+            circuit_breaker_window_ms: 60_000,
+            auto_restart_enabled: true,
         }
+    }
+}
+
+impl SidecarSupervisorConfig {
+    fn circuit_breaker_window(&self) -> Duration {
+        Duration::from_millis(self.circuit_breaker_window_ms)
     }
 }
 
@@ -235,7 +251,7 @@ where
     }
 
     fn should_auto_restart(&self) -> bool {
-        !self.circuit_breaker.is_open
+        self.config.auto_restart_enabled && !self.circuit_breaker.is_open
     }
 
     fn reset_circuit_breaker(&mut self) {
@@ -246,7 +262,7 @@ where
         let within_window = self
             .circuit_breaker
             .last_failure_at
-            .map(|previous| now.duration_since(previous) <= self.config.rapid_failure_window)
+            .map(|previous| now.duration_since(previous) <= self.config.circuit_breaker_window())
             .unwrap_or(false);
 
         self.circuit_breaker.rapid_failure_count = if within_window {
@@ -267,15 +283,20 @@ where
         if attempt <= 1 {
             return Duration::ZERO;
         }
-        if self.config.backoff_initial.is_zero() {
+        if self.config.backoff_base_ms == 0 {
             return Duration::ZERO;
         }
 
-        let exponent = attempt.saturating_sub(2).min(62);
-        let multiplier = 1u128 << exponent;
-        let base_ms = self.config.backoff_initial.as_millis();
-        let max_ms = self.config.backoff_max.as_millis();
-        let delay_ms = base_ms.saturating_mul(multiplier).min(max_ms);
+        let factor = if self.config.backoff_factor.is_finite() && self.config.backoff_factor > 0.0 {
+            self.config.backoff_factor
+        } else {
+            1.0
+        };
+        let exponent = attempt.saturating_sub(2) as i32;
+        let scaled = (self.config.backoff_base_ms as f64) * factor.powi(exponent);
+        let scaled_ms = scaled.max(0.0).round() as u128;
+        let max_ms = u128::from(self.config.backoff_max_ms.max(self.config.backoff_base_ms));
+        let delay_ms = scaled_ms.min(max_ms);
 
         let delay_u64 = if delay_ms > u128::from(u64::MAX) {
             u64::MAX
@@ -398,9 +419,11 @@ mod tests {
             controller,
             SidecarSupervisorConfig {
                 max_restart_count: 10,
-                rapid_failure_window: Duration::from_secs(30),
-                backoff_initial: Duration::from_millis(100),
-                backoff_max: Duration::from_millis(500),
+                backoff_base_ms: 100,
+                backoff_factor: 2.0,
+                backoff_max_ms: 500,
+                circuit_breaker_window_ms: 30_000,
+                auto_restart_enabled: true,
             },
         );
 
@@ -430,9 +453,11 @@ mod tests {
             controller.clone(),
             SidecarSupervisorConfig {
                 max_restart_count: 2,
-                rapid_failure_window: Duration::from_secs(60),
-                backoff_initial: Duration::ZERO,
-                backoff_max: Duration::ZERO,
+                backoff_base_ms: 0,
+                backoff_factor: 2.0,
+                backoff_max_ms: 0,
+                circuit_breaker_window_ms: 60_000,
+                auto_restart_enabled: true,
             },
         );
 
@@ -461,9 +486,11 @@ mod tests {
             controller.clone(),
             SidecarSupervisorConfig {
                 max_restart_count: 1,
-                rapid_failure_window: Duration::from_secs(60),
-                backoff_initial: Duration::ZERO,
-                backoff_max: Duration::ZERO,
+                backoff_base_ms: 0,
+                backoff_factor: 2.0,
+                backoff_max_ms: 0,
+                circuit_breaker_window_ms: 60_000,
+                auto_restart_enabled: true,
             },
         );
 
@@ -517,5 +544,39 @@ mod tests {
         assert_eq!(logs[0].line, "hello");
         assert_eq!(logs[1].stream, SidecarLogStream::Stderr);
         assert_eq!(logs[1].line, "warn");
+    }
+
+    #[test]
+    fn default_config_matches_supervisor_policy_contract() {
+        let config = SidecarSupervisorConfig::default();
+        assert_eq!(config.max_restart_count, 5);
+        assert_eq!(config.backoff_base_ms, 1000);
+        assert_eq!(config.backoff_factor, 2.0);
+        assert_eq!(config.backoff_max_ms, 30_000);
+        assert_eq!(config.circuit_breaker_window_ms, 60_000);
+        assert!(config.auto_restart_enabled);
+    }
+
+    #[tokio::test]
+    async fn auto_restart_toggle_disables_restart_attempts() {
+        let controller = FakeController::default();
+        let mut supervisor = SidecarSupervisor::new(
+            controller.clone(),
+            SidecarSupervisorConfig {
+                auto_restart_enabled: false,
+                backoff_base_ms: 0,
+                ..SidecarSupervisorConfig::default()
+            },
+        );
+
+        supervisor
+            .handle_crash()
+            .await
+            .expect("crash handling should still complete");
+
+        assert_eq!(supervisor.state(), SidecarState::Stopped);
+        assert_eq!(supervisor.restart_count(), 0);
+        assert!(!supervisor.circuit_breaker_open());
+        assert_eq!(controller.state().start_calls, 0);
     }
 }
