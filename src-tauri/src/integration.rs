@@ -144,7 +144,9 @@ pub struct SidecarModelProgress {
 /// Status changed event name (mirrors sidecar event).
 const EVENT_STATUS_CHANGED: &str = "status:changed";
 
-/// Transcription complete event name.
+/// Canonical transcription complete event name.
+const EVENT_TRANSCRIPT_COMPLETE: &str = "transcript:complete";
+/// Legacy transcription complete event alias.
 const EVENT_TRANSCRIPTION_COMPLETE: &str = "transcription:complete";
 
 /// Canonical transcription error event name.
@@ -475,6 +477,12 @@ fn transcription_error_event_payload(session_id: &str, app_error: &AppError) -> 
         "recoverable": app_error.recoverable,
         // Legacy structured alias consumed by existing app:error handler.
         "app_error": app_error,
+    })
+}
+
+fn transcript_complete_event_payload(entry: &TranscriptEntry) -> Value {
+    json!({
+        "entry": entry
     })
 }
 
@@ -2274,37 +2282,30 @@ impl IntegrationManager {
                             }
                         }
 
+                        // Add to history and emit a shared transcript payload.
+                        let mut transcript_entry = TranscriptEntry::new(
+                            text.clone(),
+                            audio_duration_ms as u32,
+                            processing_duration_ms as u32,
+                            HistoryInjectionResult::from_injection_result(&result),
+                        )
+                        .with_session_id(Uuid::parse_str(&session_id).ok());
+                        if let Some(timings) = pipeline_timings.clone() {
+                            transcript_entry = transcript_entry.with_timings(timings);
+                        }
+
                         // Add to history
                         if let Some(ref handle) = app_handle {
                             let history = handle.state::<TranscriptHistory>();
-                            let injection_result_for_history =
-                                HistoryInjectionResult::from_injection_result(&result);
-                            let mut entry = TranscriptEntry::new(
-                                text.clone(),
-                                audio_duration_ms as u32,
-                                processing_duration_ms as u32,
-                                injection_result_for_history,
-                            )
-                            .with_session_id(Uuid::parse_str(&session_id).ok());
-                            if let Some(timings) = pipeline_timings.clone() {
-                                entry = entry.with_timings(timings);
-                            }
-                            history.push(entry);
+                            history.push(transcript_entry.clone());
                         }
 
-                        // Emit event to frontend
+                        // Emit canonical + legacy events with identical payload and shared seq.
                         if let Some(ref handle) = app_handle {
                             emit_with_shared_seq(
                                 handle,
-                                &[EVENT_TRANSCRIPTION_COMPLETE],
-                                json!({
-                                    "session_id": session_id,
-                                    "text": text,
-                                    "audio_duration_ms": audio_duration_ms,
-                                    "processing_duration_ms": processing_duration_ms,
-                                    "injection_result": result,
-                                    "timings": pipeline_timings,
-                                }),
+                                &[EVENT_TRANSCRIPT_COMPLETE, EVENT_TRANSCRIPTION_COMPLETE],
+                                transcript_complete_event_payload(&transcript_entry),
                                 &event_seq,
                             );
                         }
@@ -3140,6 +3141,28 @@ mod tests {
         assert_eq!(payload.get("enabled").and_then(Value::as_bool), Some(true));
         assert!(payload.get("detail").is_some());
         assert!(payload.get("timestamp").and_then(Value::as_str).is_some());
+    }
+
+    #[test]
+    fn test_transcript_complete_event_payload_wraps_entry() {
+        let session_id = Uuid::new_v4();
+        let entry = TranscriptEntry::new(
+            "hello".to_string(),
+            1200,
+            340,
+            HistoryInjectionResult::Injected,
+        )
+        .with_session_id(Some(session_id));
+
+        let payload = transcript_complete_event_payload(&entry);
+        assert!(payload.get("entry").is_some());
+        assert_eq!(
+            payload
+                .get("entry")
+                .and_then(|entry| entry.get("session_id"))
+                .and_then(Value::as_str),
+            Some(session_id.to_string().as_str())
+        );
     }
 
     #[test]
