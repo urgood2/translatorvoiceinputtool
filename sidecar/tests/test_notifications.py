@@ -389,8 +389,8 @@ class ImmediateThread:
 class TestAsyncTranscriptionPipeline:
     """Tests for transcribe_session_async."""
 
-    def test_replacements_result_text_is_string(self):
-        """Tuple return from replacements should be unpacked before emit."""
+    def test_replacements_result_text_is_string(self, mock_write_notification):
+        """Tuple return from replacements should be unpacked before notification emit."""
         audio = np.array([0.1, 0.2], dtype=np.float32)
 
         fake_engine = MagicMock()
@@ -404,12 +404,18 @@ class TestAsyncTranscriptionPipeline:
             patch("openvoicy_sidecar.postprocess.normalize", side_effect=lambda t: t),
             patch("openvoicy_sidecar.replacements.get_current_rules", return_value=[object()]),
             patch("openvoicy_sidecar.replacements.process_text", return_value=("fixed text", False)),
-            patch("openvoicy_sidecar.notifications.emit_transcription_complete") as mock_complete,
             patch("openvoicy_sidecar.notifications.emit_status_changed"),
-            patch("openvoicy_sidecar.notifications.emit_transcription_error"),
+            patch("openvoicy_sidecar.notifications.emit_transcription_error") as mock_error,
         ):
             transcribe_session_async("session-1", audio, 16000)
 
-        emitted_text = mock_complete.call_args.kwargs["text"]
+        mock_error.assert_not_called()
+        complete_calls = [
+            call
+            for call in mock_write_notification.call_args_list
+            if call.args[0].method == "event.transcription_complete"
+        ]
+        assert len(complete_calls) == 1
+        emitted_text = complete_calls[0].args[0].params["text"]
         assert isinstance(emitted_text, str)
         assert emitted_text == "fixed text"
