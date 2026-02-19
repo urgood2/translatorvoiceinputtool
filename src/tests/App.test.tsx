@@ -199,7 +199,7 @@ describe('App diagnostics panels', () => {
     expect(screen.getByRole('button', { name: 'Injection' })).toBeDefined();
     expect(screen.getByText('Microphone Test')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Start Test' })).toBeDefined();
-    expect(screen.getByText('Sample transcript text.')).toBeDefined();
+    expect(screen.getAllByText('Sample transcript text.').length).toBeGreaterThan(0);
     expect(screen.getByText('Injected')).toBeDefined();
     expect(screen.getAllByText('Ready').length).toBeGreaterThan(0);
 

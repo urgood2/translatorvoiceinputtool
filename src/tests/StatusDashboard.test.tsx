@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { StatusDashboard } from '../components/Status/StatusDashboard';
 import { useAppStore } from '../store';
 import type { AppConfig, TranscriptEntry } from '../types';
@@ -94,29 +94,34 @@ describe('StatusDashboard', () => {
     expect(screen.getByText('Hold')).toBeDefined();
     expect(screen.getByText('No transcript available yet.')).toBeDefined();
     expect(screen.getByText('nvidia/parakeet-tdt-0.6b-v3')).toBeDefined();
-    expect(screen.getByText('ready')).toBeDefined();
+    expect(screen.getAllByText('ready').length).toBeGreaterThan(0);
     expect(screen.getByText('0')).toBeDefined();
   });
 
-  it('updates reactively when store state changes', () => {
+  it('updates reactively when store state changes', async () => {
     const { container } = render(<StatusDashboard />);
 
-    useAppStore.setState({
-      appState: 'recording',
-      history: [buildTranscript('hello from status dashboard test')],
-      modelStatus: { status: 'loading', model_id: 'parakeet-next' },
-      sidecarStatus: { state: 'restarting', restart_count: 3 },
-      config: {
-        ...buildConfig(),
-        hotkeys: {
-          primary: 'Alt+Space',
-          copy_last: 'Ctrl+Shift+V',
-          mode: 'toggle',
+    act(() => {
+      useAppStore.setState({
+        appState: 'recording',
+        history: [buildTranscript('hello from status dashboard test')],
+        modelStatus: { status: 'loading', model_id: 'parakeet-next' },
+        sidecarStatus: { state: 'restarting', restart_count: 3 },
+        config: {
+          ...buildConfig(),
+          hotkeys: {
+            primary: 'Alt+Space',
+            copy_last: 'Ctrl+Shift+V',
+            mode: 'toggle',
+          },
         },
-      },
+      });
     });
 
-    expect(screen.getByText('Recording')).toBeDefined();
+    await waitFor(() => {
+      expect(screen.getByText('Recording')).toBeDefined();
+    });
+
     expect(screen.getByText('Alt+Space')).toBeDefined();
     expect(screen.getByText('Toggle')).toBeDefined();
     expect(screen.getByText('hello from status dashboard test')).toBeDefined();

@@ -33,8 +33,7 @@ export type TauriCommandDefDiagnosticsReport = {
   version: string;
 };
 
-export type TauriCommandDefEmptyParams = {
-};
+export type TauriCommandDefEmptyParams = Record<string, never>;
 
 export type TauriCommandDefLogEntry = {
   level: string;
@@ -516,8 +515,7 @@ export type SidecarRpcMethodAsrInitializeResult = {
   [key: string]: unknown;
 };
 
-export type SidecarRpcMethodAsrStatusParams = {
-};
+export type SidecarRpcMethodAsrStatusParams = Record<string, never>;
 export type SidecarRpcMethodAsrStatusResult = {
   device?: string;
   model_id?: string | null;
@@ -540,8 +538,7 @@ export type SidecarRpcMethodAsrTranscribeResult = {
   [key: string]: unknown;
 };
 
-export type SidecarRpcMethodAudioListDevicesParams = {
-};
+export type SidecarRpcMethodAudioListDevicesParams = Record<string, never>;
 export type SidecarRpcMethodAudioListDevicesResult = {
   devices: Array<Record<string, unknown>>;
   [key: string]: unknown;
@@ -557,16 +554,14 @@ export type SidecarRpcMethodAudioMeterStartResult = {
   [key: string]: unknown;
 };
 
-export type SidecarRpcMethodAudioMeterStatusParams = {
-};
+export type SidecarRpcMethodAudioMeterStatusParams = Record<string, never>;
 export type SidecarRpcMethodAudioMeterStatusResult = {
   interval_ms?: number;
   running: boolean;
   [key: string]: unknown;
 };
 
-export type SidecarRpcMethodAudioMeterStopParams = {
-};
+export type SidecarRpcMethodAudioMeterStopParams = Record<string, never>;
 export type SidecarRpcMethodAudioMeterStopResult = {
   stopped: boolean;
   [key: string]: unknown;
@@ -594,8 +589,7 @@ export type SidecarRpcMethodModelDownloadResult = {
   [key: string]: unknown;
 };
 
-export type SidecarRpcMethodModelGetStatusParams = {
-};
+export type SidecarRpcMethodModelGetStatusParams = Record<string, never>;
 export type SidecarRpcMethodModelGetStatusResult = {
   cache_path?: string;
   error_message?: string;
@@ -647,8 +641,7 @@ export type SidecarRpcMethodRecordingStartResult = {
   [key: string]: unknown;
 };
 
-export type SidecarRpcMethodRecordingStatusParams = {
-};
+export type SidecarRpcMethodRecordingStatusParams = Record<string, never>;
 export type SidecarRpcMethodRecordingStatusResult = {
   duration_ms?: number;
   elapsed_sec?: number;
@@ -683,8 +676,7 @@ export type SidecarRpcMethodReplacementsGetPresetRulesResult = {
   [key: string]: unknown;
 };
 
-export type SidecarRpcMethodReplacementsGetPresetsParams = {
-};
+export type SidecarRpcMethodReplacementsGetPresetsParams = Record<string, never>;
 export type SidecarRpcMethodReplacementsGetPresetsResult = {
   presets: Array<{
   description: string;
@@ -696,8 +688,7 @@ export type SidecarRpcMethodReplacementsGetPresetsResult = {
   [key: string]: unknown;
 };
 
-export type SidecarRpcMethodReplacementsGetRulesParams = {
-};
+export type SidecarRpcMethodReplacementsGetRulesParams = Record<string, never>;
 export type SidecarRpcMethodReplacementsGetRulesResult = {
   rules: Array<SidecarRpcDefReplacementRule>;
   [key: string]: unknown;
@@ -723,8 +714,7 @@ export type SidecarRpcMethodReplacementsSetRulesResult = {
   [key: string]: unknown;
 };
 
-export type SidecarRpcMethodStatusGetParams = {
-};
+export type SidecarRpcMethodStatusGetParams = Record<string, never>;
 export type SidecarRpcMethodStatusGetResult = {
   detail?: string;
   model?: {
@@ -736,8 +726,7 @@ export type SidecarRpcMethodStatusGetResult = {
   [key: string]: unknown;
 };
 
-export type SidecarRpcMethodSystemInfoParams = {
-};
+export type SidecarRpcMethodSystemInfoParams = Record<string, never>;
 export type SidecarRpcMethodSystemInfoResult = {
   capabilities: Array<string>;
   protocol: string;
@@ -751,8 +740,7 @@ export type SidecarRpcMethodSystemInfoResult = {
   [key: string]: unknown;
 };
 
-export type SidecarRpcMethodSystemPingParams = {
-};
+export type SidecarRpcMethodSystemPingParams = Record<string, never>;
 export type SidecarRpcMethodSystemPingResult = {
   protocol: string;
   version: string;
