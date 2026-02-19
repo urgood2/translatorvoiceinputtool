@@ -135,6 +135,35 @@ listen('sidecar:status', () => {});
             self.assertEqual(len(errors), 1)
             self.assertIn("out of date", errors[0])
 
+    def test_validate_derived_fixture_corpus_invokes_check_script(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scripts_dir = root / "scripts"
+            scripts_dir.mkdir(parents=True, exist_ok=True)
+            derived_dir = root / "shared" / "contracts" / "examples"
+            derived_dir.mkdir(parents=True, exist_ok=True)
+            (derived_dir / "IPC_V1_EXAMPLES.jsonl").write_text("{}\n", encoding="utf-8")
+
+            check_script = scripts_dir / "gen_contract_examples.py"
+            check_script.write_text(
+                "\n".join(
+                    [
+                        "import argparse",
+                        "import sys",
+                        "p=argparse.ArgumentParser()",
+                        "p.add_argument('--repo-root')",
+                        "p.add_argument('--check', action='store_true')",
+                        "p.parse_args()",
+                        "sys.exit(1)",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            errors = MODULE.validate_derived_fixture_corpus(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("derived fixture corpus check failed", errors[0])
+
     def test_validate_frontend_listener_events_reports_undeclared_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

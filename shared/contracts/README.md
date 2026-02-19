@@ -24,6 +24,21 @@ Use local `$id`/`$ref` targets such as `./<file>.v1.json#/$defs/<fragment_name>`
 - `MIGRATION.md`: compatibility windows and alias deprecation timeline
 - `VERSIONING.md`: versioning and drift-prevention rules
 
+## Fixture Corpus Policy
+
+Canonical human-edited fixture corpus:
+
+- `shared/ipc/examples/IPC_V1_EXAMPLES.jsonl`
+
+Derived fixture corpora under `shared/contracts/examples/*.jsonl` are optional and must never be edited by hand.
+If present, they must be generated from the canonical corpus via:
+
+- `python scripts/gen_contract_examples.py`
+
+CI/build validation enforces this via:
+
+- `python scripts/gen_contract_examples.py --check` (invoked by `scripts/validate_contracts.py` when derived fixtures exist)
+
 ## Compatibility Policy
 
 Legacy aliases are controlled by `shared/contracts/MIGRATION.md`.

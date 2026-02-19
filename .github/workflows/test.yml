@@ -115,6 +115,9 @@ jobs:
       - name: Install jsonschema
         run: pip install jsonschema
 
+      - name: Verify derived fixture corpus generation (if present)
+        run: python scripts/gen_contract_examples.py --check
+
       - name: Validate contracts and generated artifacts
         run: python scripts/validate_contracts.py
 

@@ -296,6 +296,38 @@ class ValidateIPCExamplesTests(unittest.TestCase):
         )
         self.assertEqual(errors, [])
 
+    def test_detect_duplicate_fixture_corpora_warns_for_duplicate_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            canonical = root / "shared" / "ipc" / "examples" / "IPC_V1_EXAMPLES.jsonl"
+            canonical.parent.mkdir(parents=True, exist_ok=True)
+            canonical.write_text('{"type":"request","data":{"method":"status.get"}}\n', encoding="utf-8")
+
+            derived = root / "shared" / "contracts" / "examples" / "IPC_V1_EXAMPLES.jsonl"
+            derived.parent.mkdir(parents=True, exist_ok=True)
+            derived.write_text(canonical.read_text(encoding="utf-8"), encoding="utf-8")
+
+            warnings, errors = MODULE.detect_duplicate_fixture_corpora(root)
+            self.assertEqual(errors, [])
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("Duplicate fixture corpus detected", warnings[0])
+
+    def test_detect_duplicate_fixture_corpora_errors_on_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            canonical = root / "shared" / "ipc" / "examples" / "IPC_V1_EXAMPLES.jsonl"
+            canonical.parent.mkdir(parents=True, exist_ok=True)
+            canonical.write_text('{"type":"request","data":{"method":"status.get"}}\n', encoding="utf-8")
+
+            derived = root / "shared" / "contracts" / "examples" / "IPC_V1_EXAMPLES.jsonl"
+            derived.parent.mkdir(parents=True, exist_ok=True)
+            derived.write_text('{"type":"request","data":{"method":"status.get_typo"}}\n', encoding="utf-8")
+
+            warnings, errors = MODULE.detect_duplicate_fixture_corpora(root)
+            self.assertEqual(len(warnings), 1)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("Conflicting fixture corpus detected", errors[0])
+
 
 if __name__ == "__main__":
     unittest.main()

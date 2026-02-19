@@ -47,6 +47,8 @@ GENERATED_TARGETS = (
     ("scripts/gen_contracts_ts.py", "src/types.contracts.ts"),
     ("scripts/gen_contracts_rs.py", "src-tauri/src/contracts.rs"),
 )
+DERIVED_FIXTURE_CHECK_SCRIPT = "scripts/gen_contract_examples.py"
+DERIVED_FIXTURE_DIR = Path("shared/contracts/examples")
 
 FRONTEND_GLOB_PATTERNS = ("src/**/*.ts", "src/**/*.tsx")
 EXCLUDED_FRONTEND_PATH_PARTS = {"tests"}
@@ -181,6 +183,29 @@ def validate_generated_files(repo_root: Path) -> list[str]:
     for script_rel, target_rel in GENERATED_TARGETS:
         errors.extend(run_generator_and_diff(repo_root, script_rel, target_rel))
     return errors
+
+
+def validate_derived_fixture_corpus(repo_root: Path) -> list[str]:
+    derived_dir = repo_root / DERIVED_FIXTURE_DIR
+    if not derived_dir.exists():
+        return []
+    if not any(path.is_file() and path.suffix == ".jsonl" for path in derived_dir.glob("*.jsonl")):
+        return []
+
+    script_path = repo_root / DERIVED_FIXTURE_CHECK_SCRIPT
+    if not script_path.exists():
+        return [f"missing derived fixture check script: {DERIVED_FIXTURE_CHECK_SCRIPT}"]
+
+    proc = subprocess.run(
+        [sys.executable, str(script_path), "--repo-root", str(repo_root), "--check"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode == 0:
+        return []
+
+    details = proc.stderr.strip() or proc.stdout.strip() or "no output"
+    return [f"derived fixture corpus check failed: {details}"]
 
 
 def run_generator_for_text(repo_root: Path, script_rel: str, out_path: Path) -> tuple[int, str]:
@@ -720,6 +745,12 @@ def main(argv: list[str] | None = None) -> int:
         checks.append(("Draft-07 schema fragment validation", validate_contract_schema_fragments(contracts)))
         checks.append(("Generator determinism (stable output; no timestamps or paths)", validate_generator_determinism(repo_root)))
         checks.append(("Generated artifacts up-to-date", validate_generated_files(repo_root)))
+        checks.append(
+            (
+                "Derived fixture corpus generated from canonical IPC examples",
+                validate_derived_fixture_corpus(repo_root),
+            )
+        )
         checks.append(
             (
                 "Frontend listener event names declared in contract",

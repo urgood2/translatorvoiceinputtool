@@ -10,6 +10,7 @@ This script:
 5. Validates message types (request, response, notification, error)
 6. Validates method-level request/response payloads against sidecar.rpc.v1 schemas
 7. Validates status.get fixtures include idle behavior with and without a model object
+8. Warns on duplicate fixture corpora and fails on conflicting duplicates
 
 Exit codes:
   0 - All validations passed
@@ -48,6 +49,48 @@ JSONRPC_SERVER_ERROR_RANGE = range(-32099, -31999)  # -32099 to -32000
 VALID_MESSAGE_TYPES = {"request", "response", "notification", "error"}
 
 METHOD_NAME_RE = re.compile(r"([a-z]+\.[a-z_]+)")
+CANONICAL_FIXTURE_REL = Path("shared/ipc/examples/IPC_V1_EXAMPLES.jsonl")
+DERIVED_FIXTURE_DIR_REL = Path("shared/contracts/examples")
+
+
+def normalize_text(text: str) -> str:
+    return text if text.endswith("\n") else f"{text}\n"
+
+
+def detect_duplicate_fixture_corpora(repo_root: Path) -> tuple[list[str], list[str]]:
+    """Warn on duplicate fixture corpora; fail when duplicates conflict with canonical source."""
+    warnings: list[str] = []
+    errors: list[str] = []
+
+    canonical = repo_root / CANONICAL_FIXTURE_REL
+    derived_dir = repo_root / DERIVED_FIXTURE_DIR_REL
+
+    if not derived_dir.exists():
+        return warnings, errors
+
+    derived_files = sorted(path for path in derived_dir.glob("*.jsonl") if path.is_file())
+    if not derived_files:
+        return warnings, errors
+
+    if not canonical.exists():
+        errors.append(f"Missing canonical fixture corpus: {CANONICAL_FIXTURE_REL}")
+        return warnings, errors
+
+    canonical_text = normalize_text(canonical.read_text(encoding="utf-8"))
+    for path in derived_files:
+        rel = path.relative_to(repo_root)
+        warnings.append(
+            f"Duplicate fixture corpus detected: {rel}; "
+            f"canonical source remains {CANONICAL_FIXTURE_REL}"
+        )
+
+        derived_text = normalize_text(path.read_text(encoding="utf-8"))
+        if derived_text != canonical_text:
+            errors.append(
+                f"Conflicting fixture corpus detected: {rel} diverges from canonical {CANONICAL_FIXTURE_REL}"
+            )
+
+    return warnings, errors
 
 
 def load_contract_inventory(contract_file: Path) -> dict[str, Any]:
@@ -621,6 +664,10 @@ def main() -> int:
     coverage_errors, covered_count, total_methods = validate_contract_method_coverage(examples_file, contract_file)
     all_errors.extend(coverage_errors)
     all_errors.extend(validate_status_get_idle_fixture_variants(examples_file))
+    duplicate_warnings, duplicate_errors = detect_duplicate_fixture_corpora(repo_root)
+    for warning in duplicate_warnings:
+        print(f"WARNING: {warning}")
+    all_errors.extend(duplicate_errors)
     print(f"Fixture covers {covered_count}/{total_methods} methods")
 
     # Print results
