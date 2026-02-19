@@ -326,8 +326,30 @@ class TestEventEmission:
         assert call_args.method == "event.transcription_complete"
         assert call_args.params["session_id"] == "session-1"
         assert call_args.params["text"] == "Hello world"
+        assert call_args.params["raw_text"] == "Hello world"
+        assert call_args.params["final_text"] == "Hello world"
         assert call_args.params["duration_ms"] == 250
         assert call_args.params["confidence"] == 0.95
+
+    def test_emit_transcription_complete_with_raw_and_final_text(self, mock_write_notification):
+        """Should preserve raw/final transcript fields when provided."""
+        tracker = get_session_tracker()
+        tracker.register("session-1")
+
+        emit_transcription_complete(
+            session_id="session-1",
+            text="normalized text",
+            duration_ms=250,
+            raw_text="raw text",
+            final_text="final text",
+        )
+
+        mock_write_notification.assert_called_once()
+        call_args = mock_write_notification.call_args[0][0]
+        assert call_args.method == "event.transcription_complete"
+        assert call_args.params["text"] == "final text"
+        assert call_args.params["raw_text"] == "raw text"
+        assert call_args.params["final_text"] == "final text"
 
     def test_emit_transcription_error(self, mock_write_notification):
         """Should emit transcription_error event."""

@@ -237,6 +237,8 @@ def emit_transcription_complete(
     text: str,
     duration_ms: int,
     confidence: Optional[float] = None,
+    raw_text: Optional[str] = None,
+    final_text: Optional[str] = None,
 ) -> bool:
     """Emit a transcription_complete event.
 
@@ -244,9 +246,11 @@ def emit_transcription_complete(
 
     Args:
         session_id: Session that was transcribed
-        text: Transcribed text (post-processed)
+        text: Backward-compatible final transcribed text field
         duration_ms: Transcription compute time
         confidence: Optional confidence score 0-1
+        raw_text: Raw ASR text before post-process/replacements (optional)
+        final_text: Final post-processed text (optional, defaults to text)
     """
     tracker = get_session_tracker()
 
@@ -258,9 +262,14 @@ def emit_transcription_complete(
         log(f"Failed to mark session {session_id} as completed")
         return False
 
+    resolved_final_text = final_text if final_text is not None else text
+    resolved_raw_text = raw_text if raw_text is not None else resolved_final_text
+
     params: dict[str, Any] = {
         "session_id": session_id,
-        "text": text,
+        "text": resolved_final_text,
+        "raw_text": resolved_raw_text,
+        "final_text": resolved_final_text,
         "duration_ms": duration_ms,
     }
 
@@ -396,8 +405,8 @@ def transcribe_session_async(
             compute_ms = int((time_module.time() - start_time) * 1000)
 
             # Post-process
-            text = result.text
-            text = normalize(text)
+            raw_text = result.text
+            text = normalize(raw_text)
 
             # Apply replacements
             rules = get_current_rules()
@@ -410,6 +419,8 @@ def transcribe_session_async(
                 text=text,
                 duration_ms=compute_ms,
                 confidence=result.confidence,
+                raw_text=raw_text,
+                final_text=text,
             )
             emit_status_changed("idle")
 
