@@ -2664,7 +2664,12 @@ impl IntegrationManager {
                             emit_with_shared_seq(
                                 handle,
                                 &[EVENT_RECORDING_STATUS],
-                                recording_status_event_payload("idle", None, None, None),
+                                recording_status_event_payload(
+                                    "idle",
+                                    Some(session_id.as_str()),
+                                    None,
+                                    None,
+                                ),
                                 &event_seq,
                             );
                         }
@@ -2840,6 +2845,20 @@ impl IntegrationManager {
                     RecordingEvent::TranscriptionFailed {
                         session_id, error, ..
                     } => {
+                        if let Some(ref handle) = app_handle {
+                            emit_with_shared_seq(
+                                handle,
+                                &[EVENT_RECORDING_STATUS],
+                                recording_status_event_payload(
+                                    "idle",
+                                    Some(session_id.as_str()),
+                                    None,
+                                    None,
+                                ),
+                                &event_seq,
+                            );
+                        }
+
                         log::error!(
                             "Transcription failed: session={}, error_len={}, error_sha256_prefix={}",
                             session_id,
@@ -2868,6 +2887,23 @@ impl IntegrationManager {
                         }
 
                         // Clear context
+                        *recording_context.write().await = None;
+                        *current_session_id.write().await = None;
+                    }
+                    RecordingEvent::TranscriptionTimeout { session_id, .. } => {
+                        if let Some(ref handle) = app_handle {
+                            emit_with_shared_seq(
+                                handle,
+                                &[EVENT_RECORDING_STATUS],
+                                recording_status_event_payload(
+                                    "idle",
+                                    Some(session_id.as_str()),
+                                    None,
+                                    None,
+                                ),
+                                &event_seq,
+                            );
+                        }
                         *recording_context.write().await = None;
                         *current_session_id.write().await = None;
                     }

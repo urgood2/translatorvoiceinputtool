@@ -89,6 +89,8 @@ export function StatusDashboard() {
       setPendingAction(action);
       try {
         await command();
+      } catch (error) {
+        console.error(`Recording action '${action}' failed`, error);
       } finally {
         setPendingAction(null);
       }

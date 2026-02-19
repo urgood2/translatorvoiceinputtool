@@ -404,6 +404,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await invoke('start_recording');
     } catch (error) {
       console.error('Failed to start recording:', error);
+      set({
+        appState: 'error',
+        errorDetail: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   },
@@ -413,6 +417,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await invoke('stop_recording');
     } catch (error) {
       console.error('Failed to stop recording:', error);
+      set({
+        appState: 'error',
+        errorDetail: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   },
@@ -422,6 +430,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await invoke('cancel_recording');
     } catch (error) {
       console.error('Failed to cancel recording:', error);
+      set({
+        appState: 'error',
+        errorDetail: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   },
