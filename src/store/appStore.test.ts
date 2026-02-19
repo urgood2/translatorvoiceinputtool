@@ -22,7 +22,7 @@ import {
   createMockModelStatus,
   createMockConfig,
 } from '../tests/setup';
-import type { DiagnosticsReport } from '../types';
+import type { DiagnosticsReport, TranscriptEntry } from '../types';
 
 // ============================================================================
 // TEST SETUP
@@ -408,8 +408,8 @@ describe('Model Actions', () => {
 describe('History Actions', () => {
   test('refreshHistory fetches transcript history', async () => {
     const mockHistory = [
-      createMockTranscript({ id: '1', text: 'First' }),
-      createMockTranscript({ id: '2', text: 'Second' }),
+      createMockTranscript({ id: '1', text: 'First', raw_text: 'First', final_text: 'First' }),
+      createMockTranscript({ id: '2', text: 'Second', raw_text: 'Second', final_text: 'Second' }),
     ];
 
     setMockInvokeHandler((cmd) => {
@@ -420,6 +420,51 @@ describe('History Actions', () => {
     await useAppStore.getState().refreshHistory();
 
     expect(useAppStore.getState().history).toEqual(mockHistory);
+  });
+
+  test('refreshHistory normalizes legacy transcript entries missing additive fields', async () => {
+    const legacyHistory = [
+      {
+        id: 'legacy-entry',
+        text: 'Legacy text',
+        timestamp: new Date().toISOString(),
+        audio_duration_ms: 1200,
+        transcription_duration_ms: 240,
+        injection_result: { status: 'injected' as const },
+      } satisfies TranscriptEntry,
+      {
+        id: 'modern-entry',
+        text: 'Unprocessed text',
+        final_text: 'Processed text',
+        raw_text: 'Unprocessed text',
+        timestamp: new Date().toISOString(),
+        audio_duration_ms: 1500,
+        transcription_duration_ms: 260,
+        injection_result: { status: 'injected' as const },
+      } satisfies TranscriptEntry,
+    ];
+
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'get_transcript_history') return legacyHistory;
+      return undefined;
+    });
+
+    await useAppStore.getState().refreshHistory();
+
+    const history = useAppStore.getState().history;
+    expect(history).toHaveLength(2);
+    expect(history[0]).toMatchObject({
+      id: 'legacy-entry',
+      text: 'Legacy text',
+      raw_text: 'Legacy text',
+      final_text: 'Legacy text',
+    });
+    expect(history[1]).toMatchObject({
+      id: 'modern-entry',
+      text: 'Processed text',
+      raw_text: 'Unprocessed text',
+      final_text: 'Processed text',
+    });
   });
 
   test('copyTranscript invokes copy command', async () => {
@@ -699,6 +744,28 @@ describe('Internal Actions', () => {
     const history = useAppStore.getState().history;
     expect(history[0].id).toBe('new');
     expect(history[1].id).toBe('old');
+  });
+
+  test('_addHistoryEntry normalizes additive transcript fields', () => {
+    const legacyEntry: TranscriptEntry = {
+      id: 'legacy',
+      text: 'Original text',
+      final_text: 'Final text',
+      timestamp: new Date().toISOString(),
+      audio_duration_ms: 1000,
+      transcription_duration_ms: 200,
+      injection_result: { status: 'injected' },
+    };
+
+    useAppStore.getState()._addHistoryEntry(legacyEntry);
+
+    const [entry] = useAppStore.getState().history;
+    expect(entry).toMatchObject({
+      id: 'legacy',
+      text: 'Final text',
+      raw_text: 'Original text',
+      final_text: 'Final text',
+    });
   });
 
   test('_addHistoryEntry limits to configured max entries', () => {

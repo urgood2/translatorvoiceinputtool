@@ -55,6 +55,42 @@ describe('HistoryPanel', () => {
     expect(screen.getByText('Failed transcript.')).toBeDefined();
   });
 
+  it('renders legacy entries without additive fields', () => {
+    const legacyEntry: TranscriptEntry = {
+      id: 'legacy',
+      text: 'Legacy transcript text.',
+      timestamp: new Date().toISOString(),
+      audio_duration_ms: 1200,
+      transcription_duration_ms: 320,
+      injection_result: { status: 'injected' },
+    };
+
+    render(<HistoryPanel entries={[legacyEntry]} onCopy={vi.fn().mockResolvedValue(undefined)} />);
+    expect(screen.getByText('Legacy transcript text.')).toBeDefined();
+    expect(screen.queryByText(/Language:/)).toBeNull();
+    expect(screen.queryByText(/Confidence:/)).toBeNull();
+    expect(screen.queryByText(/Session:/)).toBeNull();
+  });
+
+  it('shows transcript metadata when additive fields are present', () => {
+    const enrichedEntry: TranscriptEntry = {
+      ...mockEntries[0],
+      text: 'Fallback text',
+      final_text: 'Final text used for display',
+      raw_text: 'Original raw text',
+      language: 'en',
+      confidence: 0.93,
+      session_id: 'session-123',
+    };
+
+    render(<HistoryPanel entries={[enrichedEntry]} onCopy={vi.fn().mockResolvedValue(undefined)} />);
+    expect(screen.getByText('Final text used for display')).toBeDefined();
+    expect(screen.getByText('Raw: Original raw text')).toBeDefined();
+    expect(screen.getByText('Language: en')).toBeDefined();
+    expect(screen.getByText('Confidence: 93%')).toBeDefined();
+    expect(screen.getByText('Session: session-123')).toBeDefined();
+  });
+
   it('shows entry count', () => {
     render(<HistoryPanel entries={mockEntries} onCopy={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.getByText('3 entries')).toBeDefined();

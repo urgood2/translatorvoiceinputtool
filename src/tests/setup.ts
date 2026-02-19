@@ -153,8 +153,8 @@ export function createMockDevice(overrides: Partial<{
 export function createMockTranscript(overrides: Partial<{
   id: string;
   text: string;
-  raw_text: string;
-  final_text: string;
+  raw_text?: string;
+  final_text?: string;
   timestamp: string;
   audio_duration_ms: number;
   transcription_duration_ms: number;

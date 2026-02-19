@@ -285,8 +285,8 @@ export interface TranscriptTimings {
 export interface TranscriptEntry {
   id: string;
   text: string;
-  raw_text: string;
-  final_text: string;
+  raw_text?: string;
+  final_text?: string;
   timestamp: string;
   audio_duration_ms: number;
   transcription_duration_ms: number;

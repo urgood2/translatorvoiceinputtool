@@ -38,6 +38,10 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${remainingSeconds.toFixed(0)}s`;
 }
 
+function formatConfidence(confidence: number): string {
+  return `${Math.round(confidence * 100)}%`;
+}
+
 /** Get badge info for injection result. */
 function getInjectionBadge(result: InjectionResult): { icon: string; label: string; color: string; tooltip?: string } {
   switch (result.status) {
@@ -69,6 +73,12 @@ function TranscriptCard({ entry, onCopy }: TranscriptCardProps) {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
   const badge = getInjectionBadge(entry.injection_result);
+  const displayText = entry.final_text ?? entry.text;
+  const showRawText = typeof entry.raw_text === 'string' && entry.raw_text !== displayText;
+  const hasMetadata =
+    typeof entry.language === 'string'
+    || typeof entry.confidence === 'number'
+    || typeof entry.session_id === 'string';
 
   const handleCopy = async () => {
     setCopyError(null);
@@ -104,8 +114,24 @@ function TranscriptCard({ entry, onCopy }: TranscriptCardProps) {
 
       {/* Transcript text */}
       <p className="text-gray-900 dark:text-gray-100 line-clamp-3 mb-3">
-        {entry.text}
+        {displayText}
       </p>
+
+      {showRawText && (
+        <p className="mb-2 text-xs text-gray-500 dark:text-gray-400 line-clamp-2">
+          Raw: {entry.raw_text}
+        </p>
+      )}
+
+      {hasMetadata && (
+        <div className="mb-3 flex flex-wrap gap-2 text-xs text-gray-500 dark:text-gray-400">
+          {entry.language && <span>Language: {entry.language}</span>}
+          {typeof entry.confidence === 'number' && (
+            <span>Confidence: {formatConfidence(entry.confidence)}</span>
+          )}
+          {entry.session_id && <span>Session: {entry.session_id}</span>}
+        </div>
+      )}
 
       {/* Actions */}
       <div className="flex justify-end">

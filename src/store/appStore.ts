@@ -240,6 +240,24 @@ function normalizeModelStatusPayload(
   return next;
 }
 
+function normalizeTranscriptEntry(entry: TranscriptEntry): TranscriptEntry {
+  const finalText =
+    typeof entry.final_text === 'string' && entry.final_text.length > 0
+      ? entry.final_text
+      : entry.text;
+  const rawText =
+    typeof entry.raw_text === 'string' && entry.raw_text.length > 0
+      ? entry.raw_text
+      : entry.text;
+
+  return {
+    ...entry,
+    text: finalText,
+    raw_text: rawText,
+    final_text: finalText,
+  };
+}
+
 function messageFromAppError(error: AppError): string {
   return typeof error.message === 'string' && error.message.length > 0
     ? error.message
@@ -542,7 +560,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   refreshHistory: async () => {
     try {
       const history = await invoke<TranscriptEntry[]>('get_transcript_history');
-      set({ history });
+      set({ history: history.map((entry) => normalizeTranscriptEntry(entry)) });
     } catch (error) {
       console.error('Failed to refresh history:', error);
     }
@@ -725,9 +743,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   _addHistoryEntry: (entry) => {
     const fallbackHistoryLimit = 100;
+    const normalizedEntry = normalizeTranscriptEntry(entry);
     set((state) => ({
       // Keep frontend list aligned with backend-configured history capacity.
-      history: [entry, ...state.history].slice(
+      history: [normalizedEntry, ...state.history].slice(
         0,
         Math.max(1, state.config?.history.max_entries ?? fallbackHistoryLimit)
       ),
