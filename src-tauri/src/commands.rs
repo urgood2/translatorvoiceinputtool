@@ -4,7 +4,7 @@
 //! and the Rust backend via Tauri commands.
 
 use regex::{NoExpand, RegexBuilder};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -17,6 +17,9 @@ use crate::history::{TranscriptEntry, TranscriptHistory};
 use crate::integration::{SidecarAudioDevice, SidecarModelStatus, SidecarPresetInfo};
 use crate::state::{AppStateManager, CannotRecordReason, StateEvent};
 use crate::IntegrationState;
+
+const MODEL_MANIFEST_PATH: &str = "shared/model/MODEL_MANIFEST.json";
+const MODEL_MANIFEST_JSON: &str = include_str!("../../shared/model/MODEL_MANIFEST.json");
 
 /// Command error types.
 #[derive(Debug, Error, Serialize)]
@@ -327,6 +330,102 @@ pub struct Progress {
     pub unit: String,
 }
 
+/// Model catalog entry for model selection UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ModelCatalogEntry {
+    pub model_id: String,
+    pub family: String,
+    pub display_name: String,
+    pub description: String,
+    pub supported_languages: Vec<String>,
+    pub default_language: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license_spdx: Option<String>,
+    pub manifest_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelManifestLicense {
+    #[serde(default)]
+    spdx_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelManifestCatalogRecord {
+    model_id: String,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    supported_languages: Vec<String>,
+    #[serde(default)]
+    total_size_bytes: Option<u64>,
+    #[serde(default)]
+    license: Option<ModelManifestLicense>,
+}
+
+fn derive_model_family(model_id: &str) -> String {
+    model_id
+        .split(['/', '-'])
+        .find(|segment| !segment.trim().is_empty())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn default_language_for_supported(supported_languages: &[String]) -> String {
+    if supported_languages.iter().any(|lang| lang == "en") {
+        return "en".to_string();
+    }
+    supported_languages
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "en".to_string())
+}
+
+fn model_catalog_from_manifest_str(manifest_json: &str) -> Vec<ModelCatalogEntry> {
+    let manifest = match serde_json::from_str::<ModelManifestCatalogRecord>(manifest_json) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            log::warn!("Failed to parse {}: {}", MODEL_MANIFEST_PATH, error);
+            return Vec::new();
+        }
+    };
+
+    let model_id = manifest.model_id.trim().to_string();
+    if model_id.is_empty() {
+        log::warn!(
+            "{} has empty model_id; returning empty catalog",
+            MODEL_MANIFEST_PATH
+        );
+        return Vec::new();
+    }
+
+    let supported_languages = manifest.supported_languages;
+    let default_language = default_language_for_supported(&supported_languages);
+    let display_name = manifest
+        .display_name
+        .as_deref()
+        .unwrap_or(&model_id)
+        .trim()
+        .to_string();
+    let description = manifest.description.unwrap_or_default();
+
+    vec![ModelCatalogEntry {
+        family: derive_model_family(&model_id),
+        model_id,
+        display_name,
+        description,
+        supported_languages,
+        default_language,
+        size_bytes: manifest.total_size_bytes,
+        license_spdx: manifest.license.and_then(|license| license.spdx_id),
+        manifest_path: MODEL_MANIFEST_PATH.to_string(),
+    }]
+}
+
 /// Get model status.
 #[tauri::command]
 pub async fn get_model_status(
@@ -367,6 +466,13 @@ fn map_sidecar_model_status(status: SidecarModelStatus) -> ModelStatus {
         progress,
         error: status.error.or(status.error_message),
     }
+}
+
+/// Get available model catalog entries for model selection UI.
+#[tauri::command]
+pub async fn get_model_catalog() -> Result<Vec<ModelCatalogEntry>, CommandError> {
+    // Phase 4 catalog file is not yet available; fail-soft to manifest-backed single entry.
+    Ok(model_catalog_from_manifest_str(MODEL_MANIFEST_JSON))
 }
 
 /// Download the ASR model.
@@ -805,6 +911,36 @@ mod tests {
     fn test_model_state_serialization() {
         let state = ModelState::Ready;
         assert_eq!(serde_json::to_string(&state).unwrap(), "\"ready\"");
+    }
+
+    #[test]
+    fn test_model_catalog_from_manifest_uses_manifest_defaults() {
+        let catalog = model_catalog_from_manifest_str(
+            r#"{
+                "model_id": "parakeet-tdt-0.6b-v3",
+                "display_name": "NVIDIA Parakeet TDT 0.6B v3",
+                "description": "Multilingual ASR model",
+                "supported_languages": ["fr", "en", "de"],
+                "total_size_bytes": 2509371044,
+                "license": { "spdx_id": "CC-BY-4.0" }
+            }"#,
+        );
+
+        assert_eq!(catalog.len(), 1);
+        let entry = &catalog[0];
+        assert_eq!(entry.model_id, "parakeet-tdt-0.6b-v3");
+        assert_eq!(entry.family, "parakeet");
+        assert_eq!(entry.display_name, "NVIDIA Parakeet TDT 0.6B v3");
+        assert_eq!(entry.default_language, "en");
+        assert_eq!(entry.size_bytes, Some(2509371044));
+        assert_eq!(entry.license_spdx.as_deref(), Some("CC-BY-4.0"));
+        assert_eq!(entry.manifest_path, MODEL_MANIFEST_PATH);
+    }
+
+    #[test]
+    fn test_model_catalog_from_manifest_invalid_json_returns_empty() {
+        let catalog = model_catalog_from_manifest_str("{ not-json");
+        assert!(catalog.is_empty());
     }
 
     #[test]

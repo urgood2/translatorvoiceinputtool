@@ -75,6 +75,7 @@ pub fn run() {
             commands::stop_mic_test,
             // Model commands
             commands::get_model_status,
+            commands::get_model_catalog,
             commands::download_model,
             commands::purge_model_cache,
             // History commands
