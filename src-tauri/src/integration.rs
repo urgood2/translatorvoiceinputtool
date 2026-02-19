@@ -1455,7 +1455,7 @@ impl IntegrationManager {
     }
 
     /// Purge model cache.
-    pub async fn purge_model_cache(&self) -> Result<(), String> {
+    pub async fn purge_model_cache(&self, model_id: Option<String>) -> Result<(), String> {
         let current_status = self.model_status.read().await.clone();
         if current_status == ModelStatus::Downloading || current_status == ModelStatus::Loading {
             return Err(
@@ -1474,17 +1474,57 @@ impl IntegrationManager {
             purged: bool,
         }
 
+        let purge_model_id = model_id.and_then(|id| {
+            let trimmed = id.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+        let params = purge_model_id
+            .as_ref()
+            .map(|requested_model_id| json!({ "model_id": requested_model_id }));
+
         client
-            .call::<PurgeResult>("model.purge_cache", None)
+            .call::<PurgeResult>("model.purge_cache", params)
             .await
             .map_err(|e| format!("Failed to purge cache: {}", e))?;
 
-        // Update status
-        *self.model_status.write().await = ModelStatus::Missing;
-        self.recording_controller.set_model_ready(false).await;
-        Self::emit_model_status(&self.app_handle, ModelStatus::Missing, &self.event_seq);
+        let configured_model_id = configured_model_id();
+        let affects_configured_model = purge_model_id
+            .as_deref()
+            .map_or(true, |requested| requested == configured_model_id.as_str());
 
-        log::info!("Model cache purged");
+        if affects_configured_model {
+            *self.model_status.write().await = ModelStatus::Missing;
+            self.recording_controller.set_model_ready(false).await;
+        }
+
+        // Emit missing status for the purged model target.
+        Self::emit_model_status_with_details(
+            &self.app_handle,
+            ModelStatus::Missing,
+            &self.event_seq,
+            Some(
+                purge_model_id
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or(configured_model_id),
+            ),
+            None,
+            None,
+            None,
+        );
+
+        log::info!(
+            "Model cache purged{}",
+            purge_model_id
+                .as_ref()
+                .map(|id| format!(" for model {}", id))
+                .unwrap_or_default()
+        );
         Ok(())
     }
 
@@ -3897,6 +3937,33 @@ mod tests {
             .await
             .expect_err("download_model should fail without sidecar");
         assert!(error.contains("E_SIDECAR_IPC"));
+    }
+
+    #[tokio::test]
+    async fn test_purge_model_cache_requires_sidecar_connection() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+
+        let error = manager
+            .purge_model_cache(None)
+            .await
+            .expect_err("purge_model_cache should fail without sidecar");
+        assert!(error.contains("Sidecar not connected"));
+    }
+
+    #[tokio::test]
+    async fn test_purge_model_cache_rejected_while_loading_or_downloading() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+        *manager.model_status.write().await = ModelStatus::Downloading;
+
+        let error = manager
+            .purge_model_cache(None)
+            .await
+            .expect_err("purge_model_cache should reject while downloading");
+        assert!(
+            error.contains("Cannot purge model while download or initialization is in progress")
+        );
     }
 
     #[tokio::test]

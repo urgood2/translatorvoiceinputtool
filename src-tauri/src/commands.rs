@@ -493,11 +493,15 @@ pub async fn download_model(
 
 /// Purge model cache.
 #[tauri::command]
-pub async fn purge_model_cache() -> Result<(), CommandError> {
-    // TODO: Implement
-    Err(CommandError::NotImplemented {
-        message: "Model cache purge not yet implemented".to_string(),
-    })
+pub async fn purge_model_cache(
+    integration_state: tauri::State<'_, IntegrationState>,
+    model_id: Option<String>,
+) -> Result<(), CommandError> {
+    let manager = integration_state.0.read().await;
+    manager
+        .purge_model_cache(model_id)
+        .await
+        .map_err(|message| CommandError::SidecarIpc { message })
 }
 
 // ============================================================================
