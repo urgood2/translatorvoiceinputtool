@@ -104,6 +104,33 @@ pub struct ModelStatusPayload {
     pub error: Option<String>,
 }
 
+/// Sidecar `model.get_status` payload.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SidecarModelStatus {
+    pub model_id: String,
+    #[serde(default)]
+    pub revision: Option<String>,
+    #[serde(default)]
+    pub cache_path: Option<String>,
+    pub status: String,
+    #[serde(default)]
+    pub progress: Option<SidecarModelProgress>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+/// Sidecar model download/verification progress payload.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SidecarModelProgress {
+    pub current: u64,
+    #[serde(default)]
+    pub total: Option<u64>,
+    #[serde(default)]
+    pub unit: Option<String>,
+}
+
 /// Status changed event name (mirrors sidecar event).
 const EVENT_STATUS_CHANGED: &str = "status:changed";
 
@@ -998,6 +1025,23 @@ impl IntegrationManager {
     /// Get current model status.
     pub async fn get_model_status(&self) -> ModelStatus {
         self.model_status.read().await.clone()
+    }
+
+    /// Query live model status from sidecar RPC.
+    pub async fn query_model_status(
+        &self,
+        model_id: Option<String>,
+    ) -> Result<SidecarModelStatus, String> {
+        let client = self.rpc_client.read().await;
+        let client = client
+            .as_ref()
+            .ok_or_else(|| "E_SIDECAR_IPC: Sidecar not connected".to_string())?;
+
+        let params = model_id.map(|id| json!({ "model_id": id }));
+        client
+            .call::<SidecarModelStatus>("model.get_status", params)
+            .await
+            .map_err(|e| format!("E_SIDECAR_IPC: Failed to query model status: {}", e))
     }
 
     /// Manually trigger model download.
@@ -2544,5 +2588,17 @@ mod tests {
             .await
             .expect_err("stop_mic_test should fail without sidecar");
         assert!(error.contains("Sidecar not connected"));
+    }
+
+    #[tokio::test]
+    async fn test_query_model_status_requires_sidecar_connection() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+
+        let error = manager
+            .query_model_status(None)
+            .await
+            .expect_err("query_model_status should fail without sidecar");
+        assert!(error.contains("E_SIDECAR_IPC"));
     }
 }

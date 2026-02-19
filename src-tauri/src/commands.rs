@@ -14,8 +14,7 @@ use std::sync::Arc;
 use crate::capabilities::{Capabilities, CapabilityIssue};
 use crate::config::{self, AppConfig, ReplacementRule};
 use crate::history::{TranscriptEntry, TranscriptHistory};
-use crate::integration::SidecarAudioDevice;
-use crate::model_defaults;
+use crate::integration::{SidecarAudioDevice, SidecarModelStatus};
 use crate::state::{AppStateManager, CannotRecordReason, StateEvent};
 use crate::IntegrationState;
 
@@ -28,6 +27,10 @@ pub enum CommandError {
 
     #[error("Audio error: {message}")]
     Audio { message: String },
+
+    #[error("Sidecar IPC error: {message}")]
+    #[serde(rename = "E_SIDECAR_IPC")]
+    SidecarIpc { message: String },
 
     #[error("Model error: {message}")]
     Model { message: String },
@@ -299,6 +302,8 @@ pub async fn stop_mic_test(
 pub struct ModelStatus {
     pub model_id: String,
     pub status: ModelState,
+    pub revision: Option<String>,
+    pub cache_path: Option<String>,
     pub progress: Option<Progress>,
     pub error: Option<String>,
 }
@@ -308,9 +313,11 @@ pub struct ModelStatus {
 pub enum ModelState {
     Missing,
     Downloading,
+    Loading,
     Verifying,
     Ready,
     Error,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -322,13 +329,43 @@ pub struct Progress {
 
 /// Get model status.
 #[tauri::command]
-pub async fn get_model_status() -> ModelStatus {
-    // TODO: Query sidecar for model status
+pub async fn get_model_status(
+    integration_state: tauri::State<'_, IntegrationState>,
+    model_id: Option<String>,
+) -> Result<ModelStatus, CommandError> {
+    let manager = integration_state.0.read().await;
+    let status = manager
+        .query_model_status(model_id)
+        .await
+        .map_err(|message| CommandError::SidecarIpc { message })?;
+
+    Ok(map_sidecar_model_status(status))
+}
+
+fn map_sidecar_model_status(status: SidecarModelStatus) -> ModelStatus {
+    let model_state = match status.status.as_str() {
+        "missing" => ModelState::Missing,
+        "downloading" => ModelState::Downloading,
+        "loading" => ModelState::Loading,
+        "verifying" => ModelState::Verifying,
+        "ready" => ModelState::Ready,
+        "error" => ModelState::Error,
+        _ => ModelState::Unknown,
+    };
+
+    let progress = status.progress.map(|p| Progress {
+        current: p.current,
+        total: p.total,
+        unit: p.unit.unwrap_or_else(|| "bytes".to_string()),
+    });
+
     ModelStatus {
-        model_id: model_defaults::default_model_id().to_string(),
-        status: ModelState::Missing, // Placeholder
-        progress: None,
-        error: None,
+        model_id: status.model_id,
+        status: model_state,
+        revision: status.revision,
+        cache_path: status.cache_path,
+        progress,
+        error: status.error.or(status.error_message),
     }
 }
 

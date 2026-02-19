@@ -373,6 +373,7 @@ export interface AppError {
 
 /** Command error codes. */
 export type CommandErrorCode =
+  | 'E_SIDECAR_IPC'
   | 'config'
   | 'audio'
   | 'model'
