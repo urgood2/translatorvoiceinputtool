@@ -1791,6 +1791,27 @@ impl IntegrationManager {
         Ok(())
     }
 
+    /// Manually restart the sidecar process.
+    ///
+    /// This path is used for user-initiated recovery after failures.
+    pub async fn restart_sidecar(&self) -> Result<(), String> {
+        log::info!("Manual sidecar restart requested");
+        self.emit_sidecar_status("restarting", Some("Manual restart requested".to_string()));
+
+        self.stop_sidecar_runtime().await;
+
+        match self.start_sidecar().await {
+            Ok(()) => {
+                self.emit_sidecar_status("ready", Some("Sidecar restarted".to_string()));
+                Ok(())
+            }
+            Err(err) => {
+                self.emit_sidecar_status("failed", Some(format!("Manual restart failed: {}", err)));
+                Err(err)
+            }
+        }
+    }
+
     /// Ping the sidecar to verify connection.
     async fn ping_sidecar(&self) -> Result<(), String> {
         let client = self.rpc_client.read().await;
@@ -1815,6 +1836,27 @@ impl IntegrationManager {
             result.protocol
         );
         Ok(())
+    }
+
+    fn emit_sidecar_status(&self, state: &str, detail: Option<String>) {
+        if let Some(ref handle) = self.app_handle {
+            let payload = sidecar_status_payload_from_status_event(Some(state), detail, Some(0));
+            emit_with_shared_seq(handle, &[EVENT_SIDECAR_STATUS], payload, &self.event_seq);
+        }
+    }
+
+    async fn stop_sidecar_runtime(&self) {
+        if let Some(client) = self.rpc_client.write().await.take() {
+            let _: Result<Value, RpcError> = client.call("system.shutdown", None).await;
+            client.shutdown().await;
+        }
+
+        if let Some(mut child) = self.sidecar_process.write().await.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+
+        self.watchdog.mark_not_running().await;
     }
 
     /// Initialize ASR model via sidecar.
@@ -2824,16 +2866,7 @@ impl IntegrationManager {
         self.watchdog.shutdown();
 
         // Shutdown sidecar
-        if let Some(client) = self.rpc_client.write().await.take() {
-            // Send shutdown command
-            let _: Result<Value, RpcError> = client.call("system.shutdown", None).await;
-            client.shutdown().await;
-        }
-
-        // Kill sidecar process if still running
-        if let Some(mut child) = self.sidecar_process.write().await.take() {
-            let _ = child.kill();
-        }
+        self.stop_sidecar_runtime().await;
 
         // Shutdown hotkey manager
         {
@@ -4097,6 +4130,26 @@ mod tests {
         // Verify watchdog is initialized with default status
         let status = manager.watchdog.get_status().await;
         assert_eq!(status, crate::watchdog::HealthStatus::NotRunning);
+    }
+
+    #[tokio::test]
+    async fn test_restart_sidecar_reports_spawn_failure_and_clears_runtime_handles() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let mut manager = IntegrationManager::new(state_manager);
+        manager.config.python_path = "__missing_python_binary__".to_string();
+        manager.config.sidecar_module = "openvoicy_sidecar".to_string();
+
+        let error = manager
+            .restart_sidecar()
+            .await
+            .expect_err("restart_sidecar should fail when sidecar cannot spawn");
+        assert!(error.contains("Failed to spawn sidecar"));
+        assert!(manager.rpc_client.read().await.is_none());
+        assert!(manager.sidecar_process.read().await.is_none());
+        assert_eq!(
+            manager.watchdog.get_status().await,
+            crate::watchdog::HealthStatus::NotRunning
+        );
     }
 
     #[tokio::test]

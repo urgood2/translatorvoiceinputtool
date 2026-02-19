@@ -80,6 +80,7 @@ pub fn run() {
             commands::get_model_catalog,
             commands::download_model,
             commands::purge_model_cache,
+            commands::restart_sidecar,
             // History commands
             commands::get_transcript_history,
             commands::copy_transcript,

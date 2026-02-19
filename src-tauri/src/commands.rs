@@ -504,6 +504,18 @@ pub async fn purge_model_cache(
         .map_err(|message| CommandError::SidecarIpc { message })
 }
 
+/// Manually restart sidecar process.
+#[tauri::command]
+pub async fn restart_sidecar(
+    integration_state: tauri::State<'_, IntegrationState>,
+) -> Result<(), CommandError> {
+    let manager = integration_state.0.read().await;
+    manager
+        .restart_sidecar()
+        .await
+        .map_err(|message| CommandError::SidecarIpc { message })
+}
+
 // ============================================================================
 // HISTORY COMMANDS
 // ============================================================================
