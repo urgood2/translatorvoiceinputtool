@@ -14,7 +14,7 @@ use std::sync::Arc;
 use crate::capabilities::{Capabilities, CapabilityIssue};
 use crate::config::{self, AppConfig, ReplacementRule};
 use crate::history::{TranscriptEntry, TranscriptHistory};
-use crate::integration::{SidecarAudioDevice, SidecarModelStatus};
+use crate::integration::{SidecarAudioDevice, SidecarModelStatus, SidecarPresetInfo};
 use crate::state::{AppStateManager, CannotRecordReason, StateEvent};
 use crate::IntegrationState;
 
@@ -554,66 +554,102 @@ pub fn preview_replacement(input: String, rules: Vec<ReplacementRule>) -> String
 
 /// Get available presets.
 #[tauri::command]
-pub fn get_available_presets() -> Vec<PresetInfo> {
-    // TODO: Load presets from bundled files
-    vec![
-        PresetInfo {
-            id: "punctuation".to_string(),
-            name: "Punctuation".to_string(),
-            description: "Convert spoken punctuation to symbols".to_string(),
-            rule_count: 10,
-        },
-        PresetInfo {
-            id: "common-corrections".to_string(),
-            name: "Common Corrections".to_string(),
-            description: "Fix common transcription errors".to_string(),
-            rule_count: 25,
-        },
-    ]
+pub async fn get_available_presets(
+    integration_state: tauri::State<'_, IntegrationState>,
+) -> Result<Vec<PresetInfo>, CommandError> {
+    let manager = integration_state.0.read().await;
+    let presets = manager
+        .list_replacement_presets()
+        .await
+        .map_err(|message| CommandError::SidecarIpc { message })?;
+
+    Ok(presets
+        .into_iter()
+        .map(
+            |SidecarPresetInfo {
+                 id,
+                 name,
+                 description,
+                 rule_count,
+             }| PresetInfo {
+                id,
+                name,
+                description,
+                rule_count,
+            },
+        )
+        .collect())
+}
+
+fn rule_belongs_to_preset(rule: &ReplacementRule, preset_id: &str) -> bool {
+    if rule.id.starts_with(&format!("{preset_id}:")) {
+        return true;
+    }
+
+    rule.origin
+        .as_deref()
+        .is_some_and(|origin| origin == format!("preset:{preset_id}"))
+}
+
+fn merge_preset_rules(
+    active_rules: Vec<ReplacementRule>,
+    preset_rules: Vec<ReplacementRule>,
+    preset_id: &str,
+) -> Vec<ReplacementRule> {
+    let mut merged_rules = active_rules
+        .into_iter()
+        .filter(|rule| !rule_belongs_to_preset(rule, preset_id))
+        .collect::<Vec<_>>();
+
+    merged_rules.extend(preset_rules);
+    merged_rules
 }
 
 /// Load a preset's rules.
 #[tauri::command]
-pub fn load_preset(preset_id: String) -> Vec<ReplacementRule> {
-    // TODO: Load actual preset rules
-    match preset_id.as_str() {
-        "punctuation" => vec![
-            ReplacementRule {
-                id: "punctuation:period".to_string(),
-                kind: "literal".to_string(),
-                pattern: " period".to_string(),
-                replacement: ".".to_string(),
-                enabled: true,
-                word_boundary: false,
-                case_sensitive: false,
-                description: Some("Convert spoken 'period' to punctuation".to_string()),
-                origin: Some("preset:punctuation".to_string()),
-            },
-            ReplacementRule {
-                id: "punctuation:comma".to_string(),
-                kind: "literal".to_string(),
-                pattern: " comma".to_string(),
-                replacement: ",".to_string(),
-                enabled: true,
-                word_boundary: false,
-                case_sensitive: false,
-                description: Some("Convert spoken 'comma' to punctuation".to_string()),
-                origin: Some("preset:punctuation".to_string()),
-            },
-            ReplacementRule {
-                id: "punctuation:question-mark".to_string(),
-                kind: "literal".to_string(),
-                pattern: " question mark".to_string(),
-                replacement: "?".to_string(),
-                enabled: true,
-                word_boundary: false,
-                case_sensitive: false,
-                description: Some("Convert spoken 'question mark' to punctuation".to_string()),
-                origin: Some("preset:punctuation".to_string()),
-            },
-        ],
-        _ => vec![],
+pub async fn load_preset(
+    integration_state: tauri::State<'_, IntegrationState>,
+    preset_id: String,
+) -> Result<Vec<ReplacementRule>, CommandError> {
+    let manager = integration_state.0.read().await;
+
+    let preset_rules = match manager
+        .get_preset_replacement_rules(preset_id.clone())
+        .await
+        .map_err(|message| CommandError::SidecarIpc { message })?
+    {
+        Some(rules) => rules,
+        None => {
+            // Missing preset should be a no-op for UI consumers (no thrown error).
+            return Ok(Vec::new());
+        }
+    };
+
+    let active_rules = manager
+        .get_active_replacement_rules()
+        .await
+        .map_err(|message| CommandError::SidecarIpc { message })?;
+
+    let merged_rules = merge_preset_rules(active_rules, preset_rules.clone(), &preset_id);
+
+    manager
+        .set_active_replacement_rules(merged_rules.clone())
+        .await
+        .map_err(|message| CommandError::SidecarIpc { message })?;
+
+    let mut app_config = config::load_config();
+    app_config.replacements = merged_rules;
+    if !app_config
+        .presets
+        .enabled_presets
+        .iter()
+        .any(|enabled| enabled == &preset_id)
+    {
+        app_config.presets.enabled_presets.push(preset_id);
     }
+    config::save_config(&app_config)?;
+
+    Ok(preset_rules)
 }
 
 // ============================================================================
@@ -845,6 +881,99 @@ mod tests {
 
         let result = preview_replacement("Total: $42.50".to_string(), rules);
         assert_eq!(result, "Total: [PRICE]");
+    }
+
+    #[test]
+    fn test_merge_preset_rules_replaces_existing_rules_for_same_preset() {
+        let active_rules = vec![
+            ReplacementRule {
+                id: "user-rule-1".to_string(),
+                kind: "literal".to_string(),
+                pattern: "btw".to_string(),
+                replacement: "by the way".to_string(),
+                enabled: true,
+                word_boundary: true,
+                case_sensitive: false,
+                description: None,
+                origin: Some("user".to_string()),
+            },
+            ReplacementRule {
+                id: "punctuation:period".to_string(),
+                kind: "literal".to_string(),
+                pattern: " period".to_string(),
+                replacement: ".".to_string(),
+                enabled: true,
+                word_boundary: false,
+                case_sensitive: false,
+                description: None,
+                origin: Some("preset".to_string()),
+            },
+        ];
+
+        let preset_rules = vec![ReplacementRule {
+            id: "punctuation:comma".to_string(),
+            kind: "literal".to_string(),
+            pattern: " comma".to_string(),
+            replacement: ",".to_string(),
+            enabled: true,
+            word_boundary: false,
+            case_sensitive: false,
+            description: None,
+            origin: Some("preset".to_string()),
+        }];
+
+        let merged = merge_preset_rules(active_rules, preset_rules, "punctuation");
+        let merged_ids = merged.into_iter().map(|rule| rule.id).collect::<Vec<_>>();
+
+        assert_eq!(merged_ids, vec!["user-rule-1", "punctuation:comma"]);
+    }
+
+    #[test]
+    fn test_merge_preset_rules_keeps_other_preset_rules() {
+        let active_rules = vec![
+            ReplacementRule {
+                id: "coding-terms:semicolon".to_string(),
+                kind: "literal".to_string(),
+                pattern: " semicolon".to_string(),
+                replacement: ";".to_string(),
+                enabled: true,
+                word_boundary: false,
+                case_sensitive: false,
+                description: None,
+                origin: Some("preset".to_string()),
+            },
+            ReplacementRule {
+                id: "punctuation:period".to_string(),
+                kind: "literal".to_string(),
+                pattern: " period".to_string(),
+                replacement: ".".to_string(),
+                enabled: true,
+                word_boundary: false,
+                case_sensitive: false,
+                description: None,
+                origin: Some("preset".to_string()),
+            },
+        ];
+
+        let preset_rules = vec![ReplacementRule {
+            id: "punctuation:question-mark".to_string(),
+            kind: "literal".to_string(),
+            pattern: " question mark".to_string(),
+            replacement: "?".to_string(),
+            enabled: true,
+            word_boundary: false,
+            case_sensitive: false,
+            description: None,
+            origin: Some("preset".to_string()),
+        }];
+
+        let merged = merge_preset_rules(active_rules, preset_rules, "punctuation");
+        let merged_ids = merged.into_iter().map(|rule| rule.id).collect::<Vec<_>>();
+
+        assert_eq!(
+            merged_ids,
+            vec!["coding-terms:semicolon", "punctuation:question-mark"]
+        );
     }
 
     #[test]

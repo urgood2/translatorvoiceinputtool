@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
 
-use crate::config::{self, HotkeyMode};
+use crate::config::{self, HotkeyMode, ReplacementRule};
 use crate::errors::{AppError, ErrorKind};
 use crate::focus::{capture_focus, FocusSignature};
 use crate::history::{
@@ -218,6 +218,15 @@ pub struct SidecarAudioDevice {
     pub default_sample_rate: u32,
     #[serde(default)]
     pub channels: u32,
+}
+
+/// Preset metadata payload returned by sidecar replacements APIs.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SidecarPresetInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub rule_count: usize,
 }
 
 fn is_configured_device_available(
@@ -1189,6 +1198,105 @@ impl IntegrationManager {
             .map_err(|e| format!("Failed to set audio device: {}", e))?;
 
         Ok(result.active_device_uid)
+    }
+
+    /// List available replacement presets via sidecar.
+    pub async fn list_replacement_presets(&self) -> Result<Vec<SidecarPresetInfo>, String> {
+        let client = self.rpc_client.read().await;
+        let client = client
+            .as_ref()
+            .ok_or_else(|| "Sidecar not connected".to_string())?;
+
+        #[derive(Deserialize)]
+        struct GetPresetsResult {
+            #[serde(default)]
+            presets: Vec<SidecarPresetInfo>,
+        }
+
+        let result = client
+            .call::<GetPresetsResult>("replacements.get_presets", None)
+            .await
+            .map_err(|e| format!("Failed to list presets: {}", e))?;
+
+        Ok(result.presets)
+    }
+
+    /// Get replacement rules for a specific preset via sidecar.
+    ///
+    /// Returns `Ok(None)` when the preset does not exist (`E_NOT_FOUND`).
+    pub async fn get_preset_replacement_rules(
+        &self,
+        preset_id: String,
+    ) -> Result<Option<Vec<ReplacementRule>>, String> {
+        let client = self.rpc_client.read().await;
+        let client = client
+            .as_ref()
+            .ok_or_else(|| "Sidecar not connected".to_string())?;
+
+        #[derive(Deserialize)]
+        struct GetPresetRulesResult {
+            #[allow(dead_code)]
+            preset: SidecarPresetInfo,
+            #[serde(default)]
+            rules: Vec<ReplacementRule>,
+        }
+
+        let params = json!({ "preset_id": preset_id });
+
+        match client
+            .call::<GetPresetRulesResult>("replacements.get_preset_rules", Some(params))
+            .await
+        {
+            Ok(result) => Ok(Some(result.rules)),
+            Err(RpcError::Remote { kind, .. }) if kind == "E_NOT_FOUND" => Ok(None),
+            Err(e) => Err(format!("Failed to load preset rules: {}", e)),
+        }
+    }
+
+    /// Get current active replacement rules from sidecar.
+    pub async fn get_active_replacement_rules(&self) -> Result<Vec<ReplacementRule>, String> {
+        let client = self.rpc_client.read().await;
+        let client = client
+            .as_ref()
+            .ok_or_else(|| "Sidecar not connected".to_string())?;
+
+        #[derive(Deserialize)]
+        struct GetRulesResult {
+            #[serde(default)]
+            rules: Vec<ReplacementRule>,
+        }
+
+        let result = client
+            .call::<GetRulesResult>("replacements.get_rules", None)
+            .await
+            .map_err(|e| format!("Failed to get active replacement rules: {}", e))?;
+
+        Ok(result.rules)
+    }
+
+    /// Replace active replacement rules in sidecar.
+    pub async fn set_active_replacement_rules(
+        &self,
+        rules: Vec<ReplacementRule>,
+    ) -> Result<(), String> {
+        let client = self.rpc_client.read().await;
+        let client = client
+            .as_ref()
+            .ok_or_else(|| "Sidecar not connected".to_string())?;
+
+        #[derive(Deserialize)]
+        struct SetRulesResult {
+            #[allow(dead_code)]
+            count: usize,
+        }
+
+        let params = json!({ "rules": rules });
+        client
+            .call::<SetRulesResult>("replacements.set_rules", Some(params))
+            .await
+            .map_err(|e| format!("Failed to set active replacement rules: {}", e))?;
+
+        Ok(())
     }
 
     /// Stop microphone level meter via sidecar.
@@ -2675,5 +2783,53 @@ mod tests {
             .await
             .expect_err("query_model_status should fail without sidecar");
         assert!(error.contains("E_SIDECAR_IPC"));
+    }
+
+    #[tokio::test]
+    async fn test_list_replacement_presets_requires_sidecar_connection() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+
+        let error = manager
+            .list_replacement_presets()
+            .await
+            .expect_err("list_replacement_presets should fail without sidecar");
+        assert!(error.contains("Sidecar not connected"));
+    }
+
+    #[tokio::test]
+    async fn test_get_preset_replacement_rules_requires_sidecar_connection() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+
+        let error = manager
+            .get_preset_replacement_rules("punctuation".to_string())
+            .await
+            .expect_err("get_preset_replacement_rules should fail without sidecar");
+        assert!(error.contains("Sidecar not connected"));
+    }
+
+    #[tokio::test]
+    async fn test_get_active_replacement_rules_requires_sidecar_connection() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+
+        let error = manager
+            .get_active_replacement_rules()
+            .await
+            .expect_err("get_active_replacement_rules should fail without sidecar");
+        assert!(error.contains("Sidecar not connected"));
+    }
+
+    #[tokio::test]
+    async fn test_set_active_replacement_rules_requires_sidecar_connection() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+
+        let error = manager
+            .set_active_replacement_rules(Vec::new())
+            .await
+            .expect_err("set_active_replacement_rules should fail without sidecar");
+        assert!(error.contains("Sidecar not connected"));
     }
 }
