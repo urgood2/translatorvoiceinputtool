@@ -213,6 +213,54 @@ describe('Device Actions', () => {
 });
 
 // ============================================================================
+// RECORDING ACTION TESTS
+// ============================================================================
+
+describe('Recording Actions', () => {
+  test('startRecording invokes start_recording command only', async () => {
+    useAppStore.setState({ appState: 'idle' });
+
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'start_recording') return undefined;
+      return undefined;
+    });
+
+    await useAppStore.getState().startRecording();
+
+    expect(invoke).toHaveBeenCalledWith('start_recording');
+    expect(useAppStore.getState().appState).toBe('idle');
+  });
+
+  test('stopRecording invokes stop_recording command only', async () => {
+    useAppStore.setState({ appState: 'recording' });
+
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'stop_recording') return undefined;
+      return undefined;
+    });
+
+    await useAppStore.getState().stopRecording();
+
+    expect(invoke).toHaveBeenCalledWith('stop_recording');
+    expect(useAppStore.getState().appState).toBe('recording');
+  });
+
+  test('cancelRecording invokes cancel_recording command only', async () => {
+    useAppStore.setState({ appState: 'recording' });
+
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'cancel_recording') return undefined;
+      return undefined;
+    });
+
+    await useAppStore.getState().cancelRecording();
+
+    expect(invoke).toHaveBeenCalledWith('cancel_recording');
+    expect(useAppStore.getState().appState).toBe('recording');
+  });
+});
+
+// ============================================================================
 // CONFIG ACTION TESTS
 // ============================================================================
 

@@ -92,6 +92,9 @@ export interface AppStoreActions {
   selectDevice: (uid: string | null) => Promise<void>;
   startMicTest: () => Promise<void>;
   stopMicTest: () => Promise<void>;
+  startRecording: () => Promise<void>;
+  stopRecording: () => Promise<void>;
+  cancelRecording: () => Promise<void>;
 
   // Config actions
   loadConfig: () => Promise<void>;
@@ -392,6 +395,33 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ isMeterRunning: false, audioLevel: null });
     } catch (error) {
       console.error('Failed to stop mic test:', error);
+      throw error;
+    }
+  },
+
+  startRecording: async () => {
+    try {
+      await invoke('start_recording');
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+      throw error;
+    }
+  },
+
+  stopRecording: async () => {
+    try {
+      await invoke('stop_recording');
+    } catch (error) {
+      console.error('Failed to stop recording:', error);
+      throw error;
+    }
+  },
+
+  cancelRecording: async () => {
+    try {
+      await invoke('cancel_recording');
+    } catch (error) {
+      console.error('Failed to cancel recording:', error);
       throw error;
     }
   },
