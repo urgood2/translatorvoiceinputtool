@@ -31,7 +31,9 @@ use crate::hotkey::{HotkeyAction, HotkeyManager, RecordingAction};
 use crate::injection::{inject_text, InjectionConfig, InjectionResult};
 use crate::ipc::{NotificationEvent, RpcClient, RpcError};
 use crate::model_defaults;
-use crate::recording::{RecordingController, RecordingEvent, StopResult, TranscriptionResult};
+use crate::recording::{
+    CancelReason, RecordingController, RecordingEvent, StopResult, TranscriptionResult,
+};
 use crate::state::{AppState, AppStateManager};
 use crate::watchdog::{self, PingCallback, Watchdog, WatchdogConfig, WatchdogEvent};
 
@@ -293,6 +295,27 @@ fn transcription_failure_app_error(session_id: &str, raw_error: &str) -> AppErro
         })),
         true,
     )
+}
+
+fn validate_recording_start_response(
+    expected_session_id: &str,
+    response: &Value,
+) -> Result<(), String> {
+    #[derive(Deserialize)]
+    struct StartResult {
+        session_id: String,
+    }
+
+    let start_result: StartResult = serde_json::from_value(response.clone())
+        .map_err(|e| format!("Invalid recording.start response payload: {e}"))?;
+    if start_result.session_id == expected_session_id {
+        Ok(())
+    } else {
+        Err(format!(
+            "recording.start session mismatch: host={} sidecar={}",
+            expected_session_id, start_result.session_id
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1258,12 +1281,72 @@ impl IntegrationManager {
 
                                     // Tell sidecar to start recording
                                     if let Some(client) = rpc_client.read().await.as_ref() {
+                                        let expected_session_id = session_id.clone();
                                         let params = json!({
-                                            "session_id": session_id,
+                                            "session_id": expected_session_id,
                                             "device_uid": config.audio.device_uid
                                         });
-                                        let _: Result<Value, _> =
+                                        let start_result: Result<Value, _> =
                                             client.call("recording.start", Some(params)).await;
+                                        let (start_synchronized, cancel_session_id) =
+                                            match start_result {
+                                                Ok(result) => {
+                                                    match validate_recording_start_response(
+                                                        expected_session_id.as_str(),
+                                                        &result,
+                                                    ) {
+                                                        Ok(()) => (true, None),
+                                                        Err(mismatch) => {
+                                                            log::error!("{}", mismatch);
+                                                            (
+                                                                false,
+                                                                result
+                                                                    .get("session_id")
+                                                                    .and_then(Value::as_str)
+                                                                    .map(ToOwned::to_owned)
+                                                                    .or_else(|| {
+                                                                        Some(
+                                                                            expected_session_id
+                                                                                .clone(),
+                                                                        )
+                                                                    }),
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    log::error!(
+                                                        "Failed to call recording.start RPC: {}",
+                                                        err
+                                                    );
+                                                    (false, Some(expected_session_id.clone()))
+                                                }
+                                            };
+
+                                        if !start_synchronized {
+                                            if let Some(cancel_session_id) = cancel_session_id {
+                                                let cancel_params =
+                                                    json!({ "session_id": cancel_session_id });
+                                                let cancel_result: Result<Value, _> = client
+                                                    .call("recording.cancel", Some(cancel_params))
+                                                    .await;
+                                                if let Err(err) = cancel_result {
+                                                    log::warn!(
+                                                        "Failed to roll back recording.start via recording.cancel: {}",
+                                                        err
+                                                    );
+                                                }
+                                            }
+                                            let _ = recording_controller
+                                                .cancel(CancelReason::UserButton)
+                                                .await;
+                                            *recording_context.write().await = None;
+                                            *current_session_id.write().await = None;
+                                            state_manager.transition_to_error(
+                                                "Recording session synchronization failed"
+                                                    .to_string(),
+                                            );
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -2064,6 +2147,32 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_recording_start_response_accepts_matching_session_id() {
+        let result =
+            validate_recording_start_response("session-1", &json!({ "session_id": "session-1" }));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_recording_start_response_rejects_mismatched_session_id() {
+        let result = validate_recording_start_response(
+            "session-host",
+            &json!({ "session_id": "session-sidecar" }),
+        );
+        let message = result.expect_err("expected mismatch error");
+        assert!(message.contains("recording.start session mismatch"));
+        assert!(message.contains("session-host"));
+        assert!(message.contains("session-sidecar"));
+    }
+
+    #[test]
+    fn test_validate_recording_start_response_rejects_invalid_payload() {
+        let result = validate_recording_start_response("session-1", &json!({}));
+        let message = result.expect_err("expected invalid payload error");
+        assert!(message.contains("Invalid recording.start response payload"));
+    }
+
+    #[test]
     fn test_is_stale_session_logic() {
         assert!(!is_stale_session(None, Some("active")));
         assert!(!is_stale_session(Some("active"), Some("active")));
@@ -2231,11 +2340,12 @@ mod tests {
             payload.get("message").and_then(Value::as_str),
             Some("Transcription failed")
         );
-        assert_eq!(payload.get("recoverable").and_then(Value::as_bool), Some(true));
         assert_eq!(
-            payload
-                .pointer("/app_error/code")
-                .and_then(Value::as_str),
+            payload.get("recoverable").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            payload.pointer("/app_error/code").and_then(Value::as_str),
             Some("E_TRANSCRIPTION_FAILED")
         );
     }
