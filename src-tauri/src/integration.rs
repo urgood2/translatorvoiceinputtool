@@ -34,11 +34,15 @@ use crate::model_defaults;
 use crate::recording::{
     CancelReason, RecordingController, RecordingEvent, StopResult, TranscriptionResult,
 };
-use crate::state::{AppState, AppStateManager};
+use crate::state::{AppState, AppStateManager, StateEvent};
 use crate::watchdog::{self, PingCallback, Watchdog, WatchdogConfig, WatchdogEvent};
 
 /// Tray icon event name.
 const EVENT_TRAY_UPDATE: &str = "tray:update";
+/// Canonical app state change event.
+const EVENT_STATE_CHANGED: &str = "state:changed";
+/// Legacy app state change event alias.
+const EVENT_STATE_CHANGED_LEGACY: &str = "state_changed";
 
 /// Model progress event name.
 const EVENT_MODEL_PROGRESS: &str = "model:progress";
@@ -392,6 +396,15 @@ fn transcription_error_event_payload(session_id: &str, app_error: &AppError) -> 
         "error": legacy_message,
         // Canonical structured error payload.
         "app_error": app_error,
+    })
+}
+
+fn state_changed_event_payload(event: &StateEvent) -> Value {
+    json!({
+        "state": event.state,
+        "enabled": event.enabled,
+        "detail": event.detail,
+        "timestamp": event.timestamp.to_rfc3339(),
     })
 }
 
@@ -1953,6 +1966,13 @@ impl IntegrationManager {
                         }),
                         &event_seq,
                     );
+
+                    emit_with_shared_seq(
+                        handle,
+                        &[EVENT_STATE_CHANGED, EVENT_STATE_CHANGED_LEGACY],
+                        state_changed_event_payload(&event),
+                        &event_seq,
+                    );
                 }
             }
 
@@ -2830,6 +2850,22 @@ mod tests {
             payload.pointer("/app_error/code").and_then(Value::as_str),
             Some("E_TRANSCRIPTION_FAILED")
         );
+    }
+
+    #[test]
+    fn test_state_changed_event_payload_shape() {
+        let event = StateEvent {
+            state: AppState::Idle,
+            enabled: true,
+            detail: None,
+            timestamp: chrono::Utc::now(),
+        };
+
+        let payload = state_changed_event_payload(&event);
+        assert_eq!(payload.get("state").and_then(Value::as_str), Some("idle"));
+        assert_eq!(payload.get("enabled").and_then(Value::as_bool), Some(true));
+        assert!(payload.get("detail").is_some());
+        assert!(payload.get("timestamp").and_then(Value::as_str).is_some());
     }
 
     #[test]
