@@ -960,26 +960,34 @@ impl IntegrationManager {
                         log::debug!("Watchdog health check: {:?}", status);
                         // Could emit event to frontend for status display
                     }
-                    WatchdogEvent::SidecarHung => {
-                        log::error!("Watchdog detected hung sidecar, requesting restart");
+                    WatchdogEvent::SidecarRecoveryRequested { reason } => {
+                        log::error!(
+                            "Watchdog requested supervisor recovery for sidecar: {}",
+                            reason
+                        );
                         // Transition to error state
                         state_manager
                             .transition_to_error("Sidecar hung, restarting...".to_string());
 
-                        // Kill and restart sidecar
-                        // Note: This would need to be more sophisticated in production
-                        // to actually kill and restart the sidecar process
+                        // Keep legacy event for frontend compatibility while recovery moves through
+                        // supervisor policy.
                         if let Some(ref handle) = app_handle {
                             emit_with_shared_seq(
                                 handle,
                                 &["sidecar:restart"],
-                                serde_json::json!({ "reason": "hung" }),
+                                serde_json::json!({ "reason": reason }),
                                 &event_seq,
                             );
                         }
 
                         if let Err(err) = manager.recover_sidecar_from_watchdog().await {
                             log::error!("Watchdog recovery via supervisor failed: {}", err);
+                        }
+                    }
+                    WatchdogEvent::SidecarHung => {
+                        // Legacy event retained in watchdog; recovery is now supervisor-mediated.
+                        if let Err(err) = manager.recover_sidecar_from_watchdog().await {
+                            log::error!("Watchdog legacy hung recovery failed: {}", err);
                         }
                     }
                     WatchdogEvent::SystemResumed => {

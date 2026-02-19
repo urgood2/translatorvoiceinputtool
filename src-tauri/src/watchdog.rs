@@ -53,7 +53,9 @@ pub enum PowerEvent {
 pub enum WatchdogEvent {
     /// Health check completed.
     HealthCheck { status: HealthStatus },
-    /// Sidecar appears hung and should be restarted.
+    /// Sidecar appears hung and supervisor recovery should be attempted.
+    SidecarRecoveryRequested { reason: String },
+    /// Legacy hang signal kept for backward compatibility.
     SidecarHung,
     /// System resumed from suspend.
     SystemResumed,
@@ -350,9 +352,13 @@ impl Watchdog {
                 // Emit health check event
                 let _ = event_tx.send(WatchdogEvent::HealthCheck { status });
 
-                // If hung and auto-restart is enabled, emit hung event
+                // If hung and auto-restart is enabled, request supervisor-mediated recovery.
                 if status == HealthStatus::Hung && config.auto_restart_on_hang {
-                    log::error!("Watchdog: Sidecar appears hung, requesting restart");
+                    log::error!("Watchdog: Sidecar appears hung, requesting supervisor recovery");
+                    let _ = event_tx.send(WatchdogEvent::SidecarRecoveryRequested {
+                        reason: "sidecar_hung".to_string(),
+                    });
+                    // Keep emitting the legacy event during migration.
                     let _ = event_tx.send(WatchdogEvent::SidecarHung);
                 }
             }
@@ -687,7 +693,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_watchdog_loop_detects_hung() {
+    async fn test_watchdog_loop_detects_hung_and_requests_supervisor_recovery() {
         let config = WatchdogConfig {
             check_interval: Duration::from_millis(20),
             hang_threshold: Duration::from_millis(50),
@@ -701,23 +707,64 @@ mod tests {
         // Start the loop
         watchdog.start_loop(Arc::clone(&pinger));
 
-        // Wait for hung detection
-        let mut hung_event_received = false;
+        // Wait for hung detection + supervisor recovery request.
+        let mut recovery_event_received = false;
         let start = Instant::now();
         while start.elapsed() < Duration::from_millis(500) {
             if let Ok(Ok(event)) =
                 tokio::time::timeout(Duration::from_millis(50), receiver.recv()).await
             {
-                if matches!(event, WatchdogEvent::SidecarHung) {
-                    hung_event_received = true;
-                    break;
+                match event {
+                    WatchdogEvent::SidecarRecoveryRequested { reason } => {
+                        assert_eq!(reason, "sidecar_hung");
+                        recovery_event_received = true;
+                        break;
+                    }
+                    WatchdogEvent::SidecarHung => {
+                        // Legacy event should continue to be emitted, but do not rely on ordering.
+                    }
+                    _ => {}
                 }
             }
         }
 
-        assert!(hung_event_received, "Expected SidecarHung event");
+        assert!(
+            recovery_event_received,
+            "Expected SidecarRecoveryRequested event"
+        );
 
         // Shutdown
+        watchdog.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_watchdog_loop_skips_recovery_request_when_auto_restart_disabled() {
+        let config = WatchdogConfig {
+            check_interval: Duration::from_millis(20),
+            hang_threshold: Duration::from_millis(50),
+            auto_restart_on_hang: false,
+            ..Default::default()
+        };
+        let watchdog = Watchdog::with_config(config);
+        let pinger = Arc::new(MockPinger::new(false)); // Always fails
+        let mut receiver = watchdog.subscribe();
+
+        watchdog.start_loop(Arc::clone(&pinger));
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(300) {
+            if let Ok(Ok(event)) =
+                tokio::time::timeout(Duration::from_millis(50), receiver.recv()).await
+            {
+                if matches!(
+                    event,
+                    WatchdogEvent::SidecarRecoveryRequested { .. } | WatchdogEvent::SidecarHung
+                ) {
+                    panic!("Did not expect recovery request when auto_restart_on_hang is false");
+                }
+            }
+        }
+
         watchdog.shutdown();
     }
 
