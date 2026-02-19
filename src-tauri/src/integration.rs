@@ -141,6 +141,8 @@ const EVENT_TRANSCRIPTION_COMPLETE: &str = "transcription:complete";
 const EVENT_TRANSCRIPTION_ERROR: &str = "transcription:error";
 /// Application error event name (legacy + structured compatibility payload).
 const EVENT_APP_ERROR: &str = "app:error";
+const AUDIO_LEVEL_METER_MIN_INTERVAL_MS: u64 = 34; // <=30Hz
+const AUDIO_LEVEL_NON_METER_MIN_INTERVAL_MS: u64 = 67; // <=15Hz
 
 fn status_progress_from_parts(
     current: u64,
@@ -306,6 +308,21 @@ fn transcription_error_event_payload(session_id: &str, app_error: &AppError) -> 
         // Canonical structured error payload.
         "app_error": app_error,
     })
+}
+
+fn should_emit_audio_level(
+    now: Instant,
+    last_emitted_at: &mut Option<Instant>,
+    min_interval: Duration,
+) -> bool {
+    if let Some(last) = *last_emitted_at {
+        if now.duration_since(last) < min_interval {
+            return false;
+        }
+    }
+
+    *last_emitted_at = Some(now);
+    true
 }
 
 fn parse_sidecar_transcription_error(raw_error: &str) -> (String, String) {
@@ -1877,6 +1894,8 @@ impl IntegrationManager {
 
         tokio::spawn(async move {
             log::info!("Notification loop started");
+            let mut last_meter_audio_emit_at: Option<Instant> = None;
+            let mut last_non_meter_audio_emit_at: Option<Instant> = None;
 
             while let Ok(event) = receiver.recv().await {
                 // Any notification means the sidecar is alive
@@ -2096,6 +2115,24 @@ impl IntegrationManager {
                             // recording source is session-scoped and should include session_id.
                             if params.source == "recording" && params.session_id.is_none() {
                                 log::warn!("Ignoring invalid audio_level event: missing session_id for recording source");
+                                continue;
+                            }
+
+                            let now = Instant::now();
+                            let should_emit = if params.source == "meter" {
+                                should_emit_audio_level(
+                                    now,
+                                    &mut last_meter_audio_emit_at,
+                                    Duration::from_millis(AUDIO_LEVEL_METER_MIN_INTERVAL_MS),
+                                )
+                            } else {
+                                should_emit_audio_level(
+                                    now,
+                                    &mut last_non_meter_audio_emit_at,
+                                    Duration::from_millis(AUDIO_LEVEL_NON_METER_MIN_INTERVAL_MS),
+                                )
+                            };
+                            if !should_emit {
                                 continue;
                             }
 
@@ -2522,6 +2559,44 @@ mod tests {
             uid: "mic-a".to_string(),
         }];
         assert!(!is_configured_device_available(Some("mic-z"), &devices));
+    }
+
+    #[test]
+    fn test_should_emit_audio_level_throttles_meter_source() {
+        let min_interval = Duration::from_millis(AUDIO_LEVEL_METER_MIN_INTERVAL_MS);
+        let start = Instant::now();
+        let mut last = None;
+
+        assert!(should_emit_audio_level(start, &mut last, min_interval));
+        assert!(!should_emit_audio_level(
+            start + Duration::from_millis(5),
+            &mut last,
+            min_interval
+        ));
+        assert!(should_emit_audio_level(
+            start + Duration::from_millis(40),
+            &mut last,
+            min_interval
+        ));
+    }
+
+    #[test]
+    fn test_should_emit_audio_level_throttles_non_meter_sources_to_15hz() {
+        let min_interval = Duration::from_millis(AUDIO_LEVEL_NON_METER_MIN_INTERVAL_MS);
+        let start = Instant::now();
+        let mut last = None;
+
+        assert!(should_emit_audio_level(start, &mut last, min_interval));
+        assert!(!should_emit_audio_level(
+            start + Duration::from_millis(40),
+            &mut last,
+            min_interval
+        ));
+        assert!(should_emit_audio_level(
+            start + Duration::from_millis(90),
+            &mut last,
+            min_interval
+        ));
     }
 
     #[tokio::test]
