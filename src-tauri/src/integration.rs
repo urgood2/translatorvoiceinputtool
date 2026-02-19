@@ -141,7 +141,10 @@ const EVENT_STATUS_CHANGED: &str = "status:changed";
 /// Transcription complete event name.
 const EVENT_TRANSCRIPTION_COMPLETE: &str = "transcription:complete";
 
+/// Canonical transcription error event name.
+const EVENT_TRANSCRIPT_ERROR: &str = "transcript:error";
 /// Transcription error event name.
+/// Legacy alias retained for compatibility.
 const EVENT_TRANSCRIPTION_ERROR: &str = "transcription:error";
 /// Application error event name (legacy + structured compatibility payload).
 const EVENT_APP_ERROR: &str = "app:error";
@@ -387,14 +390,14 @@ fn map_status_event_model_state(model_state: &str, detail: Option<String>) -> Mo
 }
 
 fn transcription_error_event_payload(session_id: &str, app_error: &AppError) -> Value {
-    let legacy_message = app_error.message.clone();
     json!({
         "session_id": session_id,
-        "message": legacy_message,
+        // Canonical structured payload consumed by transcript:error.
+        "error": app_error,
+        // Compatibility fields retained for one release cycle.
+        "message": app_error.message,
         "recoverable": app_error.recoverable,
-        // Backward-compatible legacy field used by older clients.
-        "error": legacy_message,
-        // Canonical structured error payload.
+        // Legacy structured alias consumed by existing app:error handler.
         "app_error": app_error,
     })
 }
@@ -423,12 +426,41 @@ fn should_emit_audio_level(
     true
 }
 
+fn canonical_transcription_error_kind(sidecar_kind: &str) -> String {
+    let normalized = sidecar_kind.trim();
+    if normalized.is_empty() {
+        return ErrorKind::TranscriptionFailed.to_sidecar().to_string();
+    }
+
+    if let Some(mapped) = ErrorKind::from_sidecar(normalized) {
+        return mapped.to_sidecar().to_string();
+    }
+
+    if normalized.starts_with("E_") {
+        // Preserve explicit sidecar E_* kinds even if not yet in host catalog.
+        return normalized.to_string();
+    }
+
+    match normalized.replace('-', "_").to_ascii_uppercase().as_str() {
+        "ASR_FAILED" | "TRANSCRIPTION_FAILED" | "TRANSCRIBE_FAILED" | "ASR_ERROR" => {
+            ErrorKind::TranscriptionFailed.to_sidecar().to_string()
+        }
+        "ASR_TIMEOUT" | "TRANSCRIPTION_TIMEOUT" | "TIMEOUT" => {
+            ErrorKind::TranscriptionTimeout.to_sidecar().to_string()
+        }
+        _ => ErrorKind::TranscriptionFailed.to_sidecar().to_string(),
+    }
+}
+
 fn parse_sidecar_transcription_error(raw_error: &str) -> (String, String) {
     if let Some((kind_part, message_part)) = raw_error.split_once(':') {
         let kind = kind_part.trim();
         let message = message_part.trim_start();
-        if kind.starts_with("E_") && !message.is_empty() {
-            return (kind.to_string(), message.to_string());
+        if !kind.is_empty() && !message.is_empty() {
+            return (
+                canonical_transcription_error_kind(kind),
+                message.to_string(),
+            );
         }
     }
 
@@ -2137,7 +2169,11 @@ impl IntegrationManager {
                                 transcription_failure_app_error(&session_id, error.as_str());
                             emit_with_shared_seq(
                                 handle,
-                                &[EVENT_TRANSCRIPTION_ERROR, EVENT_APP_ERROR],
+                                &[
+                                    EVENT_TRANSCRIPT_ERROR,
+                                    EVENT_TRANSCRIPTION_ERROR,
+                                    EVENT_APP_ERROR,
+                                ],
                                 transcription_error_event_payload(&session_id, &app_error),
                                 &event_seq,
                             );
@@ -2835,8 +2871,8 @@ mod tests {
 
         let payload = transcription_error_event_payload("session-1", &app_error);
         assert_eq!(
-            payload.get("error").and_then(Value::as_str),
-            Some("Transcription failed")
+            payload.pointer("/error/code").and_then(Value::as_str),
+            Some("E_TRANSCRIPTION_FAILED")
         );
         assert_eq!(
             payload.get("message").and_then(Value::as_str),
@@ -2913,6 +2949,13 @@ mod tests {
                 .and_then(Value::as_str),
             Some("sidecar timeout")
         );
+    }
+
+    #[test]
+    fn test_parse_sidecar_transcription_error_maps_asr_failed_to_canonical_code() {
+        let (kind, message) = parse_sidecar_transcription_error("asr_failed: decoder crashed");
+        assert_eq!(kind, "E_TRANSCRIPTION_FAILED");
+        assert_eq!(message, "decoder crashed");
     }
 
     #[test]
