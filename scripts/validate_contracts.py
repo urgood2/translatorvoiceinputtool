@@ -760,6 +760,50 @@ def parse_rust_function_signature_arg_types(text: str, fn_name: str) -> dict[str
     return arg_types
 
 
+def parse_rust_function_return_type(text: str, fn_name: str) -> str | None:
+    match = re.search(rf"\bfn\s+{re.escape(fn_name)}\s*\(", text)
+    if not match:
+        return None
+    paren_start = text.find("(", match.start())
+    if paren_start == -1:
+        return None
+    try:
+        _sig, paren_end = extract_balanced_parentheses(text, paren_start)
+    except ValueError:
+        return None
+
+    brace_start = text.find("{", paren_end)
+    if brace_start == -1:
+        return None
+    between = text[paren_end + 1 : brace_start]
+    arrow_index = between.find("->")
+    if arrow_index == -1:
+        return None
+
+    return_type = between[arrow_index + 2 :].strip()
+    if not return_type:
+        return None
+    return return_type
+
+
+def normalize_rust_type_struct_name(rust_type: str) -> str | None:
+    raw = re.sub(r"\s+", "", rust_type).lstrip("&")
+    option_prefixes = ("Option<", "std::option::Option<")
+    while any(raw.startswith(prefix) and raw.endswith(">") for prefix in option_prefixes):
+        if raw.startswith("Option<"):
+            raw = raw[len("Option<") : -1]
+        elif raw.startswith("std::option::Option<"):
+            raw = raw[len("std::option::Option<") : -1]
+
+    if "<" in raw:
+        raw = raw.split("<", 1)[0]
+    if "::" in raw:
+        raw = raw.split("::")[-1]
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", raw):
+        return None
+    return raw
+
+
 def parse_rust_function_body(text: str, fn_name: str) -> str | None:
     match = re.search(rf"\bfn\s+{re.escape(fn_name)}\s*\(", text)
     if not match:
@@ -889,6 +933,13 @@ def infer_payload_shape_from_rust_function(
         key_types[key] = infer_json_type_from_rust_expr(value_expr, arg_types)
 
     if not key_types:
+        return_type = parse_rust_function_return_type(rust_text, fn_name)
+        if return_type:
+            struct_name = normalize_rust_type_struct_name(return_type)
+            if struct_name:
+                struct_shape = infer_payload_shape_from_rust_struct(rust_text, struct_name)
+                if struct_shape is not None:
+                    return (f"fn_return:{fn_name}->{struct_name}", struct_shape[1])
         return None
     return (f"fn:{fn_name}", key_types)
 
@@ -1005,6 +1056,12 @@ def infer_rust_payload_shape(
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", inner):
             rhs = find_identifier_assignment_source(local_text, inner, site.line)
             if rhs:
+                fn_match_rhs = re.match(r"(?:self\.)?([A-Za-z_][A-Za-z0-9_]*)\s*\(", rhs)
+                if fn_match_rhs:
+                    fn_name_rhs = fn_match_rhs.group(1)
+                    shape = infer_payload_shape_from_rust_function(rust_text, fn_name_rhs)
+                    if shape is not None:
+                        return shape
                 if rhs.startswith("model_status_event_payload("):
                     shape = infer_payload_shape_from_rust_struct(rust_text, "ModelStatusPayload")
                     if shape is not None:

@@ -380,6 +380,67 @@ listen('sidecar:status', () => {});
             errors = MODULE.validate_rust_event_payloads(root, events_contract)
             self.assertEqual(errors, [])
 
+    def test_validate_rust_event_payloads_infers_shape_from_function_return_struct(self) -> None:
+        """Regression (1e3m): infer payload shape for json!(identifier) from helper return struct."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            rust_file = root / "src-tauri" / "src" / "integration.rs"
+            rust_file.parent.mkdir(parents=True, exist_ok=True)
+            rust_file.write_text(
+                "\n".join(
+                    [
+                        "use serde::Serialize;",
+                        "use serde_json::{json, Value};",
+                        'const EVENT_MODEL_PROGRESS: &str = "model:progress";',
+                        "#[derive(Serialize)]",
+                        "pub struct ModelProgress {",
+                        "  pub model_id: Option<String>,",
+                        "  pub current: u64,",
+                        "  pub total: Option<u64>,",
+                        "  pub unit: String,",
+                        "}",
+                        "fn model_progress_from_parts(current: u64, total: Option<u64>, unit: Option<String>) -> ModelProgress {",
+                        "  ModelProgress {",
+                        "    model_id: Some(\"parakeet\".to_string()),",
+                        "    current,",
+                        "    total,",
+                        "    unit: unit.unwrap_or_else(|| \"bytes\".to_string()),",
+                        "  }",
+                        "}",
+                        "fn emit_with_shared_seq<T>(_handle: &T, _events: &[&str], _payload: Value, _seq: &u64) {}",
+                        "fn wire(handle: &u8, event_seq: &u64) {",
+                        "  let model_progress_data = model_progress_from_parts(1, Some(2), None);",
+                        "  emit_with_shared_seq(handle, &[EVENT_MODEL_PROGRESS], json!(model_progress_data), event_seq);",
+                        "}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            events_contract = {
+                "items": [
+                    {
+                        "type": "event",
+                        "name": "model:progress",
+                        "payload_schema": {
+                            "type": "object",
+                            "required": ["seq", "current", "unit"],
+                            "properties": {
+                                "seq": {"type": "integer"},
+                                "model_id": {"type": ["string", "null"]},
+                                "current": {"type": "integer"},
+                                "total": {"type": "integer"},
+                                "unit": {"type": "string"},
+                            },
+                            "additionalProperties": True,
+                        },
+                    }
+                ]
+            }
+
+            errors = MODULE.validate_rust_event_payloads(root, events_contract)
+            self.assertEqual(errors, [])
+
     def test_validate_tauri_event_payload_examples_reports_schema_violation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
