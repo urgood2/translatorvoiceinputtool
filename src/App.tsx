@@ -133,11 +133,13 @@ function App() {
   }, [config]);
 
   const handleTogglePreset = useCallback((presetId: string, enabled: boolean) => {
-    if (!config) {
+    // Read fresh config from store to avoid stale closure overwriting concurrent edits
+    const freshConfig = useAppStore.getState().config;
+    if (!freshConfig) {
       return;
     }
 
-    const withoutPresetRules = config.replacements.filter((rule) => rule.origin !== `preset:${presetId}`);
+    const withoutPresetRules = freshConfig.replacements.filter((rule) => rule.origin !== `preset:${presetId}`);
 
     if (!enabled) {
       void setReplacementRules(withoutPresetRules).catch((error) => {
@@ -165,12 +167,15 @@ function App() {
           });
         }
 
-        await setReplacementRules([...withoutPresetRules, ...normalizedRules]);
+        // Re-read fresh state before merging to avoid overwriting concurrent edits
+        const latestConfig = useAppStore.getState().config;
+        const latestWithout = (latestConfig?.replacements ?? []).filter((rule) => rule.origin !== `preset:${presetId}`);
+        await setReplacementRules([...latestWithout, ...normalizedRules]);
       } catch (error) {
         console.error(`Failed to enable preset '${presetId}'`, error);
       }
     })();
-  }, [config, loadPreset, presetRulesById, setReplacementRules]);
+  }, [loadPreset, presetRulesById, setReplacementRules]);
 
   useEffect(() => {
     if (!isInitialized) {
