@@ -386,7 +386,7 @@ fn map_download_response_status(status: &SidecarModelStatus) -> ModelStatus {
     match status.status.as_str() {
         "missing" => ModelStatus::Missing,
         "downloading" => ModelStatus::Downloading,
-        "loading" | "verifying" => ModelStatus::Loading,
+        "loading" | "verifying" | "installing" => ModelStatus::Loading,
         "ready" => ModelStatus::Ready,
         "error" => ModelStatus::Error(
             status
@@ -2014,17 +2014,53 @@ impl IntegrationManager {
         Self::emit_model_status(&self.app_handle, ModelStatus::Downloading, &self.event_seq);
 
         let params = model_download_params(model_id, force);
+        let resolved_model_id = resolve_model_id(
+            params
+                .as_ref()
+                .and_then(|value| value.get("model_id"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+        );
         let status_result = match client
-            .call::<SidecarModelStatus>("model.download", params.clone())
+            .call::<SidecarModelStatus>("model.install", params.clone())
             .await
         {
             Ok(status) => Ok(status),
             Err(RpcError::Remote { kind, .. }) if kind == "E_METHOD_NOT_FOUND" => {
+                log::info!(
+                    "model.install unsupported by sidecar; falling back to legacy model.download + asr.initialize"
+                );
                 match client
-                    .call::<SidecarModelStatus>("model.install", params.clone())
+                    .call::<SidecarModelStatus>("model.download", params.clone())
                     .await
                 {
-                    Ok(status) => Ok(status),
+                    Ok(mut status) => {
+                        let config = config::load_config();
+                        let device_pref = config.effective_model_device_pref();
+                        let language = configured_model_language_hint(&config);
+                        match call_asr_initialize_with_language_fallback(
+                            client,
+                            &resolved_model_id,
+                            &device_pref,
+                            language,
+                        )
+                        .await
+                        {
+                            Ok(result) => {
+                                log::info!(
+                                    "Legacy fallback asr.initialize complete: model={}, status={}",
+                                    resolved_model_id,
+                                    result.status
+                                );
+                                status.status = "ready".to_string();
+                                Ok(status)
+                            }
+                            Err(error) => Err(format!(
+                                "E_MODEL_DOWNLOAD: Legacy sidecar fallback failed during asr.initialize: {}",
+                                error
+                            )),
+                        }
+                    }
                     Err(RpcError::Remote { kind, .. }) if kind == "E_METHOD_NOT_FOUND" => {
                         Err(model_download_method_unsupported_message())
                     }
@@ -4117,6 +4153,92 @@ for raw in sys.stdin:
             .stderr(Stdio::piped())
             .spawn()
             .expect("failed to spawn mock recording sidecar")
+    }
+
+    fn spawn_mock_sidecar_model_install_fallback_process(call_log_path: &Path) -> Child {
+        let script = r#"
+import json
+import sys
+
+log_path = sys.argv[1]
+
+def append_call(method, params):
+    with open(log_path, 'a', encoding='utf-8') as handle:
+        handle.write(json.dumps({"method": method, "params": params}) + "\n")
+        handle.flush()
+
+for raw in sys.stdin:
+    line = raw.strip()
+    if not line:
+        continue
+    request = json.loads(line)
+    method = request.get("method")
+    req_id = request.get("id")
+    params = request.get("params") or {}
+    append_call(method, params)
+
+    if method == "model.install":
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {
+                "code": -32601,
+                "message": "Method not found",
+                "data": {"kind": "E_METHOD_NOT_FOUND"}
+            }
+        }
+        print(json.dumps(response), flush=True)
+    elif method == "model.download":
+        model_id = params.get("model_id") or "nvidia/parakeet-tdt-0.6b-v3"
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "model_id": model_id,
+                "revision": "legacy-r1",
+                "cache_path": "/tmp/openvoicy-cache/" + model_id.replace("/", "_"),
+                "status": "ready"
+            }
+        }
+        print(json.dumps(response), flush=True)
+    elif method == "asr.initialize":
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"status": "ready"}
+        }
+        print(json.dumps(response), flush=True)
+    elif method == "system.shutdown":
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"status": "shutting_down"}
+        }
+        print(json.dumps(response), flush=True)
+        break
+    else:
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {
+                "code": -32601,
+                "message": "Method not found",
+                "data": {"kind": "E_METHOD_NOT_FOUND"}
+            }
+        }
+        print(json.dumps(response), flush=True)
+"#;
+
+        Command::new("python3")
+            .arg("-u")
+            .arg("-c")
+            .arg(script)
+            .arg(call_log_path.as_os_str())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn mock model-install fallback sidecar")
     }
 
     fn read_mock_call_log(path: &Path) -> Vec<Value> {
