@@ -12,6 +12,7 @@ from openvoicy_sidecar.self_test import (
     SidecarRpcProcess,
     build_sidecar_command,
     main,
+    validate_clean_exit_code,
     validate_replacements_get_rules_result,
     validate_status_get_result,
     validate_system_info_result,
@@ -153,8 +154,7 @@ class TestShutdownExitCode:
         # Positive non-zero exit code indicates crash; self-test should fail
         assert exit_code > 0
 
-    def test_shutdown_accepts_signal_terminated_exit(self):
-        """SIGTERM (-15) after explicit shutdown is acceptable, not a crash."""
+    def test_shutdown_returns_signal_terminated_exit_code(self):
         proc = SidecarRpcProcess(["true"], {})
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
@@ -165,8 +165,6 @@ class TestShutdownExitCode:
 
         exit_code = proc.shutdown()
         assert exit_code == -15
-        # Negative exit codes (signal termination) are acceptable
-        assert exit_code <= 0
 
     def test_shutdown_returns_none_when_no_process(self):
         proc = SidecarRpcProcess(["true"], {})
@@ -181,6 +179,23 @@ class TestShutdownExitCode:
 
         exit_code = proc.shutdown()
         assert exit_code == 42
+
+
+class TestCleanExitValidation:
+    def test_accepts_zero_exit_code(self):
+        validate_clean_exit_code(0)
+
+    def test_rejects_positive_nonzero_exit_code(self):
+        with pytest.raises(SelfTestError, match="did not exit cleanly"):
+            validate_clean_exit_code(1)
+
+    def test_rejects_signal_terminated_exit_code(self):
+        with pytest.raises(SelfTestError, match="did not exit cleanly"):
+            validate_clean_exit_code(-15)
+
+    def test_rejects_missing_exit_code(self):
+        with pytest.raises(SelfTestError, match="not running at shutdown"):
+            validate_clean_exit_code(None)
 
 
 class TestMainLogging:

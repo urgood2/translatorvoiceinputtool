@@ -269,6 +269,16 @@ def validate_replacements_get_rules_result(result: dict[str, Any]) -> None:
         raise SelfTestError("replacements.get_rules result.rules must be an array")
 
 
+def validate_clean_exit_code(exit_code: int | None) -> None:
+    """Require graceful sidecar shutdown with exit code 0."""
+    if exit_code is None:
+        raise SelfTestError("Sidecar process was not running at shutdown")
+    if exit_code != 0:
+        raise SelfTestError(
+            f"Sidecar did not exit cleanly after shutdown (expected 0, got {exit_code})"
+        )
+
+
 def validate_shared_resources() -> None:
     """Verify that essential shared resources are resolvable."""
     required_files = [
@@ -382,20 +392,8 @@ def run_self_test() -> None:
     finally:
         exit_code = sidecar.shutdown()
 
-    # Phase 3: Verify clean exit
-    # Exit code 0 = clean exit.
-    # Negative codes (e.g. -15/SIGTERM, -9/SIGKILL) are acceptable when we
-    # explicitly sent shutdown and then terminated the process ourselves.
-    # Only positive non-zero codes indicate an unexpected crash.
-    def _check_exit() -> None:
-        if exit_code is None:
-            raise SelfTestError("Sidecar process was not running at shutdown")
-        if exit_code > 0:
-            raise SelfTestError(
-                f"Sidecar exited with error code {exit_code} after shutdown"
-            )
-
-    _run_step("clean exit after shutdown", _check_exit)
+    # Phase 3: Verify clean exit (graceful shutdown only).
+    _run_step("clean exit after shutdown", lambda: validate_clean_exit_code(exit_code))
 
 
 def main() -> int:
