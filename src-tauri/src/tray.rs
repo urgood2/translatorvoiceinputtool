@@ -719,8 +719,11 @@ pub fn start_tray_loop(
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_state = state_manager.get();
         let mut last_enabled = state_manager.is_enabled();
-        let mut last_menu_state =
-            Some(load_runtime_tray_menu_state(&app_handle, last_state, last_enabled));
+        let mut last_menu_state = Some(load_runtime_tray_menu_state(
+            &app_handle,
+            last_state,
+            last_enabled,
+        ));
 
         log::info!("Tray update loop started");
 

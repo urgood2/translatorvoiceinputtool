@@ -1443,10 +1443,7 @@ mod tests {
         // start with "punctuation:" — matched via origin field instead.
         assert_eq!(
             merged_ids,
-            vec![
-                "user-rule-1",
-                "f0e1d2c3-b4a5-6789-0123-456789abcdef"
-            ]
+            vec!["user-rule-1", "f0e1d2c3-b4a5-6789-0123-456789abcdef"]
         );
     }
 

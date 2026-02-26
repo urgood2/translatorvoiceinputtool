@@ -2726,7 +2726,10 @@ mod tests {
         assert!(removed.contains(&"auth_token".to_string()));
         assert!(removed.contains(&"audio.api_key".to_string()));
         // Sensitive fields must be gone from the value tree
-        assert!(config.get("auth_token").is_none(), "auth_token should be stripped");
+        assert!(
+            config.get("auth_token").is_none(),
+            "auth_token should be stripped"
+        );
         assert!(
             config["audio"].get("api_key").is_none(),
             "audio.api_key should be stripped"

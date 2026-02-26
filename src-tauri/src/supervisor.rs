@@ -1146,7 +1146,8 @@ mod tests {
         assert_eq!(supervisor.restart_count(), 1);
 
         // Simulate the sidecar having been ready for longer than the sustained threshold
-        supervisor.ready_since = Some(Instant::now() - SUSTAINED_READY_THRESHOLD - Duration::from_secs(1));
+        supervisor.ready_since =
+            Some(Instant::now() - SUSTAINED_READY_THRESHOLD - Duration::from_secs(1));
 
         // Second crash: should reset backoff because sidecar was healthy for > threshold
         supervisor
@@ -1187,7 +1188,11 @@ mod tests {
             .handle_crash()
             .await
             .expect("restart should succeed");
-        assert_eq!(supervisor.restart_count(), 2, "backoff should not reset after quick crash");
+        assert_eq!(
+            supervisor.restart_count(),
+            2,
+            "backoff should not reset after quick crash"
+        );
     }
 
     #[tokio::test]
