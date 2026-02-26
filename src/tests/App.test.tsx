@@ -268,5 +268,13 @@ describe('App diagnostics panels', () => {
     fireEvent.click(historyTab);
     expect(historyTab.getAttribute('aria-selected')).toBe('true');
     expect(screen.getAllByText('Sample transcript text.').length).toBeGreaterThan(0);
+    });
   });
-});
+
+  it('renders skip link and main landmark for keyboard navigation', async () => {
+    render(<App />);
+
+    const skipLink = await screen.findByRole('link', { name: 'Skip to main content' });
+    expect(skipLink.getAttribute('href')).toBe('#main-content');
+    expect(screen.getByRole('main')).toBeDefined();
+  });
