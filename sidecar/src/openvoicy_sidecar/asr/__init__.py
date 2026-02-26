@@ -27,6 +27,7 @@ from .base import (
     TranscriptionError,
     TranscriptionResult,
 )
+from .dispatch import UnsupportedFamilyError, get_backend
 from .parakeet import ParakeetBackend, check_cuda_available, select_device
 
 # Re-export public API
@@ -49,6 +50,9 @@ __all__ = [
 
 # Default manifest path
 DEFAULT_MANIFEST_PATH = Path(__file__).parent.parent.parent.parent.parent / "shared" / "model" / "MODEL_MANIFEST.json"
+DEFAULT_CATALOG_PATH = (
+    Path(__file__).parent.parent.parent.parent.parent / "shared" / "model" / "MODEL_CATALOG.json"
+)
 
 
 def load_manifest(model_id: str) -> ModelManifest:
@@ -82,6 +86,63 @@ def load_manifest(model_id: str) -> ModelManifest:
 
     except json.JSONDecodeError as e:
         raise ModelNotFoundError(f"Invalid manifest JSON: {e}") from e
+
+
+def _model_id_matches(candidate: str, model_id: str) -> bool:
+    if candidate == model_id:
+        return True
+    if "/" in candidate:
+        return candidate.rsplit("/", 1)[-1] == model_id
+    if "/" in model_id:
+        return model_id.rsplit("/", 1)[-1] == candidate
+    return False
+
+
+def load_model_catalog() -> list[dict[str, Any]]:
+    """Load MODEL_CATALOG.json entries, failing soft when unavailable."""
+    if not DEFAULT_CATALOG_PATH.exists():
+        return []
+    try:
+        with open(DEFAULT_CATALOG_PATH) as f:
+            data = json.load(f)
+        models = data.get("models", [])
+        if isinstance(models, list):
+            return [entry for entry in models if isinstance(entry, dict)]
+    except Exception as error:
+        log(f"Failed to load model catalog {DEFAULT_CATALOG_PATH}: {error}")
+    return []
+
+
+def get_catalog_entry(model_id: str) -> Optional[dict[str, Any]]:
+    for entry in load_model_catalog():
+        candidate = str(entry.get("model_id", "")).strip()
+        if candidate and _model_id_matches(candidate, model_id):
+            return entry
+    return None
+
+
+def resolve_model_family(model_id: str) -> str:
+    entry = get_catalog_entry(model_id)
+    if entry:
+        family = str(entry.get("family", "")).strip().lower()
+        if family:
+            return family
+
+    if "whisper" in model_id.lower():
+        return "whisper"
+    return "parakeet"
+
+
+def resolve_default_language(model_id: str) -> Optional[str]:
+    entry = get_catalog_entry(model_id)
+    if not entry:
+        return None
+    default_language = entry.get("default_language")
+    if isinstance(default_language, str):
+        language = default_language.strip().lower()
+        if language:
+            return language
+    return None
 
 
 class ASREngine:
@@ -130,6 +191,7 @@ class ASREngine:
         self,
         model_id: str,
         device_pref: str = "auto",
+        language: Optional[str] = None,
         progress_callback: Optional[ProgressCallback] = None,
     ) -> dict[str, Any]:
         """Initialize ASR with the specified model.
@@ -146,6 +208,7 @@ class ASREngine:
             Status dictionary with model_id, device, and status.
         """
         start_time = time.time()
+        effective_language = language if language is not None else resolve_default_language(model_id)
 
         # Fast path: already initialized with same model
         if (
@@ -153,6 +216,13 @@ class ASREngine:
             and self._model_id == model_id
             and self._backend is not None
         ):
+            if hasattr(self._backend, "set_language"):
+                set_language = getattr(self._backend, "set_language")
+                try:
+                    set_language(effective_language)
+                except ValueError as error:
+                    requested = language if language is not None else effective_language
+                    raise ASRError(f"Unsupported language '{requested}': {error}") from error
             elapsed = (time.time() - start_time) * 1000
             log(f"ASR already initialized (fast path: {elapsed:.1f}ms)")
             return {
@@ -168,6 +238,13 @@ class ASREngine:
                 and self._model_id == model_id
                 and self._backend is not None
             ):
+                if hasattr(self._backend, "set_language"):
+                    set_language = getattr(self._backend, "set_language")
+                    try:
+                        set_language(effective_language)
+                    except ValueError as error:
+                        requested = language if language is not None else effective_language
+                        raise ASRError(f"Unsupported language '{requested}': {error}") from error
                 elapsed = (time.time() - start_time) * 1000
                 log(f"ASR already initialized (fast path after lock: {elapsed:.1f}ms)")
                 return {
@@ -211,7 +288,34 @@ class ASREngine:
                     InitProgress(state="loading_model", detail="Loading model into memory...")
                 )
 
-            backend = ParakeetBackend()
+            family = resolve_model_family(model_id)
+            log(f"Selecting ASR backend: family={family} model_id={model_id}")
+            if family == "parakeet":
+                backend = ParakeetBackend()
+            else:
+                try:
+                    backend = get_backend(family)
+                except UnsupportedFamilyError:
+                    self._state = ASRState.ERROR
+                    raise
+
+            if hasattr(backend, "set_language"):
+                set_language = getattr(backend, "set_language")
+                try:
+                    set_language(effective_language)
+                except ValueError as error:
+                    self._state = ASRState.ERROR
+                    requested = language if language is not None else effective_language
+                    raise ASRError(f"Unsupported language '{requested}': {error}") from error
+                configured = getattr(backend, "language", None)
+                log(
+                    f"Configured ASR language: {'auto' if configured is None else configured}"
+                )
+            elif effective_language not in (None, "auto"):
+                log(
+                    f"Backend family '{family}' does not support explicit language={effective_language}; ignoring"
+                )
+
             backend.initialize(model_path, device, progress_callback)
 
             # Unload previous backend if different model
@@ -301,6 +405,7 @@ def handle_asr_initialize(request: Request) -> dict[str, Any]:
     params = request.params
     model_id = params.get("model_id", "parakeet-tdt-0.6b-v3")
     device_pref = params.get("device_pref", "auto")
+    language = params.get("language")
 
     # Validate device_pref
     if device_pref not in ("auto", "cuda", "cpu"):
@@ -312,7 +417,12 @@ def handle_asr_initialize(request: Request) -> dict[str, Any]:
     def emit_progress(progress: InitProgress):
         write_event("status_changed", progress.to_dict())
 
-    return engine.initialize(model_id, device_pref, progress_callback=emit_progress)
+    return engine.initialize(
+        model_id,
+        device_pref,
+        language=language,
+        progress_callback=emit_progress,
+    )
 
 
 def handle_asr_transcribe(request: Request) -> dict[str, Any]:
