@@ -14,6 +14,7 @@ from openvoicy_sidecar.notifications import (
     SessionTracker,
     calculate_audio_levels,
     emit_audio_level,
+    emit_model_progress,
     emit_status_changed,
     emit_transcription_complete,
     emit_transcription_error,
@@ -308,6 +309,30 @@ class TestEventEmission:
         call_args = mock_write_notification.call_args[0][0]
         assert call_args.params["source"] == "recording"
         assert call_args.params["session_id"] == "session-123"
+
+    def test_emit_model_progress(self, mock_write_notification):
+        """Should emit model_progress with optional fields."""
+        emit_model_progress(
+            model_id="nvidia/parakeet-tdt-0.6b-v3",
+            current=512,
+            total=1024,
+            stage="downloading",
+            current_file="model.nemo",
+            files_completed=1,
+            files_total=2,
+        )
+
+        mock_write_notification.assert_called_once()
+        call_args = mock_write_notification.call_args[0][0]
+        assert call_args.method == "event.model_progress"
+        assert call_args.params["model_id"] == "nvidia/parakeet-tdt-0.6b-v3"
+        assert call_args.params["current"] == 512
+        assert call_args.params["total"] == 1024
+        assert call_args.params["unit"] == "bytes"
+        assert call_args.params["stage"] == "downloading"
+        assert call_args.params["current_file"] == "model.nemo"
+        assert call_args.params["files_completed"] == 1
+        assert call_args.params["files_total"] == 2
 
     def test_emit_transcription_complete(self, mock_write_notification):
         """Should emit transcription_complete event."""

@@ -232,6 +232,48 @@ def emit_audio_level(
     write_notification(notification)
 
 
+def emit_model_progress(
+    model_id: str,
+    current: int,
+    total: Optional[int],
+    *,
+    unit: str = "bytes",
+    stage: Optional[str] = None,
+    current_file: Optional[str] = None,
+    files_completed: Optional[int] = None,
+    files_total: Optional[int] = None,
+) -> None:
+    """Emit a model_progress event.
+
+    Args:
+        model_id: Active model identifier.
+        current: Downloaded/processed bytes so far.
+        total: Total bytes if known, otherwise None.
+        unit: Progress unit (defaults to bytes).
+        stage: Optional stage hint ("downloading"|"verifying"|"installing").
+        current_file: Optional current file path.
+        files_completed: Optional completed file count.
+        files_total: Optional total file count.
+    """
+    params: dict[str, Any] = {
+        "model_id": model_id,
+        "current": max(0, current),
+        "total": total,
+        "unit": unit,
+    }
+
+    if stage:
+        params["stage"] = stage
+    if current_file:
+        params["current_file"] = current_file
+    if files_completed is not None:
+        params["files_completed"] = max(0, files_completed)
+    if files_total is not None:
+        params["files_total"] = max(0, files_total)
+
+    write_notification(Notification(method="event.model_progress", params=params))
+
+
 def emit_transcription_complete(
     session_id: str,
     text: str,

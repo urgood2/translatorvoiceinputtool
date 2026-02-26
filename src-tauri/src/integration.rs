@@ -87,12 +87,28 @@ pub enum ModelStatus {
 /// Download/initialization progress.
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelProgress {
+    /// Model identifier when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
     /// Current bytes downloaded or processed.
     pub current: u64,
     /// Total bytes (if known).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<u64>,
+    /// Progress unit.
+    pub unit: String,
     /// Progress stage description.
-    pub stage: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// Active file path when downloading multi-file manifests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_file: Option<String>,
+    /// Completed files count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_completed: Option<u64>,
+    /// Total files count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_total: Option<u64>,
 }
 
 /// Canonical progress payload for model status events.
@@ -143,6 +159,16 @@ pub struct SidecarModelProgress {
     pub total: Option<u64>,
     #[serde(default)]
     pub unit: Option<String>,
+    #[serde(default)]
+    pub stage: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub current_file: Option<String>,
+    #[serde(default)]
+    pub files_completed: Option<u64>,
+    #[serde(default)]
+    pub files_total: Option<u64>,
 }
 
 /// Status changed event name (mirrors sidecar event).
@@ -173,6 +199,28 @@ fn status_progress_from_parts(
         current,
         total,
         unit: unit.or(stage).unwrap_or_else(|| "processing".to_string()),
+    }
+}
+
+fn model_progress_from_parts(
+    model_id: Option<String>,
+    current: u64,
+    total: Option<u64>,
+    unit: Option<String>,
+    stage: Option<String>,
+    current_file: Option<String>,
+    files_completed: Option<u64>,
+    files_total: Option<u64>,
+) -> ModelProgress {
+    ModelProgress {
+        model_id,
+        current,
+        total,
+        unit: unit.unwrap_or_else(|| "bytes".to_string()),
+        stage,
+        current_file,
+        files_completed,
+        files_total,
     }
 }
 
@@ -1633,11 +1681,16 @@ impl IntegrationManager {
 
                 if let (Some(progress), Some(handle)) = (status.progress, self.app_handle.as_ref())
                 {
-                    let model_progress_data = ModelProgress {
-                        current: progress.current,
-                        total: progress.total,
-                        stage: progress.unit.unwrap_or_else(|| "bytes".to_string()),
-                    };
+                    let model_progress_data = model_progress_from_parts(
+                        Some(resolve_model_id(Some(status.model_id.clone()))),
+                        progress.current,
+                        progress.total,
+                        progress.unit,
+                        progress.stage,
+                        progress.current_file,
+                        progress.files_completed,
+                        progress.files_total,
+                    );
                     *self.model_progress.write().await = Some(model_progress_data.clone());
                     emit_with_shared_seq(
                         handle,
@@ -3210,6 +3263,12 @@ impl IntegrationManager {
                             unit: Option<String>,
                             #[serde(default)]
                             stage: Option<String>,
+                            #[serde(default)]
+                            current_file: Option<String>,
+                            #[serde(default)]
+                            files_completed: Option<u64>,
+                            #[serde(default)]
+                            files_total: Option<u64>,
                         }
 
                         let mut canonical_sidecar_payload =
@@ -3269,15 +3328,16 @@ impl IntegrationManager {
 
                             // Update and emit progress if provided
                             if let Some(ref progress) = params.progress {
-                                let model_progress_data = ModelProgress {
-                                    current: progress.current,
-                                    total: progress.total,
-                                    stage: progress
-                                        .stage
-                                        .clone()
-                                        .or_else(|| progress.unit.clone())
-                                        .unwrap_or_else(|| "processing".to_string()),
-                                };
+                                let model_progress_data = model_progress_from_parts(
+                                    parsed_model.as_ref().and_then(|m| m.model_id.clone()),
+                                    progress.current,
+                                    progress.total,
+                                    progress.unit.clone(),
+                                    progress.stage.clone(),
+                                    progress.current_file.clone(),
+                                    progress.files_completed,
+                                    progress.files_total,
+                                );
                                 *model_progress.write().await = Some(model_progress_data.clone());
 
                                 if let Some(ref handle) = app_handle {
@@ -3312,6 +3372,32 @@ impl IntegrationManager {
                                 event.params,
                                 seq,
                             );
+                        }
+                    }
+                    "event.model_progress" => {
+                        if let Ok(params) =
+                            serde_json::from_value::<SidecarModelProgress>(event.params)
+                        {
+                            let model_progress_data = model_progress_from_parts(
+                                params.model_id,
+                                params.current,
+                                params.total,
+                                params.unit,
+                                params.stage,
+                                params.current_file,
+                                params.files_completed,
+                                params.files_total,
+                            );
+                            *model_progress.write().await = Some(model_progress_data.clone());
+
+                            if let Some(ref handle) = app_handle {
+                                emit_with_shared_seq(
+                                    handle,
+                                    &[EVENT_MODEL_PROGRESS],
+                                    json!(model_progress_data),
+                                    &event_seq,
+                                );
+                            }
                         }
                     }
                     "event.audio_level" => {
@@ -3458,6 +3544,16 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    /// Compile-time verification that AppHandle implements AppEventBroadcaster.
+    /// This ensures the mock-based broadcast tests validate the same trait
+    /// contract that the real Tauri AppHandle uses at runtime.
+    const _: () = {
+        fn assert_impl<T: AppEventBroadcaster>() {}
+        fn check() {
+            assert_impl::<AppHandle>();
+        }
+    };
 
     #[derive(Clone, Default)]
     struct MockBroadcaster {
@@ -4091,6 +4187,41 @@ mod tests {
         assert_eq!(progress.current, 20);
         assert_eq!(progress.total, Some(200));
         assert_eq!(progress.unit, "verifying");
+    }
+
+    #[test]
+    fn test_model_progress_from_parts_includes_canonical_fields() {
+        let progress = model_progress_from_parts(
+            Some("nvidia/parakeet-tdt-0.6b-v3".to_string()),
+            128,
+            Some(1024),
+            Some("bytes".to_string()),
+            Some("downloading".to_string()),
+            Some("model.nemo".to_string()),
+            Some(1),
+            Some(2),
+        );
+
+        assert_eq!(
+            progress.model_id,
+            Some("nvidia/parakeet-tdt-0.6b-v3".to_string())
+        );
+        assert_eq!(progress.current, 128);
+        assert_eq!(progress.total, Some(1024));
+        assert_eq!(progress.unit, "bytes");
+        assert_eq!(progress.stage.as_deref(), Some("downloading"));
+        assert_eq!(progress.current_file.as_deref(), Some("model.nemo"));
+        assert_eq!(progress.files_completed, Some(1));
+        assert_eq!(progress.files_total, Some(2));
+    }
+
+    #[test]
+    fn test_model_progress_from_parts_defaults_unit() {
+        let progress = model_progress_from_parts(None, 1, None, None, None, None, None, None);
+
+        assert_eq!(progress.unit, "bytes");
+        assert!(progress.model_id.is_none());
+        assert!(progress.stage.is_none());
     }
 
     #[test]

@@ -256,6 +256,49 @@ class TestVerification:
         assert actual == compute_sha256(test_file)
 
 
+class TestAtomicActivation:
+    """Tests for atomic activation of staged model directories."""
+
+    def test_activate_staged_model_dir_moves_into_final_path(self, tmp_path):
+        """Should rename staged model directory into final location."""
+        staged_dir = tmp_path / ".partial" / "test-model"
+        final_dir = tmp_path / "test-model"
+        staged_dir.mkdir(parents=True)
+        (staged_dir / "model.bin").write_bytes(b"new-model")
+
+        model_cache._activate_staged_model_dir(staged_dir, final_dir)
+
+        assert final_dir.exists()
+        assert (final_dir / "model.bin").read_bytes() == b"new-model"
+        assert not staged_dir.exists()
+
+    def test_activate_staged_model_dir_restores_previous_on_rename_error(self, tmp_path):
+        """Should restore previous final directory if activation rename fails."""
+        staged_dir = tmp_path / ".partial" / "test-model"
+        final_dir = tmp_path / "test-model"
+        staged_dir.mkdir(parents=True)
+        final_dir.mkdir(parents=True)
+        (staged_dir / "model.bin").write_bytes(b"new-model")
+        (final_dir / "model.bin").write_bytes(b"old-model")
+
+        original_rename = os.rename
+
+        def fail_on_staged_to_final(src, dst):
+            src_path = Path(src)
+            dst_path = Path(dst)
+            if src_path == staged_dir and dst_path == final_dir:
+                raise OSError("simulated rename failure")
+            return original_rename(src, dst)
+
+        with patch("openvoicy_sidecar.model_cache.os.rename", side_effect=fail_on_staged_to_final):
+            with pytest.raises(OSError, match="simulated rename failure"):
+                model_cache._activate_staged_model_dir(staged_dir, final_dir)
+
+        assert final_dir.exists()
+        assert (final_dir / "model.bin").read_bytes() == b"old-model"
+        assert staged_dir.exists()
+
+
 # === Unit Tests: ModelManifest ===
 
 
@@ -725,6 +768,33 @@ class TestModelCacheIntegration:
         assert (model_dir / "config.json").read_bytes() == b"cfg"
         assert not partial_dir.exists()
 
+    def test_download_model_activates_staging_via_os_rename(self, temp_cache_dir, sample_manifest):
+        """Should atomically activate .partial staging with os.rename."""
+        manager = ModelCacheManager()
+
+        def mock_download(file_info, dest, callback):
+            if file_info.path == "model.bin":
+                dest.write_bytes(b"x" * 800)
+            else:
+                dest.write_bytes(b"x" * 200)
+
+        original_rename = os.rename
+        with patch("openvoicy_sidecar.model_cache.download_with_mirrors", side_effect=mock_download):
+            with patch(
+                "openvoicy_sidecar.model_cache.verify_sha256",
+                return_value=(True, sample_manifest.files[0].sha256),
+            ):
+                with patch("openvoicy_sidecar.model_cache.os.rename", wraps=original_rename) as spy_rename:
+                    model_dir = manager.download_model(sample_manifest)
+
+        expected_staged = temp_cache_dir / ".partial" / sample_manifest.model_id
+        expected_final = temp_cache_dir / sample_manifest.model_id
+        assert model_dir == expected_final
+        assert any(
+            Path(call.args[0]) == expected_staged and Path(call.args[1]) == expected_final
+            for call in spy_rename.call_args_list
+        )
+
 
 class _FakeThread:
     def __init__(self, target=None, args=(), daemon=False):
@@ -869,3 +939,66 @@ class TestModelInstallHandler:
         assert result["model_id"] == "parakeet-tdt-0.6b-v3"
         assert "progress" in result
         assert result["progress"]["current"] == 42
+
+
+class TestModelProgressEmitter:
+    def test_progress_stage_mapping(self):
+        assert model_cache._progress_stage_for_status(ModelStatus.DOWNLOADING) == "downloading"
+        assert model_cache._progress_stage_for_status(ModelStatus.VERIFYING) == "verifying"
+        assert model_cache._progress_stage_for_status(ModelStatus.READY) == "installing"
+
+    def test_emits_on_stage_change_without_waiting_for_interval(self):
+        emitter = model_cache._ModelProgressEmitter("model-id")
+        progress = DownloadProgress(
+            current_bytes=64,
+            total_bytes=100,
+            current_file="model.bin",
+            files_completed=0,
+            files_total=1,
+        )
+
+        with (
+            patch("openvoicy_sidecar.model_cache._emit_model_progress") as mock_emit,
+            patch(
+                "openvoicy_sidecar.model_cache.time.monotonic",
+                side_effect=[0.0, 0.1, 0.2],
+            ),
+        ):
+            emitter.emit(progress, stage="downloading")
+            emitter.emit(progress, stage="downloading")
+            emitter.emit(progress, stage="verifying")
+
+        assert mock_emit.call_count == 2
+        assert mock_emit.call_args_list[0].kwargs["stage"] == "downloading"
+        assert mock_emit.call_args_list[1].kwargs["stage"] == "verifying"
+
+    def test_emits_on_percent_step_or_interval(self):
+        emitter = model_cache._ModelProgressEmitter("model-id")
+        base = DownloadProgress(
+            current_bytes=0,
+            total_bytes=100,
+            current_file="",
+            files_completed=0,
+            files_total=1,
+        )
+        percent_advanced = DownloadProgress(
+            current_bytes=1,
+            total_bytes=100,
+            current_file="",
+            files_completed=0,
+            files_total=1,
+        )
+
+        with (
+            patch("openvoicy_sidecar.model_cache._emit_model_progress") as mock_emit,
+            patch(
+                "openvoicy_sidecar.model_cache.time.monotonic",
+                side_effect=[0.0, 0.2, 0.4, 1.5],
+            ),
+        ):
+            emitter.emit(base, stage="downloading")
+            emitter.emit(base, stage="downloading")
+            emitter.emit(percent_advanced, stage="downloading")
+            emitter.emit(percent_advanced, stage="downloading")
+
+        assert mock_emit.call_count == 3

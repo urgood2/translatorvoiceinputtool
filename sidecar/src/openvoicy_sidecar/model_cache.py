@@ -48,6 +48,8 @@ CHECK_CACHE_LOCK_TIMEOUT_SECONDS = 1.0
 DOWNLOAD_CHUNK_SIZE = 8192
 HASH_CHUNK_SIZE = 65536
 DISK_SPACE_BUFFER = 1.1  # 10% buffer
+MODEL_PROGRESS_MIN_INTERVAL_SECONDS = 1.0
+MODEL_PROGRESS_PERCENT_STEP = 1
 
 TRUSTED_HF_HOSTS = ("huggingface.co", "hf.co")
 
@@ -315,6 +317,41 @@ def _hash_mismatch_details(
     if io_error:
         details["io_error"] = io_error
     return details
+
+
+def _activate_staged_model_dir(staged_dir: Path, final_dir: Path) -> None:
+    """Activate a fully verified staged model directory via atomic rename.
+
+    Uses ``os.rename`` on the same filesystem to avoid exposing partially
+    installed files at the final model path.
+    """
+    final_dir.parent.mkdir(parents=True, exist_ok=True)
+    backup_dir: Optional[Path] = None
+
+    if final_dir.exists():
+        backup_dir = final_dir.with_name(
+            f".{final_dir.name}.backup-{os.getpid()}-{time.time_ns()}"
+        )
+        os.rename(final_dir, backup_dir)
+
+    try:
+        os.rename(staged_dir, final_dir)
+    except OSError:
+        if backup_dir is not None and backup_dir.exists() and not final_dir.exists():
+            try:
+                os.rename(backup_dir, final_dir)
+            except OSError as restore_error:
+                log(
+                    "Failed to restore previous model directory after "
+                    f"rename error: {restore_error}"
+                )
+        raise
+
+    if backup_dir is not None and backup_dir.exists():
+        try:
+            shutil.rmtree(backup_dir)
+        except OSError as cleanup_error:
+            log(f"Failed to clean up model backup directory {backup_dir}: {cleanup_error}")
 
 
 # === Cache Lock ===
@@ -826,6 +863,7 @@ class ModelCacheManager:
 
                 for i, file_info in enumerate(manifest.files):
                     with self._state_lock:
+                        self._status = ModelStatus.DOWNLOADING
                         self._progress.current_file = file_info.path
                         self._progress.files_completed = i
 
@@ -869,6 +907,8 @@ class ModelCacheManager:
                     # Verify hash first (integrity gate), then verify size.
                     with self._state_lock:
                         self._status = ModelStatus.VERIFYING
+                    if progress_callback:
+                        progress_callback(self.progress)
 
                     try:
                         hash_ok, actual_sha256 = verify_sha256(dest_path, file_info.sha256)
@@ -923,11 +963,8 @@ class ModelCacheManager:
                 with self._state_lock:
                     self._progress.files_completed = len(manifest.files)
 
-                # Atomic rename
-                if model_dir.exists():
-                    shutil.rmtree(model_dir)
-                model_dir.parent.mkdir(parents=True, exist_ok=True)
-                temp_dir.rename(model_dir)
+                # Atomic activation from .partial staging after full verification.
+                _activate_staged_model_dir(temp_dir, model_dir)
                 temp_dir = None  # Don't clean up on success
 
                 with self._state_lock:
@@ -1049,26 +1086,107 @@ def _resolve_manifest_path_for_model(model_id: str) -> Path:
     return resolve_shared_path(MODEL_MANIFEST_REL)
 
 
-def _emit_model_progress(model_id: str, progress: DownloadProgress) -> None:
+def _progress_stage_for_status(status: ModelStatus) -> str:
+    if status == ModelStatus.DOWNLOADING:
+        return "downloading"
+    if status == ModelStatus.VERIFYING:
+        return "verifying"
+    return "installing"
+
+
+def _model_progress_message_for_stage(stage: str) -> str:
+    if stage == "verifying":
+        return "Verifying downloaded model..."
+    if stage == "installing":
+        return "Installing model..."
+    return "Downloading model..."
+
+
+class _ModelProgressEmitter:
+    """Throttle model progress notifications to meaningful cadence."""
+
+    def __init__(self, model_id: str):
+        self._model_id = model_id
+        self._last_emit_at = 0.0
+        self._last_percent = -1
+        self._last_stage: Optional[str] = None
+        self._last_current_file = ""
+        self._last_files_completed = -1
+
+    def emit(self, progress: DownloadProgress, *, stage: str, force: bool = False) -> None:
+        now = time.monotonic()
+        total = progress.total_bytes if progress.total_bytes > 0 else 0
+        percent = (
+            int((max(0, progress.current_bytes) * 100) / total)
+            if total > 0
+            else None
+        )
+
+        stage_changed = stage != self._last_stage
+        file_changed = progress.current_file != self._last_current_file
+        files_changed = progress.files_completed != self._last_files_completed
+        percent_advanced = (
+            percent is not None and percent >= self._last_percent + MODEL_PROGRESS_PERCENT_STEP
+        )
+        interval_elapsed = (now - self._last_emit_at) >= MODEL_PROGRESS_MIN_INTERVAL_SECONDS
+
+        should_emit = (
+            force
+            or stage_changed
+            or file_changed
+            or files_changed
+            or percent_advanced
+            or interval_elapsed
+        )
+        if not should_emit:
+            return
+
+        _emit_model_progress(self._model_id, progress, stage=stage)
+        self._last_emit_at = now
+        self._last_stage = stage
+        self._last_current_file = progress.current_file
+        self._last_files_completed = progress.files_completed
+        if percent is not None:
+            self._last_percent = percent
+
+
+def _emit_model_progress(
+    model_id: str,
+    progress: DownloadProgress,
+    *,
+    stage: str = "downloading",
+) -> None:
     payload = {
         "model_id": model_id,
         "current": progress.current_bytes,
         "total": progress.total_bytes if progress.total_bytes > 0 else None,
         "unit": "bytes",
-        "stage": "download",
+        "stage": stage,
         "current_file": progress.current_file,
         "files_completed": progress.files_completed,
         "files_total": progress.files_total,
     }
-    write_notification(Notification(method="event.model_progress", params=payload))
+    from .notifications import emit_model_progress
+
+    emit_model_progress(
+        model_id=payload["model_id"],
+        current=payload["current"],
+        total=payload["total"],
+        unit=payload["unit"],
+        stage=payload["stage"],
+        current_file=payload["current_file"],
+        files_completed=payload["files_completed"],
+        files_total=payload["files_total"],
+    )
 
     # Mirror through status_changed for host integrations that only consume this channel.
+    model_status = "verifying" if stage == "verifying" else "downloading"
     write_notification(
         Notification(
             method="event.status_changed",
             params={
                 "state": "loading_model",
-                "detail": "Downloading model...",
+                "detail": _model_progress_message_for_stage(stage),
                 "progress": {
                     "current": payload["current"],
                     "total": payload["total"],
@@ -1077,7 +1195,7 @@ def _emit_model_progress(model_id: str, progress: DownloadProgress) -> None:
                 },
                 "model": {
                     "model_id": model_id,
-                    "status": "downloading",
+                    "status": model_status,
                 },
             },
         )
@@ -1105,12 +1223,61 @@ def _emit_model_status(model_id: str, status: str, error: Optional[str] = None) 
     )
 
 
+def _initial_progress_for_manifest(manifest: ModelManifest) -> DownloadProgress:
+    return DownloadProgress(
+        current_bytes=0,
+        total_bytes=manifest.total_size_bytes,
+        current_file="",
+        files_completed=0,
+        files_total=len(manifest.files),
+    )
+
+
+def _completed_progress_for_manifest(
+    manifest: ModelManifest,
+    progress: DownloadProgress,
+) -> DownloadProgress:
+    total_bytes = progress.total_bytes if progress.total_bytes > 0 else manifest.total_size_bytes
+    current_bytes = progress.current_bytes
+    if total_bytes > 0:
+        current_bytes = max(current_bytes, total_bytes)
+
+    files_total = progress.files_total if progress.files_total > 0 else len(manifest.files)
+    files_completed = progress.files_completed
+    if files_total > 0:
+        files_completed = max(files_completed, files_total)
+
+    return DownloadProgress(
+        current_bytes=current_bytes,
+        total_bytes=total_bytes,
+        current_file=progress.current_file,
+        files_completed=files_completed,
+        files_total=files_total,
+    )
+
+
 def _run_model_install(manager: ModelCacheManager, manifest: ModelManifest) -> None:
     global _install_thread, _install_model_id
+    progress_emitter = _ModelProgressEmitter(manifest.model_id)
     try:
+        progress_emitter.emit(
+            _initial_progress_for_manifest(manifest),
+            stage="installing",
+            force=True,
+        )
+
+        def on_progress(progress: DownloadProgress) -> None:
+            stage = _progress_stage_for_status(manager.status)
+            progress_emitter.emit(progress, stage=stage)
+
         manager.download_model(
             manifest,
-            progress_callback=lambda p: _emit_model_progress(manifest.model_id, p),
+            progress_callback=on_progress,
+        )
+        progress_emitter.emit(
+            _completed_progress_for_manifest(manifest, manager.progress),
+            stage="installing",
+            force=True,
         )
         _emit_model_status(manifest.model_id, "ready")
     except (DiskFullError, NetworkError, CacheCorruptError, LockError, ModelCacheError) as e:
@@ -1162,11 +1329,22 @@ def handle_model_download(request: Request) -> dict[str, Any]:
         raise ModelCacheError("Model manifest not found")
 
     manifest = manager.load_manifest(manifest_path)
+    progress_emitter = _ModelProgressEmitter(manifest.model_id)
+
+    progress_emitter.emit(
+        _initial_progress_for_manifest(manifest),
+        stage="downloading",
+        force=True,
+    )
+
+    def on_progress(progress: DownloadProgress) -> None:
+        stage = _progress_stage_for_status(manager.status)
+        progress_emitter.emit(progress, stage=stage)
 
     # Start download (blocking in this implementation)
     # In production, this would be async
     try:
-        manager.download_model(manifest)
+        manager.download_model(manifest, progress_callback=on_progress)
     except (DiskFullError, NetworkError, CacheCorruptError) as e:
         raise e
 
