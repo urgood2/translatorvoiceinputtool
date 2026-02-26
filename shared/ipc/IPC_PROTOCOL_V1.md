@@ -2,7 +2,7 @@
 
 **Version:** 1.0
 **Status:** LOCKED
-**Last Updated:** 2026-02-04
+**Last Updated:** 2026-02-26
 
 This document defines the authoritative IPC contract between the Rust host and Python sidecar. Both implementations MUST conform to this specification.
 
@@ -540,7 +540,8 @@ Initialize ASR engine with specified model.
   "method": "asr.initialize",
   "params": {
     "model_id": "parakeet-tdt-0.6b-v3",
-    "device_pref": "auto"
+    "device_pref": "auto",
+    "language": "auto"
   }
 }
 ```
@@ -548,6 +549,12 @@ Initialize ASR engine with specified model.
 **Parameters:**
 - `model_id` (required): Model identifier
 - `device_pref` (required): One of `"auto"`, `"cuda"`, `"cpu"`
+- `language` (optional, additive): Language preference for ASR decoding
+  - `null`: Use backend default behavior
+  - `"auto"`: Enable automatic language detection
+  - ISO 639-1 code (for example `"en"`, `"es"`): Force decoding for that specific language
+
+`language` is an additive optional field for compatibility. Implementations that do not support it MUST ignore it.
 
 **Response:**
 ```json

@@ -3,10 +3,16 @@
 # E2E Test: Sidecar Error Recovery with Diagnostics
 #
 # This script validates plan-aligned recovery behavior:
-# 1) Single crash recovery
+# 1) Single crash recovery (supervisor auto-restart)
 # 2) Crash-loop circuit breaker behavior
 # 3) Manual restart path after breaker trip
 # 4) IPC timeout / unresponsive sidecar behavior
+#
+# Design note: Scenarios use `run_policy_test` (cargo unit tests) to validate
+# supervisor-internal behaviors (crash handling, circuit breaker, backoff)
+# because these mechanisms are Rust-side and not directly observable via the
+# standalone sidecar process used in e2e. This ensures the supervisor logic is
+# tested without requiring the full Tauri app runtime.
 #
 # Exit codes:
 #   0 - Pass
