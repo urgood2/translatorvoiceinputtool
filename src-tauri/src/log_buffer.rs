@@ -7,6 +7,8 @@
 //! - Automatic redaction of sensitive data (paths, transcripts)
 //! - Integration with the `log` crate via custom subscriber
 
+#![allow(dead_code)] // Infrastructure module — public API will be consumed by diagnostics features
+
 use std::collections::VecDeque;
 use std::sync::{Arc, RwLock};
 

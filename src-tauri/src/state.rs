@@ -44,10 +44,11 @@ use thiserror::Error;
 use tokio::sync::broadcast;
 
 /// Application state values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppState {
     /// Ready to record (default state).
+    #[default]
     Idle,
     /// Model is being downloaded or initialized.
     LoadingModel,
@@ -57,12 +58,6 @@ pub enum AppState {
     Transcribing,
     /// Error state (recoverable via retry).
     Error,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 /// Event emitted when state changes.

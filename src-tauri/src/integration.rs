@@ -60,10 +60,11 @@ const EVENT_SIDECAR_STATUS: &str = "sidecar:status";
 const EVENT_RECORDING_STATUS: &str = "recording:status";
 
 /// Model status tracking.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelStatus {
     /// Model status unknown (not yet queried).
+    #[default]
     Unknown,
     /// Model not downloaded.
     Missing,
@@ -75,12 +76,6 @@ pub enum ModelStatus {
     Ready,
     /// Model failed to load or download.
     Error(String),
-}
-
-impl Default for ModelStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 /// Download/initialization progress.
@@ -204,7 +199,7 @@ fn resolve_model_id(model_id: Option<String>) -> String {
 }
 
 fn purge_affects_configured_model(purge_model_id: Option<&str>, configured_model_id: &str) -> bool {
-    purge_model_id.map_or(true, |requested| requested == configured_model_id)
+    purge_model_id.is_none_or(|requested| requested == configured_model_id)
 }
 
 fn model_download_params(model_id: Option<String>, force: Option<bool>) -> Option<Value> {
@@ -1272,7 +1267,7 @@ impl IntegrationManager {
 
                             // Trigger model initialization
                             Self::trigger_model_init(
-                                &client,
+                                client,
                                 &state_manager,
                                 &recording_controller,
                                 &model_status,
@@ -2150,6 +2145,7 @@ impl IntegrationManager {
     }
 
     /// Ping the sidecar to verify connection.
+    #[allow(dead_code)]
     async fn ping_sidecar(&self) -> Result<(), String> {
         let client = self.rpc_client.read().await;
         let client = client
@@ -2981,6 +2977,7 @@ impl IntegrationManager {
                             text: String,
                             duration_ms: u64,
                             #[serde(default)]
+                            #[allow(dead_code)]
                             confidence: Option<f64>,
                             #[serde(default)]
                             raw_text: Option<String>,

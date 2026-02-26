@@ -127,7 +127,7 @@ impl ErrorKind {
     }
 
     /// Convert to canonical app error code.
-    pub fn to_sidecar(&self) -> &'static str {
+    pub fn to_sidecar(self) -> &'static str {
         match self {
             Self::SidecarSpawn => E_SIDECAR_SPAWN,
             Self::SidecarIpc => E_SIDECAR_IPC,

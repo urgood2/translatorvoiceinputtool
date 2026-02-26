@@ -44,9 +44,11 @@ pub enum CommandError {
     #[error("Clipboard error: {message}")]
     Clipboard { message: String },
 
+    #[allow(dead_code)]
     #[error("Hotkey error: {message}")]
     Hotkey { message: String },
 
+    #[allow(dead_code)]
     #[error("Not implemented: {message}")]
     NotImplemented { message: String },
 
@@ -114,6 +116,7 @@ pub struct CheckItem {
 pub enum CheckStatus {
     Ok,
     Warning,
+    #[allow(dead_code)]
     Error,
 }
 
@@ -630,6 +633,7 @@ pub struct ReplacementPreviewResult {
     pub applied_presets: Vec<String>,
 }
 
+#[allow(dead_code)]
 fn preview_replacement_local(
     input: String,
     rules: Vec<ReplacementRule>,
@@ -688,6 +692,7 @@ fn preview_replacement_local(
     }
 }
 
+#[allow(dead_code)]
 fn is_sidecar_unavailable_preview_error(message: &str) -> bool {
     let normalized = message.to_ascii_lowercase();
     normalized.contains("sidecar not connected") || normalized.contains("disconnected from sidecar")

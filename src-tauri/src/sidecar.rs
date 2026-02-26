@@ -796,12 +796,9 @@ impl SidecarManager {
                 thread::sleep(Duration::from_millis(500));
 
                 // Force kill if still running
-                match child.try_wait() {
-                    Ok(None) => {
-                        log::warn!("Sidecar did not exit gracefully, killing");
-                        let _ = child.kill();
-                    }
-                    _ => {}
+                if let Ok(None) = child.try_wait() {
+                    log::warn!("Sidecar did not exit gracefully, killing");
+                    let _ = child.kill();
                 }
 
                 inner.child = None;

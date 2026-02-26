@@ -607,6 +607,7 @@ fn map_error_to_user_message(error: &AppErrorKind) -> UserError {
 /// Map a sidecar error kind string to an AppError.
 ///
 /// This function is used when receiving errors from the sidecar via JSON-RPC.
+#[allow(dead_code)]
 pub fn from_sidecar_error(kind: &str, message: &str, details: Option<&str>) -> AppErrorKind {
     match kind {
         // Canonical catalog

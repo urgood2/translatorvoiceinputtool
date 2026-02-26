@@ -7,6 +7,8 @@
 //! - Auto-disable behavior after repeated window-operation failures.
 //! - Meter/timer throttling guards to keep overlay CPU usage within budget.
 
+#![allow(dead_code)] // Phase 2: Floating Overlay Window — not yet wired into the app
+
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
@@ -24,19 +26,14 @@ const DEFAULT_MARGIN_X: i32 = 24;
 const DEFAULT_MARGIN_Y: i32 = 24;
 
 /// Anchor point for overlay placement within a monitor work area.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OverlayAnchor {
     TopLeft,
     TopRight,
     BottomLeft,
     BottomRight,
+    #[default]
     BottomCenter,
-}
-
-impl Default for OverlayAnchor {
-    fn default() -> Self {
-        Self::BottomCenter
-    }
 }
 
 /// Overlay placement configuration.

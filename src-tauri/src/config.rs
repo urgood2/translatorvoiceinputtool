@@ -403,19 +403,14 @@ impl Default for AudioConfig {
 }
 
 /// Hotkey mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HotkeyMode {
     /// Press and hold to record, release to stop.
+    #[default]
     Hold,
     /// Press to toggle recording on/off.
     Toggle,
-}
-
-impl Default for HotkeyMode {
-    fn default() -> Self {
-        Self::Hold
-    }
 }
 
 /// Hotkey configuration.
@@ -673,19 +668,11 @@ fn default_replacement_kind() -> String {
 }
 
 /// Preset configurations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PresetsConfig {
     /// IDs of enabled preset rule sets.
     pub enabled_presets: Vec<String>,
-}
-
-impl Default for PresetsConfig {
-    fn default() -> Self {
-        Self {
-            enabled_presets: Vec::new(),
-        }
-    }
 }
 
 fn default_schema_version() -> u32 {
