@@ -21,6 +21,7 @@ from .base import (
     ASRState,
     DeviceUnavailableError,
     InitProgress,
+    LegacyASRBackend,
     ModelLoadError,
     ModelNotFoundError,
     NotInitializedError,
@@ -34,6 +35,7 @@ from .parakeet import ParakeetBackend, check_cuda_available, select_device
 # Re-export public API
 __all__ = [
     "ASRBackend",
+    "LegacyASRBackend",
     "ASREngine",
     "ASRError",
     "ASRState",
@@ -52,6 +54,31 @@ __all__ = [
 # Default manifest / catalog paths (resolved at call-time, not import-time)
 _DEFAULT_MANIFEST_REL = MODEL_MANIFEST_REL
 _DEFAULT_CATALOG_REL = MODEL_CATALOG_REL
+
+
+def normalize_initialize_language(value: Any) -> Optional[str]:
+    """Normalize optional language parameter for asr.initialize.
+
+    Accepts:
+    - None (JSON null) -> None
+    - "auto" (case-insensitive) -> "auto"
+    - non-empty strings -> lowercase ISO-like code
+    """
+    if value is None:
+        return None
+
+    if not isinstance(value, str):
+        raise ASRError(
+            "Invalid language: expected string|'auto'|null",
+            code="E_INVALID_PARAMS",
+        )
+
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    if normalized == "auto":
+        return "auto"
+    return normalized
 
 
 def load_manifest(model_id: str) -> ModelManifest:
@@ -171,7 +198,7 @@ class ASREngine:
         if self._initialized:
             return
 
-        self._backend: Optional[ASRBackend] = None
+        self._backend: Optional[LegacyASRBackend] = None
         self._model_id: Optional[str] = None
         self._state: ASRState = ASRState.UNINITIALIZED
         self._cache_manager = ModelCacheManager()
@@ -222,7 +249,10 @@ class ASREngine:
                     set_language(effective_language)
                 except ValueError as error:
                     requested = language if language is not None else effective_language
-                    raise ASRError(f"Unsupported language '{requested}': {error}") from error
+                    raise ASRError(
+                        f"Unsupported language '{requested}': {error}",
+                        code="E_LANGUAGE_UNSUPPORTED",
+                    ) from error
             elapsed = (time.time() - start_time) * 1000
             log(f"ASR already initialized (fast path: {elapsed:.1f}ms)")
             return {
@@ -244,7 +274,10 @@ class ASREngine:
                         set_language(effective_language)
                     except ValueError as error:
                         requested = language if language is not None else effective_language
-                        raise ASRError(f"Unsupported language '{requested}': {error}") from error
+                        raise ASRError(
+                            f"Unsupported language '{requested}': {error}",
+                            code="E_LANGUAGE_UNSUPPORTED",
+                        ) from error
                 elapsed = (time.time() - start_time) * 1000
                 log(f"ASR already initialized (fast path after lock: {elapsed:.1f}ms)")
                 return {
@@ -306,7 +339,10 @@ class ASREngine:
                 except ValueError as error:
                     self._state = ASRState.ERROR
                     requested = language if language is not None else effective_language
-                    raise ASRError(f"Unsupported language '{requested}': {error}") from error
+                    raise ASRError(
+                        f"Unsupported language '{requested}': {error}",
+                        code="E_LANGUAGE_UNSUPPORTED",
+                    ) from error
                 configured = getattr(backend, "language", None)
                 log(
                     f"Configured ASR language: {'auto' if configured is None else configured}"
@@ -398,6 +434,7 @@ def handle_asr_initialize(request: Request) -> dict[str, Any]:
     Params:
         model_id: Model identifier (default: "parakeet-tdt-0.6b-v3")
         device_pref: Device preference - "auto", "cuda", or "cpu" (default: "auto")
+        language: Optional language code, "auto", or null
 
     Returns:
         { status: "ready", model_id: string, device: string }
@@ -405,7 +442,7 @@ def handle_asr_initialize(request: Request) -> dict[str, Any]:
     params = request.params
     model_id = params.get("model_id", "parakeet-tdt-0.6b-v3")
     device_pref = params.get("device_pref", "auto")
-    language = params.get("language")
+    language = normalize_initialize_language(params.get("language"))
 
     # Validate device_pref
     if device_pref not in ("auto", "cuda", "cpu"):

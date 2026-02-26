@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from openvoicy_sidecar.asr.base import ASRBackend
+from openvoicy_sidecar.asr.base import ASRBackend, LegacyASRBackend
 from openvoicy_sidecar.asr.dispatch import (
     UnsupportedFamilyError,
     _REGISTRY,
@@ -53,9 +53,18 @@ def test_unknown_family_error_lists_registered_families() -> None:
     assert "whisper" in message
 
 
-def test_parakeet_and_whisper_implement_the_same_backend_protocol() -> None:
-    assert isinstance(get_backend("parakeet"), ASRBackend)
-    assert isinstance(get_backend("whisper"), ASRBackend)
+def test_parakeet_and_whisper_implement_legacy_backend_protocol() -> None:
+    assert isinstance(get_backend("parakeet"), LegacyASRBackend)
+    assert isinstance(get_backend("whisper"), LegacyASRBackend)
+
+
+def test_formal_asr_backend_interface_defines_required_abstract_methods() -> None:
+    assert ASRBackend.__abstractmethods__ == {
+        "initialize",
+        "transcribe",
+        "get_status",
+        "supports_language",
+    }
 
 
 def test_register_backend_allows_new_family() -> None:

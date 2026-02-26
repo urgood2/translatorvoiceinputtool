@@ -46,6 +46,11 @@ class WhisperBackend:
         self._model_path: Optional[Path] = None
         self._language: Optional[str] = None  # None => auto-detect
 
+    @staticmethod
+    def is_available() -> bool:
+        """Return True when optional faster-whisper dependency is installed."""
+        return _FASTER_WHISPER_AVAILABLE
+
     @property
     def language(self) -> Optional[str]:
         """Return the configured language, or None for auto-detect."""

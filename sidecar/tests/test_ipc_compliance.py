@@ -226,6 +226,24 @@ def test_system_info_required_runtime_fields() -> None:
     _log("Assertion: system.info runtime fields -> PASS")
 
 
+def test_system_info_omits_whisper_capability_when_backend_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("openvoicy_sidecar.server._whisper_backend_available", lambda: False)
+    result = handle_system_info(_request("system.info", 21))
+    assert "whisper" not in result["capabilities"]
+    assert result["capabilities_detail"]["whisper_available"] is False
+
+
+def test_system_info_includes_whisper_capability_when_backend_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("openvoicy_sidecar.server._whisper_backend_available", lambda: True)
+    result = handle_system_info(_request("system.info", 22))
+    assert "whisper" in result["capabilities"]
+    assert result["capabilities_detail"]["whisper_available"] is True
+
+
 def test_system_shutdown_shape() -> None:
     request = _request("system.shutdown", 3, {"reason": "ipc-compliance"})
     _log(f"Testing system.shutdown request={request.params}")

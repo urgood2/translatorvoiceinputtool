@@ -146,6 +146,17 @@ def handle_system_ping(request: Request) -> dict[str, Any]:
     }
 
 
+def _whisper_backend_available() -> bool:
+    """Return whether optional Whisper backend dependency is available."""
+    try:
+        from .asr.whisper import WhisperBackend
+
+        return WhisperBackend.is_available()
+    except Exception as error:
+        log(f"Whisper capability probe failed: {error}")
+        return False
+
+
 def handle_system_info(request: Request) -> dict[str, Any]:
     """Handle system.info request."""
     cuda_available = False
@@ -156,12 +167,18 @@ def handle_system_info(request: Request) -> dict[str, Any]:
     except ImportError:
         pass
 
+    whisper_available = _whisper_backend_available()
+    capabilities = ["asr", "replacements", "meter"]
+    if whisper_available:
+        capabilities.append("whisper")
+
     return {
         "version": __version__,
         "protocol": PROTOCOL_VERSION,
-        "capabilities": ["asr", "replacements", "meter"],
+        "capabilities": capabilities,
         "capabilities_detail": {
             "cuda_available": cuda_available,
+            "whisper_available": whisper_available,
             "supports_progress": True,
             "supports_model_purge": True,
             "supports_silence_trim": True,

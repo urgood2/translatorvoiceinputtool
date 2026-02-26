@@ -315,6 +315,81 @@ class TestHandlers:
         with pytest.raises(ASRError):
             handle_asr_initialize(request)
 
+    def test_asr_initialize_passes_normalized_language_to_engine(self):
+        """Should normalize language and pass it through to engine.initialize."""
+        request = Request(
+            method="asr.initialize",
+            id=1,
+            params={
+                "model_id": "test-model",
+                "device_pref": "cpu",
+                "language": "EN",
+            },
+        )
+
+        mock_engine = MagicMock()
+        mock_engine.initialize.return_value = {
+            "status": "ready",
+            "model_id": "test-model",
+            "device": "cpu",
+        }
+
+        with patch("openvoicy_sidecar.asr.get_engine", return_value=mock_engine):
+            result = handle_asr_initialize(request)
+
+        assert result["status"] == "ready"
+        assert mock_engine.initialize.call_count == 1
+        call_kwargs = mock_engine.initialize.call_args.kwargs
+        assert call_kwargs["language"] == "en"
+        assert callable(call_kwargs["progress_callback"])
+
+    def test_asr_initialize_accepts_auto_and_null_language(self):
+        """Should accept 'auto' and null language values."""
+        mock_engine = MagicMock()
+        mock_engine.initialize.return_value = {
+            "status": "ready",
+            "model_id": "test-model",
+            "device": "cpu",
+        }
+
+        with patch("openvoicy_sidecar.asr.get_engine", return_value=mock_engine):
+            handle_asr_initialize(
+                Request(
+                    method="asr.initialize",
+                    id=1,
+                    params={"model_id": "test-model", "device_pref": "cpu", "language": "auto"},
+                )
+            )
+            handle_asr_initialize(
+                Request(
+                    method="asr.initialize",
+                    id=2,
+                    params={"model_id": "test-model", "device_pref": "cpu", "language": None},
+                )
+            )
+
+        first_kwargs = mock_engine.initialize.call_args_list[0].kwargs
+        second_kwargs = mock_engine.initialize.call_args_list[1].kwargs
+        assert first_kwargs["language"] == "auto"
+        assert second_kwargs["language"] is None
+
+    def test_asr_initialize_rejects_invalid_language_type(self):
+        """Should reject non-string/non-null language values."""
+        request = Request(
+            method="asr.initialize",
+            id=1,
+            params={
+                "model_id": "test-model",
+                "device_pref": "cpu",
+                "language": ["en"],
+            },
+        )
+
+        with pytest.raises(ASRError) as exc_info:
+            handle_asr_initialize(request)
+
+        assert exc_info.value.code == "E_INVALID_PARAMS"
+
 
 # === Integration Tests ===
 

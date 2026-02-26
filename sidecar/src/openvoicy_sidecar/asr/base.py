@@ -114,12 +114,50 @@ class NotInitializedError(ASRError):
     code = "E_NOT_INITIALIZED"
 
 
-@runtime_checkable
-class ASRBackend(Protocol):
-    """Protocol for ASR backend implementations.
+class ASRBackend(ABC):
+    """Formal async ASR backend interface for multi-backend dispatch.
 
-    All ASR backends must implement this interface, allowing
-    different models to be used interchangeably.
+    This interface is additive and intended for the model-family dispatch path
+    where backends are initialized/transcribed via async RPC-oriented methods.
+    """
+
+    @abstractmethod
+    async def initialize(
+        self,
+        model_id: str,
+        device_pref: str,
+        language: str | None = None,
+    ) -> None:
+        """Initialize backend state for the selected model/device."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def transcribe(
+        self,
+        audio_path: str,
+        session_id: str | None = None,
+        language: str | None = None,
+    ) -> dict[str, Any]:
+        """Transcribe the given audio file path."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_status(self) -> dict[str, Any]:
+        """Return status payload (for example: model_id/status/language)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def supports_language(self, language: str) -> bool:
+        """Return True when the backend supports forced language selection."""
+        raise NotImplementedError
+
+
+@runtime_checkable
+class LegacyASRBackend(Protocol):
+    """Legacy synchronous backend protocol used by the current ASR engine.
+
+    Kept for brownfield compatibility while the async ASRBackend interface is
+    rolled out to existing implementations.
     """
 
     def initialize(

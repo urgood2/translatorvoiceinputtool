@@ -163,6 +163,7 @@ def test_asr_initialize_invalid_language_returns_clear_error(
 
     assert "Unsupported language" in str(exc_info.value)
     assert "english" in str(exc_info.value)
+    assert exc_info.value.code == "E_LANGUAGE_UNSUPPORTED"
     assert not backend.initialized
 
 
@@ -176,3 +177,13 @@ def test_whisper_backend_missing_optional_dependency_has_clear_error(
         backend.initialize(Path("/tmp/whisper-model"), "cpu")
 
     assert "faster-whisper is not installed" in str(exc_info.value)
+
+
+def test_whisper_backend_is_available_reflects_dependency_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("openvoicy_sidecar.asr.whisper._FASTER_WHISPER_AVAILABLE", False)
+    assert WhisperBackend.is_available() is False
+
+    monkeypatch.setattr("openvoicy_sidecar.asr.whisper._FASTER_WHISPER_AVAILABLE", True)
+    assert WhisperBackend.is_available() is True

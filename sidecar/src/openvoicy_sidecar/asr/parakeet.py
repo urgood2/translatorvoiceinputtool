@@ -14,7 +14,6 @@ import numpy as np
 
 from ..protocol import log
 from .base import (
-    ASRBackend,
     ASRState,
     DeviceUnavailableError,
     InitProgress,

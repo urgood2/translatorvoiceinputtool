@@ -12,9 +12,9 @@ from ..protocol import log
 from .base import ASRError
 
 if TYPE_CHECKING:
-    from .base import ASRBackend
+    from .base import LegacyASRBackend
 
-# family -> callable that returns an ASRBackend instance
+# family -> callable that returns a legacy sync ASR backend instance
 _REGISTRY: dict[str, type] = {}
 
 
@@ -31,7 +31,7 @@ def register_backend(family: str, cls: type) -> None:
     log(f"Registered ASR backend: family={key} class={cls.__name__}")
 
 
-def get_backend(family: str) -> ASRBackend:
+def get_backend(family: str) -> LegacyASRBackend:
     """Instantiate and return the backend for the given model family.
 
     Raises:
