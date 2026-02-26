@@ -281,6 +281,29 @@ describe('HotkeyConfig', () => {
     expect(onPrimaryChange).toHaveBeenCalledWith('');
     expect(await screen.findByText('clear failed')).toBeDefined();
   });
+
+  it('does not capture Tab as a hotkey while recording', () => {
+    const onPrimaryChange = vi.fn().mockResolvedValue(undefined);
+    render(
+      <HotkeyConfig
+        primaryHotkey="Ctrl+Shift+A"
+        copyLastHotkey="Ctrl+Shift+C"
+        mode="hold"
+        onPrimaryChange={onPrimaryChange}
+        onCopyLastChange={vi.fn()}
+        onModeChange={vi.fn()}
+      />
+    );
+
+    const hotkeyInput = screen.getByText('Ctrl+Shift+A');
+    fireEvent.click(hotkeyInput);
+    expect(screen.getAllByText('Press keys...').length).toBeGreaterThan(0);
+
+    fireEvent.keyDown(hotkeyInput, { key: 'Tab' });
+
+    expect(onPrimaryChange).not.toHaveBeenCalled();
+    expect(screen.queryByText('Press keys...')).toBeNull();
+  });
 });
 
 describe('InjectionSettings', () => {

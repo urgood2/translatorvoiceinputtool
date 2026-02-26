@@ -89,11 +89,11 @@ describe('HotkeySetupStep', () => {
     expect(screen.getByText('Recording Hotkey')).toBeDefined();
   });
 
-  test('shows "Press keys..." when focused', () => {
+  test('shows "Press keys..." when clicked', () => {
     render(<HotkeySetupStep onReady={vi.fn()} />);
     const recorder = screen.getByRole('button', { name: 'Recording hotkey' });
 
-    fireEvent.focus(recorder);
+    fireEvent.click(recorder);
 
     expect(screen.getByText('Press keys...')).toBeDefined();
   });
@@ -102,7 +102,7 @@ describe('HotkeySetupStep', () => {
     render(<HotkeySetupStep onReady={vi.fn()} />);
     const recorder = screen.getByRole('button', { name: 'Recording hotkey' });
 
-    fireEvent.focus(recorder);
+    fireEvent.click(recorder);
 
     await act(async () => {
       fireEvent.keyDown(recorder, {
@@ -121,7 +121,7 @@ describe('HotkeySetupStep', () => {
     render(<HotkeySetupStep onReady={vi.fn()} />);
     const recorder = screen.getByRole('button', { name: 'Recording hotkey' });
 
-    fireEvent.focus(recorder);
+    fireEvent.click(recorder);
     fireEvent.keyDown(recorder, { key: 'Shift' });
 
     // Should still be in recording mode
@@ -178,7 +178,7 @@ describe('HotkeySetupStep', () => {
     render(<HotkeySetupStep onReady={vi.fn()} />);
     const recorder = screen.getByRole('button', { name: 'Recording hotkey' });
 
-    fireEvent.focus(recorder);
+    fireEvent.click(recorder);
 
     await act(async () => {
       fireEvent.keyDown(recorder, {
@@ -216,7 +216,7 @@ describe('HotkeySetupStep', () => {
     render(<HotkeySetupStep onReady={vi.fn()} />);
     const recorder = screen.getByRole('button', { name: 'Recording hotkey' });
 
-    fireEvent.focus(recorder);
+    fireEvent.click(recorder);
 
     await act(async () => {
       fireEvent.keyDown(recorder, {
@@ -229,6 +229,19 @@ describe('HotkeySetupStep', () => {
     });
 
     expect(updateHotkeyConfigSpy).toHaveBeenCalledWith({ primary: 'Ctrl+Alt+Shift+F1' });
+  });
+
+  test('tab exits recording mode without capturing Tab as a hotkey', () => {
+    render(<HotkeySetupStep onReady={vi.fn()} />);
+    const recorder = screen.getByRole('button', { name: 'Recording hotkey' });
+
+    fireEvent.click(recorder);
+    expect(screen.getByText('Press keys...')).toBeDefined();
+
+    fireEvent.keyDown(recorder, { key: 'Tab' });
+
+    expect(updateHotkeyConfigSpy).not.toHaveBeenCalled();
+    expect(screen.queryByText('Press keys...')).toBeNull();
   });
 
   test('falls back to defaults when config is null', () => {
