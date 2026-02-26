@@ -240,6 +240,9 @@ def peak_normalize(audio: np.ndarray, target_peak: float = 1.0) -> np.ndarray:
     Returns:
         Normalized audio array. Returns unchanged if max is 0.
     """
+    if len(audio) == 0:
+        return audio.astype(TARGET_DTYPE)
+
     max_val = np.abs(audio).max()
     if max_val == 0:
         return audio

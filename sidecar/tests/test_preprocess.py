@@ -288,6 +288,14 @@ class TestPeakNormalize:
 
         np.testing.assert_array_equal(result, audio)
 
+    def test_normalize_empty_audio(self):
+        """Should handle empty audio without errors."""
+        audio = np.array([], dtype=np.float32)
+        result = peak_normalize(audio)
+
+        assert result.dtype == np.float32
+        assert len(result) == 0
+
     def test_custom_target_peak(self):
         """Should normalize to custom target peak."""
         audio = np.array([0.0, 0.5, -0.5], dtype=np.float32)
