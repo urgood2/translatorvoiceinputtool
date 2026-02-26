@@ -6,14 +6,16 @@ Use this before adding libraries, changing build pipelines, or extending runtime
 ## Rust Host Dependencies
 
 1. Core framework
-- `tauri`: desktop host framework (project may target Tauri v1 or v2 based on lock/config).
+- `tauri` (v2): desktop host framework.
+- `tauri-plugin-shell`: host shell integration.
 
 2. Input and integration
 - `global_hotkey`: system-wide hotkey registration.
 - Platform-specific injection backends in `src-tauri/src/injection.rs` and related focus/input modules.
 
-3. Optional media/runtime features
-- `rodio` (optional): audio cue playback using packaged WAV assets in `src-tauri/sounds/*.wav`.
+3. Media/runtime features
+- `rodio` (required in current manifest): audio cue playback using packaged WAV assets in `src-tauri/sounds/*.wav`.
+- `zbus` (Linux target dependency): desktop/session integration on Linux builds.
 
 4. Core runtime libraries
 - `serde` and `serde_json`: serialization and contract payload handling.
@@ -26,12 +28,17 @@ Use this before adding libraries, changing build pipelines, or extending runtime
 1. Audio runtime
 - `sounddevice`: recording and playback device access.
 - `numpy`: signal and buffer processing.
+- `scipy`: waveform I/O and processing helpers.
 
-2. ASR and model runtime
-- `faster-whisper` with `ctranslate2` (optional): Whisper backend path for Phase 4.
+2. ASR/model runtime (current)
+- Sidecar runtime dependencies in `sidecar/pyproject.toml` are currently:
+  - `sounddevice`
+  - `numpy`
+  - `scipy`
 
-3. Voice activity detection
-- Lightweight optional VAD choices (for Phase 3): `webrtcvad` or Silero-based dependencies.
+3. ASR/model runtime (planned/optional, not currently in manifest)
+- `faster-whisper` with `ctranslate2`: optional Whisper backend path.
+- Additional VAD libraries (e.g. `webrtcvad` or Silero-based dependencies) remain optional future work.
 
 ## Contracts Tooling
 
@@ -58,13 +65,15 @@ Use this before adding libraries, changing build pipelines, or extending runtime
 ## Build and Packaging Toolchain
 
 1. JavaScript/TypeScript
-- `bun` is the preferred package manager (`bun.lock` present).
+- `bun` is used for TypeScript/frontend CI build/test steps.
+- `npm` is also used in security scanning (`npm audit`) and `package-lock.json` is tracked.
 
 2. Rust
 - `cargo` for host build/test/package workflows.
 
 3. Python
-- `pip` and `uv` for sidecar dependency management and packaging workflows.
+- `pip` for sidecar dependency installation and test tooling.
+- `hatchling` as the Python build backend for sidecar packaging.
 
 ## Integration Guardrails
 
@@ -72,3 +81,10 @@ Use this before adding libraries, changing build pipelines, or extending runtime
 - Prefer additive dependency introduction to reduce brownfield breakage risk.
 - Any dependency with licensing or attribution impact must update `docs/THIRD_PARTY_NOTICES.md`.
 - Model/runtime dependencies that expand attack surface must follow security and privacy policy defaults.
+
+## Drift Checklist
+
+When updating dependency manifests, update this document in the same change:
+- Rust manifest changes: `src-tauri/Cargo.toml`
+- Sidecar manifest changes: `sidecar/pyproject.toml`
+- Frontend/package manager changes: `package.json`, `bun.lock`, `package-lock.json`

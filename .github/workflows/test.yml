@@ -12,6 +12,7 @@ on:
       - 'package.json'
       - 'bun.lock'
       - '.github/workflows/test.yml'
+      - '.github/workflows/security.yml'
   pull_request:
     paths:
       - 'src-tauri/**'
@@ -22,6 +23,7 @@ on:
       - 'package.json'
       - 'bun.lock'
       - '.github/workflows/test.yml'
+      - '.github/workflows/security.yml'
 
 jobs:
   rust-tests:
@@ -151,7 +153,7 @@ jobs:
         run: python -m unittest scripts/tests/test_e2e_common_timeout.py scripts/tests/test_e2e_run_all_parallel.py
 
       - name: Run CI workflow regression tests
-        run: python -m unittest scripts/tests/test_ci_integration_workflow.py scripts/tests/test_ci_test_workflow.py scripts/tests/test_e2e_full_flow_script.py scripts/tests/test_validate_config_schema_parity.py scripts/tests/test_cargo_target_dir_ci.py scripts/tests/test_validate_contracts.py scripts/tests/test_test_contract_validation.py scripts/tests/test_e2e_packaged_resources_script.py scripts/tests/test_tauri_resource_packaging.py
+        run: python -m unittest scripts/tests/test_ci_integration_workflow.py scripts/tests/test_ci_security_workflow.py scripts/tests/test_ci_test_workflow.py scripts/tests/test_dependencies_tech_stack_reference.py scripts/tests/test_e2e_full_flow_script.py scripts/tests/test_validate_config_schema_parity.py scripts/tests/test_cargo_target_dir_ci.py scripts/tests/test_validate_contracts.py scripts/tests/test_test_contract_validation.py scripts/tests/test_e2e_packaged_resources_script.py scripts/tests/test_tauri_resource_packaging.py
 
   typescript-tests:
     name: TypeScript Tests
