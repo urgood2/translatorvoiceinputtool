@@ -437,8 +437,34 @@ fn render_markdown_export(entries: &[TranscriptEntry]) -> String {
         return out;
     }
 
+    out.push_str("## Table of Contents\n\n");
     for (index, entry) in entries.iter().rev().enumerate() {
-        out.push_str(&format!("## Entry {}\n", index + 1));
+        out.push_str(&format!(
+            "- [Entry {} - {}](#entry-{})\n",
+            index + 1,
+            entry.timestamp.to_rfc3339(),
+            entry.id
+        ));
+    }
+    out.push('\n');
+
+    for (index, entry) in entries.iter().rev().enumerate() {
+        out.push_str(&format!(
+            "## Entry {} - {}\n",
+            index + 1,
+            entry.timestamp.to_rfc3339()
+        ));
+        out.push_str(&format!("<a id=\"entry-{}\"></a>\n\n", entry.id));
+        out.push_str("### Transcript Text\n");
+        out.push_str("```\n");
+        out.push_str(if entry.final_text.is_empty() {
+            entry.text.as_str()
+        } else {
+            entry.final_text.as_str()
+        });
+        out.push_str("\n```\n\n");
+
+        out.push_str("### Metadata\n");
         out.push_str(&format!("- ID: `{}`\n", entry.id));
         out.push_str(&format!(
             "- Timestamp (UTC): `{}`\n",
@@ -474,24 +500,10 @@ fn render_markdown_export(entries: &[TranscriptEntry]) -> String {
             "- Injection Result: `{}`\n\n",
             injection_status_label(&entry.injection_result)
         ));
-
-        out.push_str("### Raw Text\n");
-        out.push_str("```\n");
-        out.push_str(if entry.raw_text.is_empty() {
-            entry.text.as_str()
-        } else {
-            entry.raw_text.as_str()
-        });
-        out.push_str("\n```\n\n");
-
-        out.push_str("### Final Text\n");
-        out.push_str("```\n");
-        out.push_str(if entry.final_text.is_empty() {
-            entry.text.as_str()
-        } else {
-            entry.final_text.as_str()
-        });
-        out.push_str("\n```\n\n");
+        if let Some(detail) = injection_detail(&entry.injection_result) {
+            out.push_str(&format!("- Injection Detail: `{}`\n", detail));
+        }
+        out.push('\n');
     }
 
     out
@@ -499,56 +511,25 @@ fn render_markdown_export(entries: &[TranscriptEntry]) -> String {
 
 fn render_csv_export(entries: &[TranscriptEntry]) -> String {
     let mut csv = String::from(
-        "id,timestamp,session_id,text,raw_text,final_text,audio_duration_ms,transcription_duration_ms,language,confidence,injection_status,injection_reason,injection_error,ipc_ms,transcribe_ms,postprocess_ms,inject_ms,total_ms\n",
+        "id,timestamp,text,audio_duration_ms,transcription_duration_ms,injection_result,session_id,language,confidence\n",
     );
 
     for entry in entries.iter().rev() {
-        let (injection_reason, injection_error) = match &entry.injection_result {
-            HistoryInjectionResult::ClipboardOnly { reason } => (reason.as_str(), ""),
-            HistoryInjectionResult::Error { message } => ("", message.as_str()),
-            HistoryInjectionResult::Injected => ("", ""),
-        };
-
-        let timings = entry.timings.as_ref();
         let fields = [
             entry.id.to_string(),
             entry.timestamp.to_rfc3339(),
+            entry.text.clone(),
+            entry.audio_duration_ms.to_string(),
+            entry.transcription_duration_ms.to_string(),
+            injection_status_label(&entry.injection_result).to_string(),
             entry
                 .session_id
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
-            entry.text.clone(),
-            entry.raw_text.clone(),
-            entry.final_text.clone(),
-            entry.audio_duration_ms.to_string(),
-            entry.transcription_duration_ms.to_string(),
             entry.language.clone().unwrap_or_default(),
             entry
                 .confidence
                 .map(|value| format!("{value:.6}"))
-                .unwrap_or_default(),
-            injection_status_label(&entry.injection_result).to_string(),
-            injection_reason.to_string(),
-            injection_error.to_string(),
-            timings
-                .and_then(|value| value.ipc_ms)
-                .map(|v| v.to_string())
-                .unwrap_or_default(),
-            timings
-                .and_then(|value| value.transcribe_ms)
-                .map(|v| v.to_string())
-                .unwrap_or_default(),
-            timings
-                .and_then(|value| value.postprocess_ms)
-                .map(|v| v.to_string())
-                .unwrap_or_default(),
-            timings
-                .and_then(|value| value.inject_ms)
-                .map(|v| v.to_string())
-                .unwrap_or_default(),
-            timings
-                .and_then(|value| value.total_ms)
-                .map(|v| v.to_string())
                 .unwrap_or_default(),
         ];
 
@@ -569,6 +550,14 @@ fn injection_status_label(result: &HistoryInjectionResult) -> &'static str {
         HistoryInjectionResult::Injected => "injected",
         HistoryInjectionResult::ClipboardOnly { .. } => "clipboard_only",
         HistoryInjectionResult::Error { .. } => "error",
+    }
+}
+
+fn injection_detail(result: &HistoryInjectionResult) -> Option<&str> {
+    match result {
+        HistoryInjectionResult::Injected => None,
+        HistoryInjectionResult::ClipboardOnly { reason } => Some(reason.as_str()),
+        HistoryInjectionResult::Error { message } => Some(message.as_str()),
     }
 }
 
@@ -944,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn test_export_markdown_contains_session_and_text_sections() {
+    fn test_export_markdown_contains_timestamp_sections_text_and_metadata() {
         let history = TranscriptHistory::new();
         let entry = TranscriptEntry::new(
             "raw text".to_string(),
@@ -963,9 +952,44 @@ mod tests {
 
         let content = fs::read_to_string(output).expect("markdown file should be readable");
         assert!(content.contains("# OpenVoicy Transcript History Export"));
+        assert!(content.contains("## Table of Contents"));
+        assert!(content.contains("## Entry 1 - "));
+        assert!(content.contains("### Transcript Text"));
+        assert!(content.contains("### Metadata"));
         assert!(content.contains("Session ID"));
-        assert!(content.contains("### Raw Text"));
-        assert!(content.contains("### Final Text"));
+        assert!(content.contains("Audio Duration (ms)"));
+        assert!(content.contains("Language"));
+        assert!(content.contains("Injection Result"));
+    }
+
+    #[test]
+    fn test_export_markdown_empty_history_contains_placeholder() {
+        let history = TranscriptHistory::new();
+        let rendered = render_markdown_export(&[]);
+        assert!(history.is_empty());
+        assert!(rendered.contains("_No transcript entries available._"));
+    }
+
+    #[test]
+    fn test_export_markdown_includes_injection_detail_for_clipboard_only() {
+        let history = TranscriptHistory::new();
+        let entry = TranscriptEntry::new(
+            "hello".to_string(),
+            1000,
+            300,
+            HistoryInjectionResult::ClipboardOnly {
+                reason: "focus changed".to_string(),
+            },
+        );
+        history.push(entry);
+
+        let dir = tempdir().expect("temp dir should be available");
+        let output = history
+            .export_to_dir(HistoryExportFormat::Markdown, dir.path())
+            .expect("markdown export should succeed");
+        let content = fs::read_to_string(output).expect("markdown file should be readable");
+        assert!(content.contains("Injection Detail"));
+        assert!(content.contains("focus changed"));
     }
 
     #[test]
@@ -981,7 +1005,9 @@ mod tests {
         assert!(bytes.starts_with(CSV_UTF8_BOM));
         let content = String::from_utf8(bytes[CSV_UTF8_BOM.len()..].to_vec())
             .expect("csv content should be utf-8");
-        assert!(content.starts_with("id,timestamp,session_id,text,raw_text,final_text"));
+        assert!(content.starts_with(
+            "id,timestamp,text,audio_duration_ms,transcription_duration_ms,injection_result,session_id,language,confidence"
+        ));
         assert_eq!(content.lines().count(), 1);
     }
 
@@ -996,8 +1022,8 @@ mod tests {
                 reason: "focus,changed".to_string(),
             },
         );
-        entry.raw_text = "raw,value".to_string();
-        entry.final_text = "final\"value".to_string();
+        entry.language = Some("en".to_string());
+        entry.confidence = Some(0.875);
         history.push(entry);
 
         let dir = tempdir().expect("temp dir should be available");
@@ -1009,9 +1035,30 @@ mod tests {
             .expect("csv content should be utf-8");
 
         assert!(content.contains("\"hello, \"\"world\"\"\nline2\""));
-        assert!(content.contains("\"raw,value\""));
-        assert!(content.contains("\"final\"\"value\""));
-        assert!(content.contains("\"focus,changed\""));
+        assert!(content.contains(",clipboard_only,"));
+        assert!(content.contains(",en,0.875000"));
+    }
+
+    #[test]
+    fn test_export_csv_preserves_unicode_text() {
+        let history = TranscriptHistory::new();
+        let entry = TranscriptEntry::new(
+            "Zażółć gęślą jaźń — Привет".to_string(),
+            900,
+            120,
+            HistoryInjectionResult::Injected,
+        );
+        history.push(entry);
+
+        let dir = tempdir().expect("temp dir should be available");
+        let output = history
+            .export_to_dir(HistoryExportFormat::Csv, dir.path())
+            .expect("csv export should succeed");
+        let bytes = fs::read(output).expect("csv file should be readable");
+        let content = String::from_utf8(bytes[CSV_UTF8_BOM.len()..].to_vec())
+            .expect("csv content should be utf-8");
+
+        assert!(content.contains("Zażółć gęślą jaźń — Привет"));
     }
 
     #[test]
