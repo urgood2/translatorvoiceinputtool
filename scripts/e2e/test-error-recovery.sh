@@ -358,26 +358,23 @@ scenario_manual_restart_after_breaker() {
     fi
     test2_ms=$POLICY_TEST_LAST_DURATION_MS
 
-    if rg -n "restart_sidecar|RESTART_SIDECAR" \
-        "$E2E_PROJECT_ROOT/src-tauri/src/commands.rs" \
-        "$E2E_PROJECT_ROOT/src-tauri/src/tray.rs" >/dev/null 2>&1; then
-        record_recovery_line "  restart_sidecar command/tray affordance present ✓"
-    else
+    local test3="integration::tests::test_restart_sidecar_reports_spawn_failure_and_clears_runtime_handles"
+    if ! run_policy_test "$test3"; then
         status="failed"
         affordance_ok=false
-        record_recovery_line "  restart_sidecar command/tray affordance missing ✗"
     fi
 
     local details
     details=$(jq -nc \
         --arg test1 "$test1" \
         --arg test2 "$test2" \
+        --arg test3 "$test3" \
         --argjson test1_ok "$test1_ok" \
         --argjson test2_ok "$test2_ok" \
         --argjson affordance_ok "$affordance_ok" \
         --argjson test1_ms "$test1_ms" \
         --argjson test2_ms "$test2_ms" \
-        '{"expected_status":"ready after manual restart (restart_count reset)","command_affordance":$affordance_ok,"policy_tests":[{"name":$test1,"pass":$test1_ok,"duration_ms":$test1_ms},{"name":$test2,"pass":$test2_ok,"duration_ms":$test2_ms}]}')
+        '{"expected_status":"ready after manual restart (restart_count reset)","restart_sidecar_test":$affordance_ok,"policy_tests":[{"name":$test1,"pass":$test1_ok,"duration_ms":$test1_ms},{"name":$test2,"pass":$test2_ok,"duration_ms":$test2_ms},{"name":$test3,"pass":$affordance_ok}]}')
 
     local duration_ms=$(( $(date +%s%3N) - started_ms ))
     record_scenario_result "3" "$scenario_name" "$status" "$duration_ms" "$details"
