@@ -22,7 +22,8 @@ Use this before changing config handling, model cache behavior, transcript histo
 
 5. Logging storage
 - Default: in-memory ring buffer (`log_buffer.rs`).
-- Optional persistent logs: rotated file logs used only for diagnostics/debug workflows.
+- Current: no persistent file-log sink or rotation path is implemented.
+- Future: if added, persistent logs must be explicit opt-in and disabled by default.
 
 6. Frontend build artifacts
 - Main UI build output in `dist/`.
@@ -70,10 +71,10 @@ Use this before changing config handling, model cache behavior, transcript histo
 - `generate_diagnostics` includes ring buffer data plus system/runtime context.
 
 3. Privacy-first default
-- Persistent log files are disabled by default.
+- No on-disk log persistence is currently implemented.
 
 4. Optional debug logging
-- If enabled for debugging, file logs must be rotated and excluded from source control.
+- Future optional file logging (not yet implemented) must be rotated and excluded from source control.
 
 ## Implementation Constraints
 
