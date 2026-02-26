@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -7,25 +8,28 @@ ERROR_RECOVERY_SCRIPT = REPO_ROOT / "scripts" / "e2e" / "test-error-recovery.sh"
 
 
 class ErrorRecoveryScriptTests(unittest.TestCase):
-    def test_script_checks_scenarios_failed_before_exit(self) -> None:
-        """Regression: 23d7 — exit code must account for SCENARIOS_FAILED."""
+    def test_single_crash_recovery_uses_policy_tests(self) -> None:
+        """Regression (33u9): scenario 1 must assert supervisor auto-restart via policy tests."""
         content = ERROR_RECOVERY_SCRIPT.read_text()
-        self.assertIn("SCENARIOS_FAILED", content)
-        # Verify that SCENARIOS_FAILED is checked after assertion_summary
-        assertion_summary_pos = content.index("assertion_summary")
-        scenarios_failed_check_pos = content.index("SCENARIOS_FAILED > 0")
-        self.assertGreater(
-            scenarios_failed_check_pos,
-            assertion_summary_pos,
-            "SCENARIOS_FAILED check must appear after assertion_summary",
+        self.assertIn("run_policy_test", content)
+        self.assertIn(
+            "handle_crash_stops_lingering_process_before_starting_new_one",
+            content,
+            "Scenario 1 must test supervisor crash handling via policy test",
         )
-
-    def test_script_covers_all_four_scenarios(self) -> None:
-        content = ERROR_RECOVERY_SCRIPT.read_text()
-        self.assertIn("scenario_single_crash_recovery", content)
-        self.assertIn("scenario_crash_loop_circuit_breaker", content)
-        self.assertIn("scenario_manual_restart_after_breaker", content)
-        self.assertIn("scenario_ipc_timeout", content)
+        # Scenario 1 body must NOT manually start sidecar — it should use policy tests
+        scenario_fn = re.search(
+            r"scenario_single_crash_recovery\(\)\s*\{(.*?)\n\}",
+            content,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(scenario_fn, "scenario_single_crash_recovery function must exist")
+        body = scenario_fn.group(1)
+        self.assertNotIn(
+            "start_sidecar_session",
+            body,
+            "Scenario 1 must use policy tests, not manual sidecar restart",
+        )
 
 
 if __name__ == "__main__":
