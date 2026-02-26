@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::capabilities::{Capabilities, CapabilityIssue};
 use crate::config::{self, AppConfig, ReplacementRule};
-use crate::history::{TranscriptEntry, TranscriptHistory};
+use crate::history::{HistoryExportError, TranscriptEntry, TranscriptHistory};
 use crate::integration::{
     SidecarAudioDevice, SidecarModelStatus, SidecarPresetInfo, SidecarReplacementPreviewResult,
 };
@@ -59,6 +59,14 @@ pub enum CommandError {
 impl From<config::ConfigError> for CommandError {
     fn from(e: config::ConfigError) -> Self {
         CommandError::Config {
+            message: e.to_string(),
+        }
+    }
+}
+
+impl From<HistoryExportError> for CommandError {
+    fn from(e: HistoryExportError) -> Self {
+        CommandError::Internal {
             message: e.to_string(),
         }
     }
@@ -571,6 +579,16 @@ pub fn copy_last_transcript(
 #[tauri::command]
 pub fn clear_history(history: tauri::State<TranscriptHistory>) {
     history.clear();
+}
+
+/// Export transcript history to Markdown or CSV.
+#[tauri::command]
+pub fn export_history(
+    history: tauri::State<TranscriptHistory>,
+    format: String,
+) -> Result<String, CommandError> {
+    let output = history.export(&format)?;
+    Ok(output.to_string_lossy().to_string())
 }
 
 // ============================================================================

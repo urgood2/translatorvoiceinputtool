@@ -88,6 +88,7 @@ pub fn run() {
             commands::copy_transcript,
             commands::copy_last_transcript,
             commands::clear_history,
+            commands::export_history,
             // Hotkey commands
             commands::get_hotkey_status,
             commands::set_hotkey,

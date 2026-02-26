@@ -8,12 +8,51 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::RwLock;
+use thiserror::Error;
 use uuid::Uuid;
 
 /// Default maximum history size.
 const DEFAULT_MAX_SIZE: usize = 100;
+const CSV_UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryExportFormat {
+    Markdown,
+    Csv,
+}
+
+impl HistoryExportFormat {
+    fn parse(input: &str) -> Result<Self, HistoryExportError> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "md" | "markdown" => Ok(Self::Markdown),
+            "csv" => Ok(Self::Csv),
+            value => Err(HistoryExportError::InvalidFormat {
+                value: value.to_string(),
+            }),
+        }
+    }
+
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Markdown => "md",
+            Self::Csv => "csv",
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum HistoryExportError {
+    #[error("unsupported export format: {value}")]
+    InvalidFormat { value: String },
+    #[error("failed to resolve export directory")]
+    MissingExportDirectory,
+    #[error("failed to export history: {0}")]
+    Io(#[from] std::io::Error),
+}
 
 /// Result of text injection for a transcript entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,11 +322,208 @@ impl TranscriptHistory {
             None
         }
     }
+
+    /// Export transcript history to a user-accessible location.
+    pub fn export(&self, format: &str) -> Result<PathBuf, HistoryExportError> {
+        let export_format = HistoryExportFormat::parse(format)?;
+        let export_dir = resolve_export_directory()?;
+        self.export_to_dir(export_format, &export_dir)
+    }
+
+    fn export_to_dir(
+        &self,
+        export_format: HistoryExportFormat,
+        export_dir: &Path,
+    ) -> Result<PathBuf, HistoryExportError> {
+        fs::create_dir_all(export_dir)?;
+
+        let filename = format!(
+            "openvoicy-history-{}.{}",
+            Utc::now().format("%Y%m%d-%H%M%S-%3f"),
+            export_format.extension()
+        );
+        let output_path = export_dir.join(filename);
+
+        let entries = self.all();
+        match export_format {
+            HistoryExportFormat::Markdown => {
+                fs::write(&output_path, render_markdown_export(&entries))?;
+            }
+            HistoryExportFormat::Csv => {
+                let mut bytes = Vec::new();
+                bytes.extend_from_slice(CSV_UTF8_BOM);
+                bytes.extend_from_slice(render_csv_export(&entries).as_bytes());
+                fs::write(&output_path, bytes)?;
+            }
+        }
+
+        Ok(output_path)
+    }
+}
+
+fn resolve_export_directory() -> Result<PathBuf, HistoryExportError> {
+    dirs::download_dir()
+        .or_else(dirs::document_dir)
+        .or_else(dirs::home_dir)
+        .ok_or(HistoryExportError::MissingExportDirectory)
+}
+
+fn render_markdown_export(entries: &[TranscriptEntry]) -> String {
+    let mut out = String::from("# OpenVoicy Transcript History Export\n\n");
+    out.push_str(&format!("Generated (UTC): {}\n\n", Utc::now().to_rfc3339()));
+
+    if entries.is_empty() {
+        out.push_str("_No transcript entries available._\n");
+        return out;
+    }
+
+    for (index, entry) in entries.iter().rev().enumerate() {
+        out.push_str(&format!("## Entry {}\n", index + 1));
+        out.push_str(&format!("- ID: `{}`\n", entry.id));
+        out.push_str(&format!(
+            "- Timestamp (UTC): `{}`\n",
+            entry.timestamp.to_rfc3339()
+        ));
+        out.push_str(&format!(
+            "- Session ID: `{}`\n",
+            entry
+                .session_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "n/a".to_string())
+        ));
+        out.push_str(&format!(
+            "- Audio Duration (ms): `{}`\n",
+            entry.audio_duration_ms
+        ));
+        out.push_str(&format!(
+            "- Transcription Duration (ms): `{}`\n",
+            entry.transcription_duration_ms
+        ));
+        out.push_str(&format!(
+            "- Language: `{}`\n",
+            entry.language.as_deref().unwrap_or("n/a")
+        ));
+        out.push_str(&format!(
+            "- Confidence: `{}`\n",
+            entry
+                .confidence
+                .map(|value| format!("{value:.3}"))
+                .unwrap_or_else(|| "n/a".to_string())
+        ));
+        out.push_str(&format!(
+            "- Injection Result: `{}`\n\n",
+            injection_status_label(&entry.injection_result)
+        ));
+
+        out.push_str("### Raw Text\n");
+        out.push_str("```\n");
+        out.push_str(if entry.raw_text.is_empty() {
+            entry.text.as_str()
+        } else {
+            entry.raw_text.as_str()
+        });
+        out.push_str("\n```\n\n");
+
+        out.push_str("### Final Text\n");
+        out.push_str("```\n");
+        out.push_str(if entry.final_text.is_empty() {
+            entry.text.as_str()
+        } else {
+            entry.final_text.as_str()
+        });
+        out.push_str("\n```\n\n");
+    }
+
+    out
+}
+
+fn render_csv_export(entries: &[TranscriptEntry]) -> String {
+    let mut csv = String::from(
+        "id,timestamp,session_id,text,raw_text,final_text,audio_duration_ms,transcription_duration_ms,language,confidence,injection_status,injection_reason,injection_error,ipc_ms,transcribe_ms,postprocess_ms,inject_ms,total_ms\n",
+    );
+
+    for entry in entries.iter().rev() {
+        let (injection_reason, injection_error) = match &entry.injection_result {
+            HistoryInjectionResult::ClipboardOnly { reason } => (reason.as_str(), ""),
+            HistoryInjectionResult::Error { message } => ("", message.as_str()),
+            HistoryInjectionResult::Injected => ("", ""),
+        };
+
+        let timings = entry.timings.as_ref();
+        let fields = [
+            entry.id.to_string(),
+            entry.timestamp.to_rfc3339(),
+            entry
+                .session_id
+                .map(|id| id.to_string())
+                .unwrap_or_default(),
+            entry.text.clone(),
+            entry.raw_text.clone(),
+            entry.final_text.clone(),
+            entry.audio_duration_ms.to_string(),
+            entry.transcription_duration_ms.to_string(),
+            entry.language.clone().unwrap_or_default(),
+            entry
+                .confidence
+                .map(|value| format!("{value:.6}"))
+                .unwrap_or_default(),
+            injection_status_label(&entry.injection_result).to_string(),
+            injection_reason.to_string(),
+            injection_error.to_string(),
+            timings
+                .and_then(|value| value.ipc_ms)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            timings
+                .and_then(|value| value.transcribe_ms)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            timings
+                .and_then(|value| value.postprocess_ms)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            timings
+                .and_then(|value| value.inject_ms)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            timings
+                .and_then(|value| value.total_ms)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+        ];
+
+        let escaped = fields
+            .iter()
+            .map(|value| csv_escape(value))
+            .collect::<Vec<_>>()
+            .join(",");
+        csv.push_str(&escaped);
+        csv.push('\n');
+    }
+
+    csv
+}
+
+fn injection_status_label(result: &HistoryInjectionResult) -> &'static str {
+    match result {
+        HistoryInjectionResult::Injected => "injected",
+        HistoryInjectionResult::ClipboardOnly { .. } => "clipboard_only",
+        HistoryInjectionResult::Error { .. } => "error",
+    }
+}
+
+fn csv_escape(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn test_new_history_is_empty() {
@@ -603,6 +839,86 @@ mod tests {
         assert!(json.contains("\"timings\""));
         assert!(json.contains("\"ipc_ms\":15"));
         assert!(json.contains("\"total_ms\":850"));
+    }
+
+    #[test]
+    fn test_export_markdown_contains_session_and_text_sections() {
+        let history = TranscriptHistory::new();
+        let entry = TranscriptEntry::new(
+            "raw text".to_string(),
+            2300,
+            480,
+            HistoryInjectionResult::Injected,
+        )
+        .with_session_id(Some(Uuid::new_v4()))
+        .with_asr_metadata(Some("en".to_string()), Some(0.98));
+        history.push(entry);
+
+        let dir = tempdir().expect("temp dir should be available");
+        let output = history
+            .export_to_dir(HistoryExportFormat::Markdown, dir.path())
+            .expect("markdown export should succeed");
+
+        let content = fs::read_to_string(output).expect("markdown file should be readable");
+        assert!(content.contains("# OpenVoicy Transcript History Export"));
+        assert!(content.contains("Session ID"));
+        assert!(content.contains("### Raw Text"));
+        assert!(content.contains("### Final Text"));
+    }
+
+    #[test]
+    fn test_export_csv_empty_history_writes_bom_and_headers() {
+        let history = TranscriptHistory::new();
+        let dir = tempdir().expect("temp dir should be available");
+
+        let output = history
+            .export_to_dir(HistoryExportFormat::Csv, dir.path())
+            .expect("csv export should succeed");
+        let bytes = fs::read(output).expect("csv file should be readable");
+
+        assert!(bytes.starts_with(CSV_UTF8_BOM));
+        let content = String::from_utf8(bytes[CSV_UTF8_BOM.len()..].to_vec())
+            .expect("csv content should be utf-8");
+        assert!(content.starts_with("id,timestamp,session_id,text,raw_text,final_text"));
+        assert_eq!(content.lines().count(), 1);
+    }
+
+    #[test]
+    fn test_export_csv_escapes_special_characters() {
+        let history = TranscriptHistory::new();
+        let mut entry = TranscriptEntry::new(
+            "hello, \"world\"\nline2".to_string(),
+            1000,
+            200,
+            HistoryInjectionResult::ClipboardOnly {
+                reason: "focus,changed".to_string(),
+            },
+        );
+        entry.raw_text = "raw,value".to_string();
+        entry.final_text = "final\"value".to_string();
+        history.push(entry);
+
+        let dir = tempdir().expect("temp dir should be available");
+        let output = history
+            .export_to_dir(HistoryExportFormat::Csv, dir.path())
+            .expect("csv export should succeed");
+        let bytes = fs::read(output).expect("csv file should be readable");
+        let content = String::from_utf8(bytes[CSV_UTF8_BOM.len()..].to_vec())
+            .expect("csv content should be utf-8");
+
+        assert!(content.contains("\"hello, \"\"world\"\"\nline2\""));
+        assert!(content.contains("\"raw,value\""));
+        assert!(content.contains("\"final\"\"value\""));
+        assert!(content.contains("\"focus,changed\""));
+    }
+
+    #[test]
+    fn test_export_rejects_invalid_format() {
+        let history = TranscriptHistory::new();
+        let error = history
+            .export("json")
+            .expect_err("invalid format should fail");
+        assert!(matches!(error, HistoryExportError::InvalidFormat { .. }));
     }
 
     #[test]
