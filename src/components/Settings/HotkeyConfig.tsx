@@ -137,7 +137,6 @@ function HotkeyInput({ label, description, value, onChange, disabled }: HotkeyIn
           <button
             type="button"
             onClick={() => void handleClear()}
-            aria-label={`Clear ${label}`}
             disabled={disabled}
             className="px-3 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md
                        disabled:opacity-50 disabled:cursor-not-allowed"

@@ -168,7 +168,6 @@ export function MicrophoneTest({
           type="button"
           onClick={isRunning ? handleStop : handleStart}
           disabled={isStarting}
-          aria-label={isRunning ? 'Stop microphone test' : 'Start microphone test'}
           className={`px-4 py-2 rounded-md text-sm font-medium transition-colors
                      ${isRunning
                        ? 'bg-red-500 hover:bg-red-600 text-white'
