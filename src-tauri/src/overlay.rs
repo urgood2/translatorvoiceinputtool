@@ -20,6 +20,8 @@ use crate::config;
 pub const OVERLAY_WINDOW_LABEL: &str = "overlay";
 pub const OVERLAY_METER_MAX_HZ: u64 = 15;
 pub const OVERLAY_TIMER_MAX_HZ: u64 = 2;
+const OVERLAY_WINDOW_TITLE: &str = "Voice Input Overlay";
+const OVERLAY_WINDOW_URL: &str = "overlay.html";
 
 const DEFAULT_FAILURE_THRESHOLD: u32 = 3;
 const DEFAULT_MARGIN_X: i32 = 24;
@@ -139,6 +141,8 @@ impl OverlayConfigStore for FileOverlayConfigStore {
 /// Window operations required by [`OverlayManager`].
 pub trait OverlayWindowBackend {
     fn window_exists(&self, label: &str) -> bool;
+    fn create_window(&self, label: &str) -> Result<(), String>;
+    fn destroy_window(&self, label: &str) -> Result<(), String>;
     fn available_monitors(&self, label: &str) -> Result<Vec<MonitorBounds>, String>;
     fn current_monitor(&self, label: &str) -> Result<Option<MonitorBounds>, String>;
     fn primary_monitor(&self, label: &str) -> Result<Option<MonitorBounds>, String>;
@@ -169,6 +173,37 @@ impl<'a> TauriOverlayWindowBackend<'a> {
 impl OverlayWindowBackend for TauriOverlayWindowBackend<'_> {
     fn window_exists(&self, label: &str) -> bool {
         self.app_handle.get_webview_window(label).is_some()
+    }
+
+    fn create_window(&self, label: &str) -> Result<(), String> {
+        if self.window_exists(label) {
+            return Ok(());
+        }
+
+        let url = tauri::WebviewUrl::App(OVERLAY_WINDOW_URL.into());
+        let window = tauri::WebviewWindowBuilder::new(self.app_handle, label, url)
+            .title(OVERLAY_WINDOW_TITLE)
+            .inner_size(300.0, 80.0)
+            .resizable(false)
+            .fullscreen(false)
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .build()
+            .map_err(|error| error.to_string())?;
+
+        window
+            .set_ignore_cursor_events(true)
+            .map_err(|error| error.to_string())
+    }
+
+    fn destroy_window(&self, label: &str) -> Result<(), String> {
+        if let Some(window) = self.app_handle.get_webview_window(label) {
+            window.close().map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     fn available_monitors(&self, label: &str) -> Result<Vec<MonitorBounds>, String> {
@@ -409,13 +444,26 @@ impl OverlayManager {
         }
 
         if !enabled {
+            if window_backend.window_exists(&self.window_label) {
+                if let Err(error) = window_backend
+                    .destroy_window(&self.window_label)
+                    .map_err(OverlayError::Window)
+                {
+                    return Err(self.register_failure(config_store, error));
+                }
+            }
             self.mark_hidden();
+            self.clear_failures();
             return Ok(());
         }
 
         if !window_backend.window_exists(&self.window_label) {
-            let error = OverlayError::MissingWindow(self.window_label.clone());
-            return Err(self.register_failure(config_store, error));
+            if let Err(error) = window_backend
+                .create_window(&self.window_label)
+                .map_err(OverlayError::Window)
+            {
+                return Err(self.register_failure(config_store, error));
+            }
         }
 
         let monitor = match self.resolve_target_monitor(window_backend) {
@@ -459,6 +507,20 @@ impl OverlayManager {
             .is_overlay_enabled()
             .map_err(OverlayError::Config)?;
         self.rate_limiter.set_enabled(enabled);
+
+        if !enabled {
+            if window_backend.window_exists(&self.window_label) {
+                if let Err(error) = window_backend
+                    .destroy_window(&self.window_label)
+                    .map_err(OverlayError::Window)
+                {
+                    return Err(self.register_failure(config_store, error));
+                }
+            }
+            self.mark_hidden();
+            self.clear_failures();
+            return Ok(());
+        }
 
         if !window_backend.window_exists(&self.window_label) {
             self.mark_hidden();
@@ -601,11 +663,13 @@ mod tests {
 
     #[derive(Clone)]
     struct MockWindowBackend {
-        exists: bool,
+        exists: Arc<Mutex<bool>>,
         current_monitor: Option<MonitorBounds>,
         primary_monitor: Option<MonitorBounds>,
         monitors: Vec<MonitorBounds>,
         fail_show: bool,
+        fail_create: bool,
+        fail_destroy: bool,
         calls: Arc<Mutex<Vec<String>>>,
     }
 
@@ -622,11 +686,13 @@ mod tests {
                 work_height: 1080,
             };
             Self {
-                exists: true,
+                exists: Arc::new(Mutex::new(true)),
                 current_monitor: Some(monitor),
                 primary_monitor: Some(monitor),
                 monitors: vec![monitor],
                 fail_show: false,
+                fail_create: false,
+                fail_destroy: false,
                 calls: Arc::new(Mutex::new(Vec::new())),
             }
         }
@@ -643,7 +709,31 @@ mod tests {
 
     impl OverlayWindowBackend for MockWindowBackend {
         fn window_exists(&self, _label: &str) -> bool {
-            self.exists
+            *self.exists.lock().expect("exists lock poisoned")
+        }
+
+        fn create_window(&self, _label: &str) -> Result<(), String> {
+            self.calls
+                .lock()
+                .expect("calls lock poisoned")
+                .push("create_window".to_string());
+            if self.fail_create {
+                return Err("create failed".to_string());
+            }
+            *self.exists.lock().expect("exists lock poisoned") = true;
+            Ok(())
+        }
+
+        fn destroy_window(&self, _label: &str) -> Result<(), String> {
+            self.calls
+                .lock()
+                .expect("calls lock poisoned")
+                .push("destroy_window".to_string());
+            if self.fail_destroy {
+                return Err("destroy failed".to_string());
+            }
+            *self.exists.lock().expect("exists lock poisoned") = false;
+            Ok(())
         }
 
         fn available_monitors(&self, _label: &str) -> Result<Vec<MonitorBounds>, String> {
@@ -783,8 +873,36 @@ mod tests {
         let mut manager = OverlayManager::new();
 
         assert!(manager.show(&config, &backend).is_ok());
+        assert_eq!(backend.call_count("destroy_window"), 1);
         assert_eq!(backend.call_count("show"), 0);
         assert_eq!(backend.call_count("set_position"), 0);
+        assert!(!manager.visible());
+    }
+
+    #[test]
+    fn manager_creates_missing_window_when_overlay_enabled() {
+        let config = MockConfigStore::new(true);
+        let backend = MockWindowBackend {
+            exists: Arc::new(Mutex::new(false)),
+            ..MockWindowBackend::new()
+        };
+        let mut manager = OverlayManager::new();
+
+        assert!(manager.show(&config, &backend).is_ok());
+        assert_eq!(backend.call_count("create_window"), 1);
+        assert_eq!(backend.call_count("show"), 1);
+        assert!(manager.visible());
+    }
+
+    #[test]
+    fn manager_destroys_window_when_overlay_disabled_during_hide() {
+        let config = MockConfigStore::new(false);
+        let backend = MockWindowBackend::new();
+        let mut manager = OverlayManager::new();
+
+        assert!(manager.hide(&config, &backend).is_ok());
+        assert_eq!(backend.call_count("destroy_window"), 1);
+        assert_eq!(backend.call_count("hide"), 0);
         assert!(!manager.visible());
     }
 

@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tauri::Emitter;
 
 use crate::capabilities::{Capabilities, CapabilityIssue};
 use crate::config::{self, AppConfig, ReplacementRule};
@@ -23,6 +24,16 @@ use crate::IntegrationState;
 
 const MODEL_MANIFEST_PATH: &str = "shared/model/MODEL_MANIFEST.json";
 const MODEL_MANIFEST_JSON: &str = include_str!("../../shared/model/MODEL_MANIFEST.json");
+const EVENT_TRAY_UPDATE: &str = "tray:update";
+
+fn emit_tray_update(app: &tauri::AppHandle, reason: &str) {
+    let _ = app.emit(
+        EVENT_TRAY_UPDATE,
+        crate::event_seq::payload_with_next_seq(serde_json::json!({
+            "reason": reason,
+        })),
+    );
+}
 
 /// Command error types.
 #[derive(Debug, Error, Serialize)]
@@ -199,11 +210,13 @@ pub fn get_config() -> AppConfig {
 pub fn update_config(
     config: AppConfig,
     history: tauri::State<TranscriptHistory>,
+    app: tauri::AppHandle,
 ) -> Result<(), CommandError> {
     let mut config = config;
     config.validate_and_clamp();
     config::save_config(&config)?;
     history.resize(config.history.max_entries as usize);
+    emit_tray_update(&app, "config_changed");
     Ok(())
 }
 
@@ -211,10 +224,12 @@ pub fn update_config(
 #[tauri::command]
 pub fn reset_config_to_defaults(
     history: tauri::State<TranscriptHistory>,
+    app: tauri::AppHandle,
 ) -> Result<AppConfig, CommandError> {
     let config = AppConfig::default();
     config::save_config(&config)?;
     history.resize(config.history.max_entries as usize);
+    emit_tray_update(&app, "config_changed");
     Ok(config)
 }
 
@@ -268,6 +283,7 @@ pub async fn list_audio_devices(
 pub async fn set_audio_device(
     integration_state: tauri::State<'_, IntegrationState>,
     device_uid: Option<String>,
+    app: tauri::AppHandle,
 ) -> Result<String, CommandError> {
     let manager = integration_state.0.read().await;
     let active_device_uid = manager
@@ -275,14 +291,16 @@ pub async fn set_audio_device(
         .await
         .map_err(|message| CommandError::Audio { message })?;
 
-    // Persist configured device selection once sidecar accepts the change.
+    // Persist the sidecar-confirmed device UID (which may differ from the request
+    // if the sidecar fell back to a different device). Fall back to the requested
+    // UID only when the sidecar didn't report an active device.
+    let confirmed_uid = active_device_uid.clone().or(device_uid);
     let mut app_config = config::load_config();
-    app_config.audio.device_uid = device_uid.clone();
+    app_config.audio.device_uid = confirmed_uid.clone();
     config::save_config(&app_config)?;
+    emit_tray_update(&app, "device_changed");
 
-    Ok(active_device_uid
-        .or(device_uid)
-        .unwrap_or_else(|| "default".to_string()))
+    Ok(confirmed_uid.unwrap_or_else(|| "default".to_string()))
 }
 
 /// Start microphone test (for level visualization).
@@ -577,8 +595,9 @@ pub fn copy_last_transcript(
 
 /// Clear transcript history.
 #[tauri::command]
-pub fn clear_history(history: tauri::State<TranscriptHistory>) {
+pub fn clear_history(history: tauri::State<TranscriptHistory>, app: tauri::AppHandle) {
     history.clear();
+    emit_tray_update(&app, "history_changed");
 }
 
 /// Export transcript history to Markdown or CSV.
@@ -831,6 +850,17 @@ pub async fn load_preset(
             return Ok(Vec::new());
         }
     };
+
+    // Tag each preset rule with a specific origin so rule_belongs_to_preset can
+    // identify membership without relying on the brittle rule-id prefix convention.
+    let tagged_origin = format!("preset:{preset_id}");
+    let preset_rules: Vec<ReplacementRule> = preset_rules
+        .into_iter()
+        .map(|mut rule| {
+            rule.origin = Some(tagged_origin.clone());
+            rule
+        })
+        .collect();
 
     let active_rules = manager
         .get_active_replacement_rules()
@@ -1295,7 +1325,7 @@ mod tests {
                 word_boundary: false,
                 case_sensitive: false,
                 description: None,
-                origin: Some("preset".to_string()),
+                origin: Some("preset:punctuation".to_string()),
             },
         ];
 
@@ -1308,7 +1338,7 @@ mod tests {
             word_boundary: false,
             case_sensitive: false,
             description: None,
-            origin: Some("preset".to_string()),
+            origin: Some("preset:punctuation".to_string()),
         }];
 
         let merged = merge_preset_rules(active_rules, preset_rules, "punctuation");
@@ -1329,7 +1359,7 @@ mod tests {
                 word_boundary: false,
                 case_sensitive: false,
                 description: None,
-                origin: Some("preset".to_string()),
+                origin: Some("preset:coding-terms".to_string()),
             },
             ReplacementRule {
                 id: "punctuation:period".to_string(),
@@ -1340,7 +1370,7 @@ mod tests {
                 word_boundary: false,
                 case_sensitive: false,
                 description: None,
-                origin: Some("preset".to_string()),
+                origin: Some("preset:punctuation".to_string()),
             },
         ];
 
@@ -1353,7 +1383,7 @@ mod tests {
             word_boundary: false,
             case_sensitive: false,
             description: None,
-            origin: Some("preset".to_string()),
+            origin: Some("preset:punctuation".to_string()),
         }];
 
         let merged = merge_preset_rules(active_rules, preset_rules, "punctuation");
@@ -1363,6 +1393,96 @@ mod tests {
             merged_ids,
             vec!["coding-terms:semicolon", "punctuation:question-mark"]
         );
+    }
+
+    #[test]
+    fn test_merge_preset_rules_identifies_by_origin_not_id_prefix() {
+        // Regression: reqr — rules with UUID IDs should be matched by origin,
+        // not by the brittle rule-id prefix convention.
+        let active_rules = vec![
+            ReplacementRule {
+                id: "user-rule-1".to_string(),
+                kind: "literal".to_string(),
+                pattern: "btw".to_string(),
+                replacement: "by the way".to_string(),
+                enabled: true,
+                word_boundary: true,
+                case_sensitive: false,
+                description: None,
+                origin: Some("user".to_string()),
+            },
+            ReplacementRule {
+                id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string(),
+                kind: "literal".to_string(),
+                pattern: " period".to_string(),
+                replacement: ".".to_string(),
+                enabled: true,
+                word_boundary: false,
+                case_sensitive: false,
+                description: None,
+                origin: Some("preset:punctuation".to_string()),
+            },
+        ];
+
+        let preset_rules = vec![ReplacementRule {
+            id: "f0e1d2c3-b4a5-6789-0123-456789abcdef".to_string(),
+            kind: "literal".to_string(),
+            pattern: " comma".to_string(),
+            replacement: ",".to_string(),
+            enabled: true,
+            word_boundary: false,
+            case_sensitive: false,
+            description: None,
+            origin: Some("preset:punctuation".to_string()),
+        }];
+
+        let merged = merge_preset_rules(active_rules, preset_rules, "punctuation");
+        let merged_ids = merged.into_iter().map(|rule| rule.id).collect::<Vec<_>>();
+
+        // The UUID-based old rule should be replaced even though its ID doesn't
+        // start with "punctuation:" — matched via origin field instead.
+        assert_eq!(
+            merged_ids,
+            vec![
+                "user-rule-1",
+                "f0e1d2c3-b4a5-6789-0123-456789abcdef"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_merge_preset_rules_legacy_id_prefix_still_matched() {
+        // Backward compat: rules persisted before origin tagging should still
+        // be matched by the ID prefix fallback.
+        let active_rules = vec![ReplacementRule {
+            id: "punctuation:old-period".to_string(),
+            kind: "literal".to_string(),
+            pattern: " period".to_string(),
+            replacement: ".".to_string(),
+            enabled: true,
+            word_boundary: false,
+            case_sensitive: false,
+            description: None,
+            origin: Some("preset".to_string()), // generic — legacy format
+        }];
+
+        let preset_rules = vec![ReplacementRule {
+            id: "punctuation:new-comma".to_string(),
+            kind: "literal".to_string(),
+            pattern: " comma".to_string(),
+            replacement: ",".to_string(),
+            enabled: true,
+            word_boundary: false,
+            case_sensitive: false,
+            description: None,
+            origin: Some("preset:punctuation".to_string()),
+        }];
+
+        let merged = merge_preset_rules(active_rules, preset_rules, "punctuation");
+        let merged_ids = merged.into_iter().map(|rule| rule.id).collect::<Vec<_>>();
+
+        // Old rule with generic origin but matching ID prefix is replaced.
+        assert_eq!(merged_ids, vec!["punctuation:new-comma"]);
     }
 
     #[test]

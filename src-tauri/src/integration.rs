@@ -33,6 +33,10 @@ use crate::hotkey::{HotkeyAction, HotkeyManager, RecordingAction};
 use crate::injection::{inject_text, InjectionConfig, InjectionResult};
 use crate::ipc::{NotificationEvent, RpcClient, RpcError};
 use crate::model_defaults;
+use crate::overlay::{
+    FileOverlayConfigStore, OverlayManager, OverlayWindowBackend, TauriOverlayWindowBackend,
+    OVERLAY_WINDOW_LABEL,
+};
 use crate::recording::{
     CancelReason, RecordingController, RecordingEvent, StopResult, TranscriptionResult,
 };
@@ -919,6 +923,8 @@ pub struct IntegrationManager {
     watchdog: Arc<Watchdog>,
     /// Monotonic event sequence counter for frontend events.
     event_seq: Arc<AtomicU64>,
+    /// Overlay window lifecycle manager.
+    overlay_manager: Arc<Mutex<OverlayManager>>,
 }
 
 impl IntegrationManager {
@@ -953,6 +959,7 @@ impl IntegrationManager {
             model_init_attempted: Arc::new(AtomicBool::new(false)),
             watchdog,
             event_seq: Arc::new(AtomicU64::new(1)),
+            overlay_manager: Arc::new(Mutex::new(OverlayManager::new())),
         }
     }
 
@@ -1005,12 +1012,71 @@ impl IntegrationManager {
         self.start_hotkey_loop();
         self.start_state_loop();
         self.start_recording_event_loop();
+        self.start_overlay_window_loop();
 
         // Start watchdog loop
         self.start_watchdog_loop();
 
         log::info!("Integration manager initialized");
         Ok(())
+    }
+
+    /// Start overlay config gate loop.
+    ///
+    /// Ensures:
+    /// - `ui.overlay_enabled=false` => overlay window is destroyed and not shown.
+    /// - `ui.overlay_enabled=true` => overlay window exists and is shown.
+    fn start_overlay_window_loop(&self) {
+        let app_handle = self.app_handle.clone();
+        let overlay_manager = Arc::clone(&self.overlay_manager);
+
+        tokio::spawn(async move {
+            let Some(handle) = app_handle else {
+                log::warn!("Overlay window loop skipped: app handle missing");
+                return;
+            };
+
+            let config_store = FileOverlayConfigStore;
+            let mut tick = tokio::time::interval(Duration::from_millis(100));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut last_enabled: Option<bool> = None;
+
+            log::info!("Overlay window loop started");
+
+            loop {
+                tick.tick().await;
+
+                let enabled = config::load_config().ui.overlay_enabled;
+                let backend = TauriOverlayWindowBackend::new(&handle);
+                let window_exists = backend.window_exists(OVERLAY_WINDOW_LABEL);
+                let mut manager = overlay_manager.lock().await;
+
+                let needs_transition = if enabled {
+                    last_enabled != Some(true) || !window_exists || !manager.visible()
+                } else {
+                    last_enabled != Some(false) || window_exists || manager.visible()
+                };
+
+                if !needs_transition {
+                    continue;
+                }
+
+                let result = if enabled {
+                    manager.show(&config_store, &backend)
+                } else {
+                    manager.hide(&config_store, &backend)
+                };
+
+                match result {
+                    Ok(()) => {
+                        last_enabled = Some(enabled);
+                    }
+                    Err(error) => {
+                        log::warn!("Overlay window sync failed: {}", error);
+                    }
+                }
+            }
+        });
     }
 
     /// Start the watchdog monitoring loop.
@@ -1178,6 +1244,18 @@ impl IntegrationManager {
                                         log::info!(
                                             "Audio devices revalidated after resume ({} devices)",
                                             result.devices.len()
+                                        );
+                                    }
+
+                                    if let Some(ref handle) = app_handle {
+                                        emit_with_shared_seq(
+                                            handle,
+                                            &[EVENT_TRAY_UPDATE],
+                                            json!({
+                                                "reason": "device_list_changed",
+                                                "device_count": result.devices.len(),
+                                            }),
+                                            &event_seq,
                                         );
                                     }
                                 }
@@ -2850,6 +2928,15 @@ impl IntegrationManager {
                         if let Some(ref handle) = app_handle {
                             let history = handle.state::<TranscriptHistory>();
                             history.push(transcript_entry.clone());
+                            emit_with_shared_seq(
+                                handle,
+                                &[EVENT_TRAY_UPDATE],
+                                json!({
+                                    "reason": "history_changed",
+                                    "entry_id": transcript_entry.id,
+                                }),
+                                &event_seq,
+                            );
                         }
 
                         // Emit canonical + legacy events with identical payload and shared seq.

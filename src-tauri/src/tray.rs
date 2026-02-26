@@ -6,12 +6,13 @@
 //! - Tooltip showing current status
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tauri::menu::{
     CheckMenuItemBuilder, Menu, MenuEvent, MenuId, MenuItemBuilder, PredefinedMenuItem, Submenu,
 };
 use tauri::tray::{TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::{image::Image, AppHandle, Emitter, Manager};
+use tauri::{image::Image, AppHandle, Emitter, Listener, Manager};
 use tokio::sync::RwLock;
 
 use crate::config::{self, HotkeyMode};
@@ -46,6 +47,7 @@ const ICON_DISABLED: &[u8] = include_bytes!("../icons/tray-disabled.png");
 
 const MAX_RECENT_TRANSCRIPTS: usize = 5;
 const MAX_RECENT_TRANSCRIPT_CHARS: usize = 50;
+const TRAY_REBUILD_POLL_INTERVAL_MS: u64 = 100;
 
 /// Flat audio-device record needed by the tray menu builder.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +98,13 @@ pub enum TrayMenuEntry {
 }
 
 type SystemTrayMenu = Menu<tauri::Wry>;
+
+fn should_rebuild_menu(last: Option<&TrayMenuState>, current: &TrayMenuState) -> bool {
+    match last {
+        None => true,
+        Some(previous) => previous != current,
+    }
+}
 
 /// Get the appropriate icon bytes for the given state.
 fn get_icon_for_state(state: AppState, enabled: bool) -> &'static [u8] {
@@ -581,7 +590,15 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
 
     if let Some(device_uid) = id.strip_prefix(menu_ids::SELECT_MIC_PREFIX) {
         match select_microphone(device_uid) {
-            Ok(()) => log::info!("Selected microphone device from tray: {}", device_uid),
+            Ok(()) => {
+                log::info!("Selected microphone device from tray: {}", device_uid);
+                let _ = app.emit(
+                    "tray:update",
+                    crate::event_seq::payload_with_next_seq(serde_json::json!({
+                        "reason": "device_changed",
+                    })),
+                );
+            }
             Err(err) => log::warn!("Failed to select microphone from tray: {}", err),
         }
         return;
@@ -596,6 +613,12 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
         }
         menu_ids::TOGGLE_WINDOW => {
             toggle_window_visibility(app);
+            let _ = app.emit(
+                "tray:update",
+                crate::event_seq::payload_with_next_seq(serde_json::json!({
+                    "reason": "window_visibility_changed",
+                })),
+            );
         }
         menu_ids::TOGGLE_OVERLAY => match toggle_overlay_setting() {
             Ok(now_enabled) => {
@@ -604,6 +627,12 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
                     "overlay:toggle",
                     crate::event_seq::payload_with_next_seq(serde_json::json!({
                         "enabled": now_enabled,
+                    })),
+                );
+                let _ = app.emit(
+                    "tray:update",
+                    crate::event_seq::payload_with_next_seq(serde_json::json!({
+                        "reason": "config_changed",
                     })),
                 );
             }
@@ -676,22 +705,76 @@ impl TrayManager {
 
 /// Start the tray state update loop.
 pub fn start_tray_loop(
-    _app_handle: AppHandle,
+    app_handle: AppHandle,
     state_manager: Arc<AppStateManager>,
     tray_manager: Arc<RwLock<TrayManager>>,
 ) {
     tokio::spawn(async move {
         let mut receiver = state_manager.subscribe();
+        let (rebuild_tx, mut rebuild_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let listener_id = app_handle.listen("tray:update", move |_| {
+            let _ = rebuild_tx.send(());
+        });
+        let mut poll = tokio::time::interval(Duration::from_millis(TRAY_REBUILD_POLL_INTERVAL_MS));
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_state = state_manager.get();
+        let mut last_enabled = state_manager.is_enabled();
+        let mut last_menu_state =
+            Some(load_runtime_tray_menu_state(&app_handle, last_state, last_enabled));
 
         log::info!("Tray update loop started");
 
-        while let Ok(event) = receiver.recv().await {
-            let tray = tray_manager.read().await;
-            if let Err(e) = tray.update_state(event.state, event.enabled) {
-                log::warn!("Failed to update tray: {}", e);
+        loop {
+            tokio::select! {
+                recv_result = receiver.recv() => {
+                    match recv_result {
+                        Ok(event) => {
+                            last_state = event.state;
+                            last_enabled = event.enabled;
+
+                            let tray = tray_manager.read().await;
+                            if let Err(e) = tray.update_state(last_state, last_enabled) {
+                                log::warn!("Failed to update tray: {}", e);
+                            }
+
+                            last_menu_state = Some(load_runtime_tray_menu_state(
+                                &app_handle,
+                                last_state,
+                                last_enabled,
+                            ));
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            log::warn!("Tray loop lagged by {} state event(s)", skipped);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+                _ = poll.tick() => {
+                    let current_menu_state =
+                        load_runtime_tray_menu_state(&app_handle, last_state, last_enabled);
+                    if should_rebuild_menu(last_menu_state.as_ref(), &current_menu_state) {
+                        let tray = tray_manager.read().await;
+                        if let Err(e) = tray.update_state(last_state, last_enabled) {
+                            log::warn!("Failed to refresh tray menu: {}", e);
+                        } else {
+                            last_menu_state = Some(current_menu_state);
+                        }
+                    }
+                }
+                Some(_) = rebuild_rx.recv() => {
+                    let current_menu_state =
+                        load_runtime_tray_menu_state(&app_handle, last_state, last_enabled);
+                    let tray = tray_manager.read().await;
+                    if let Err(e) = tray.update_state(last_state, last_enabled) {
+                        log::warn!("Failed to process tray:update trigger: {}", e);
+                    } else {
+                        last_menu_state = Some(current_menu_state);
+                    }
+                }
             }
         }
 
+        app_handle.unlisten(listener_id);
         log::info!("Tray update loop ended");
     });
 }
@@ -973,6 +1056,55 @@ mod tests {
         for id in ids {
             assert!(seen.insert(id), "Duplicate menu ID: {}", id);
         }
+    }
+
+    #[test]
+    fn test_should_rebuild_menu_when_no_previous_snapshot() {
+        let state = sample_state();
+        assert!(should_rebuild_menu(None, &state));
+    }
+
+    #[test]
+    fn test_should_rebuild_menu_ignores_identical_state() {
+        let state = sample_state();
+        assert!(!should_rebuild_menu(Some(&state), &state));
+    }
+
+    #[test]
+    fn test_should_rebuild_menu_on_config_change() {
+        let previous = sample_state();
+        let mut current = previous.clone();
+        current.overlay_enabled = !previous.overlay_enabled;
+        assert!(should_rebuild_menu(Some(&previous), &current));
+    }
+
+    #[test]
+    fn test_should_rebuild_menu_on_history_change() {
+        let previous = sample_state();
+        let mut current = previous.clone();
+        current
+            .recent_transcripts
+            .push(("id-3".to_string(), "new transcript".to_string()));
+        assert!(should_rebuild_menu(Some(&previous), &current));
+    }
+
+    #[test]
+    fn test_should_rebuild_menu_on_device_list_change() {
+        let previous = sample_state();
+        let mut current = previous.clone();
+        current.devices.push(TrayAudioDevice {
+            id: "External Mic".to_string(),
+            name: "External Mic".to_string(),
+        });
+        assert!(should_rebuild_menu(Some(&previous), &current));
+    }
+
+    #[test]
+    fn test_should_rebuild_menu_on_recording_state_change() {
+        let previous = sample_state();
+        let mut current = previous.clone();
+        current.recording = true;
+        assert!(should_rebuild_menu(Some(&previous), &current));
     }
 
     #[test]
