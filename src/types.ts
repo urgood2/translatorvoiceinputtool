@@ -262,6 +262,22 @@ export interface LegacyModelStatus {
 /** Model status payload accepted during compatibility window. */
 export type ModelStatusPayload = ModelStatus | LegacyModelStatus;
 
+/** Model family for grouping in the UI (matches ModelCatalog.schema.json). */
+export type ModelFamily = 'parakeet' | 'whisper' | 'canary';
+
+/** Catalog entry for a single model (matches shared/model/MODEL_CATALOG.json). */
+export interface ModelCatalogEntry {
+  model_id: string;
+  family: ModelFamily;
+  display_name: string;
+  description: string;
+  supported_languages: string[];
+  default_language: string;
+  size_bytes: number;
+  license_spdx?: string;
+  manifest_path: string;
+}
+
 // ============================================================================
 // HISTORY TYPES
 // ============================================================================

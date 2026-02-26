@@ -17,6 +17,7 @@ use crate::history::{TranscriptEntry, TranscriptHistory};
 use crate::integration::{
     SidecarAudioDevice, SidecarModelStatus, SidecarPresetInfo, SidecarReplacementPreviewResult,
 };
+use crate::model_defaults;
 use crate::state::{AppStateManager, CannotRecordReason, StateEvent};
 use crate::IntegrationState;
 
@@ -473,6 +474,7 @@ fn map_sidecar_model_status(status: SidecarModelStatus) -> ModelStatus {
 /// Get available model catalog entries for model selection UI.
 #[tauri::command]
 pub async fn get_model_catalog() -> Result<Vec<ModelCatalogEntry>, CommandError> {
+    let _default_model_id = model_defaults::default_model_id();
     // Phase 4 catalog file is not yet available; fail-soft to manifest-backed single entry.
     Ok(model_catalog_from_manifest_str(MODEL_MANIFEST_JSON))
 }
