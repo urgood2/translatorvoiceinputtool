@@ -1446,6 +1446,99 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_file_falls_back_to_defaults() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        fs::write(&config_path, "").unwrap();
+
+        let config = load_config_from_path(&config_path);
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(!config.ui.onboarding_completed);
+        assert_eq!(config.history.max_entries, 100);
+
+        let backup_path = config_path.with_extension("json.corrupt");
+        assert!(backup_path.exists());
+        assert!(!config_path.exists());
+    }
+
+    #[test]
+    fn test_minimal_config_roundtrip_applies_defaults_and_is_stable() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        // Minimal config fixture: only required schema identifier.
+        fs::write(&config_path, r#"{"schema_version":1}"#).unwrap();
+
+        let loaded = load_config_from_path(&config_path);
+        assert_eq!(loaded.schema_version, 1);
+        assert!(loaded.audio.trim_silence);
+        assert!(!loaded.audio.vad_enabled);
+        assert_eq!(loaded.ui.theme, "system");
+        assert!(loaded.ui.onboarding_completed);
+        assert_eq!(loaded.history.persistence_mode, "memory");
+        assert_eq!(loaded.history.max_entries, 100);
+        assert!(loaded.history.encrypt_at_rest);
+
+        save_config_to_path(&loaded, &config_path).unwrap();
+        let reloaded = load_config_from_path(&config_path);
+
+        assert_eq!(
+            serde_json::to_value(&loaded).unwrap(),
+            serde_json::to_value(&reloaded).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_partial_write_recovery_prefers_primary_config_over_tmp() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+        let temp_path = config_path.with_extension("json.tmp");
+
+        fs::write(
+            &config_path,
+            r#"{
+                "schema_version": 1,
+                "hotkeys": { "primary": "Ctrl+Alt+Space" }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            &temp_path,
+            r#"{
+                "schema_version": 1,
+                "hotkeys": { "primary": "BROKEN-TMP-VALUE" }
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = load_config_from_path(&config_path);
+        assert_eq!(loaded.hotkeys.primary, "Ctrl+Alt+Space");
+        assert!(temp_path.exists());
+    }
+
+    #[test]
+    fn test_partial_write_recovery_with_only_tmp_returns_defaults() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+        let temp_path = config_path.with_extension("json.tmp");
+
+        fs::write(
+            &temp_path,
+            r#"{
+                "schema_version": 1,
+                "hotkeys": { "primary": "Ctrl+Alt+Space" }
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = load_config_from_path(&config_path);
+        assert_eq!(loaded.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(loaded.hotkeys.primary, "Ctrl+Shift+Space");
+        assert!(!loaded.ui.onboarding_completed);
+    }
+
+    #[test]
     fn test_migration_v0_to_v1() {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("config.json");
