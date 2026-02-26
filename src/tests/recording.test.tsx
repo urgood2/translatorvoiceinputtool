@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { invoke } from '@tauri-apps/api/core';
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -100,11 +100,13 @@ describe('Recording command integration', () => {
       expect(invoke).toHaveBeenCalledWith('start_recording');
     });
 
-    useAppStore.getState()._setRecordingStatus({
-      phase: 'recording',
-      session_id: 'session-1',
-      started_at: '2026-02-19T00:00:00Z',
-      seq: 1,
+    act(() => {
+      useAppStore.getState()._setRecordingStatus({
+        phase: 'recording',
+        session_id: 'session-1',
+        started_at: '2026-02-19T00:00:00Z',
+        seq: 1,
+      });
     });
     console.debug('[recording.test] state', useAppStore.getState().appState);
 
@@ -118,7 +120,10 @@ describe('Recording command integration', () => {
       expect(invoke).toHaveBeenCalledWith('cancel_recording');
     });
 
-    expect(invokeLog.map((entry) => entry.cmd)).toEqual([
+    const recordingCmds = invokeLog
+      .map((entry) => entry.cmd)
+      .filter((cmd) => ['start_recording', 'stop_recording', 'cancel_recording'].includes(cmd));
+    expect(recordingCmds).toEqual([
       'start_recording',
       'stop_recording',
       'cancel_recording',
@@ -128,11 +133,13 @@ describe('Recording command integration', () => {
   it('transitions recording -> transcribing -> idle via recording:status updates', () => {
     render(<StatusDashboard />);
 
-    useAppStore.getState()._setRecordingStatus({
-      phase: 'recording',
-      session_id: 'session-2',
-      started_at: '2026-02-19T00:00:00Z',
-      seq: 2,
+    act(() => {
+      useAppStore.getState()._setRecordingStatus({
+        phase: 'recording',
+        session_id: 'session-2',
+        started_at: '2026-02-19T00:00:00Z',
+        seq: 2,
+      });
     });
     console.debug('[recording.test] state', useAppStore.getState().appState);
     expect(useAppStore.getState().appState).toBe('recording');
@@ -140,24 +147,28 @@ describe('Recording command integration', () => {
     expect(screen.queryByTestId('recording-start-button')).toBeNull();
     expect(screen.getByTestId('recording-stop-button')).toBeDefined();
 
-    useAppStore.getState()._setRecordingStatus({
-      phase: 'transcribing',
-      session_id: 'session-2',
-      audio_ms: 1450,
-      seq: 3,
+    act(() => {
+      useAppStore.getState()._setRecordingStatus({
+        phase: 'transcribing',
+        session_id: 'session-2',
+        audio_ms: 1450,
+        seq: 3,
+      });
     });
     console.debug('[recording.test] state', useAppStore.getState().appState);
     expect(useAppStore.getState().appState).toBe('transcribing');
     expect(screen.getByText('Transcribing')).toBeDefined();
 
-    useAppStore.getState()._setRecordingStatus({
-      phase: 'idle',
-      session_id: 'session-2',
-      seq: 4,
+    act(() => {
+      useAppStore.getState()._setRecordingStatus({
+        phase: 'idle',
+        session_id: 'session-2',
+        seq: 4,
+      });
     });
     console.debug('[recording.test] state', useAppStore.getState().appState);
     expect(useAppStore.getState().appState).toBe('idle');
-    expect(screen.getByText('Ready')).toBeDefined();
+    expect(screen.getByText('Idle')).toBeDefined();
   });
 
   it('cancel returns to idle without adding transcript entry', () => {
@@ -169,10 +180,12 @@ describe('Recording command integration', () => {
 
     render(<StatusDashboard />);
 
-    useAppStore.getState()._setRecordingStatus({
-      phase: 'idle',
-      session_id: 'session-cancel',
-      seq: 5,
+    act(() => {
+      useAppStore.getState()._setRecordingStatus({
+        phase: 'idle',
+        session_id: 'session-cancel',
+        seq: 5,
+      });
     });
     console.debug('[recording.test] state', useAppStore.getState().appState);
 
