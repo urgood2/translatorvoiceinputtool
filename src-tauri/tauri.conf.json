@@ -35,6 +35,8 @@
     "resources": [
       "../docs/THIRD_PARTY_NOTICES.md",
       "../shared/contracts/*",
+      "../shared/model/MODEL_CATALOG.json",
+      "../shared/model/MODEL_MANIFEST.json",
       "../shared/model/*",
       "../shared/model/manifests/*",
       "../shared/replacements/*"

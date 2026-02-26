@@ -25,6 +25,10 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Directories
 SIDECAR_DIST="$PROJECT_ROOT/sidecar/dist"
 TAURI_BINARIES="$PROJECT_ROOT/src-tauri/binaries"
+SIDECAR_SHARED_MODEL="$SIDECAR_DIST/shared/model"
+SIDECAR_SHARED_MANIFESTS="$SIDECAR_SHARED_MODEL/manifests"
+TAURI_SHARED_MODEL="$TAURI_BINARIES/shared/model"
+TAURI_SHARED_MANIFESTS="$TAURI_SHARED_MODEL/manifests"
 
 # Binary names
 SIDECAR_NAME="openvoicy-sidecar"
@@ -160,6 +164,26 @@ main() {
         log_error "Run ./scripts/build-sidecar.sh first"
         exit 1
     fi
+    if [[ ! -f "$SIDECAR_SHARED_MODEL/MODEL_CATALOG.json" ]]; then
+        log_error "Model catalog not found: $SIDECAR_SHARED_MODEL/MODEL_CATALOG.json"
+        log_error "Run ./scripts/build-sidecar.sh first"
+        exit 1
+    fi
+    if [[ ! -f "$SIDECAR_SHARED_MODEL/MODEL_MANIFEST.json" ]]; then
+        log_error "Model manifest not found: $SIDECAR_SHARED_MODEL/MODEL_MANIFEST.json"
+        log_error "Run ./scripts/build-sidecar.sh first"
+        exit 1
+    fi
+    if [[ ! -d "$SIDECAR_SHARED_MANIFESTS" ]]; then
+        log_error "Model manifests directory not found: $SIDECAR_SHARED_MANIFESTS"
+        log_error "Run ./scripts/build-sidecar.sh first"
+        exit 1
+    fi
+    if ! compgen -G "$SIDECAR_SHARED_MANIFESTS/*.json" >/dev/null; then
+        log_error "No model manifest JSON files found in: $SIDECAR_SHARED_MANIFESTS"
+        log_error "Run ./scripts/build-sidecar.sh first"
+        exit 1
+    fi
 
     local source_size
     source_size=$(stat -c%s "$source_bin" 2>/dev/null || stat -f%z "$source_bin")
@@ -167,7 +191,7 @@ main() {
 
     # Create destination directory
     log_step "Creating Tauri binaries directory..."
-    mkdir -p "$TAURI_BINARIES"
+    mkdir -p "$TAURI_BINARIES" "$TAURI_SHARED_MANIFESTS"
 
     # Copy binary
     log_step "Copying binary..."
@@ -177,6 +201,12 @@ main() {
     if [[ ! "$target" == *"windows"* ]]; then
         chmod +x "$dest_bin"
     fi
+
+    # Copy model resources staged by build-sidecar.
+    log_step "Copying model resources..."
+    cp "$SIDECAR_SHARED_MODEL/MODEL_CATALOG.json" "$TAURI_SHARED_MODEL/MODEL_CATALOG.json"
+    cp "$SIDECAR_SHARED_MODEL/MODEL_MANIFEST.json" "$TAURI_SHARED_MODEL/MODEL_MANIFEST.json"
+    cp "$SIDECAR_SHARED_MANIFESTS"/*.json "$TAURI_SHARED_MANIFESTS/"
 
     # Verify copy
     log_step "Verifying..."
@@ -190,6 +220,18 @@ main() {
 
     if [[ "$source_size" != "$dest_size" ]]; then
         log_error "Size mismatch after copy!"
+        exit 1
+    fi
+    if [[ ! -f "$TAURI_SHARED_MODEL/MODEL_CATALOG.json" ]]; then
+        log_error "MODEL_CATALOG.json missing after copy"
+        exit 1
+    fi
+    if [[ ! -f "$TAURI_SHARED_MODEL/MODEL_MANIFEST.json" ]]; then
+        log_error "MODEL_MANIFEST.json missing after copy"
+        exit 1
+    fi
+    if ! compgen -G "$TAURI_SHARED_MANIFESTS/*.json" >/dev/null; then
+        log_error "No copied model manifests found in: $TAURI_SHARED_MANIFESTS"
         exit 1
     fi
 

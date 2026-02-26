@@ -11,6 +11,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SIDECAR_DIR="$PROJECT_ROOT/sidecar"
 DIST_DIR="$SIDECAR_DIR/dist"
+SHARED_MODEL_DIR="$PROJECT_ROOT/shared/model"
+MODEL_CATALOG_PATH="$SHARED_MODEL_DIR/MODEL_CATALOG.json"
+MODEL_MANIFEST_PATH="$SHARED_MODEL_DIR/MODEL_MANIFEST.json"
+MODEL_MANIFESTS_DIR="$SHARED_MODEL_DIR/manifests"
+DIST_SHARED_MODEL_DIR="$DIST_DIR/shared/model"
+DIST_SHARED_MANIFESTS_DIR="$DIST_SHARED_MODEL_DIR/manifests"
 
 # Resolve timeout runner in a cross-platform way.
 # Order:
@@ -136,6 +142,24 @@ echo ""
 
 cd "$SIDECAR_DIR"
 
+# Validate required shared model resources before packaging.
+if [ ! -f "$MODEL_CATALOG_PATH" ]; then
+    echo "ERROR: Missing model catalog: $MODEL_CATALOG_PATH"
+    exit 1
+fi
+if [ ! -f "$MODEL_MANIFEST_PATH" ]; then
+    echo "ERROR: Missing model manifest: $MODEL_MANIFEST_PATH"
+    exit 1
+fi
+if [ ! -d "$MODEL_MANIFESTS_DIR" ]; then
+    echo "ERROR: Missing model manifests directory: $MODEL_MANIFESTS_DIR"
+    exit 1
+fi
+if ! compgen -G "$MODEL_MANIFESTS_DIR/*.json" >/dev/null; then
+    echo "ERROR: No model manifest JSON files found in: $MODEL_MANIFESTS_DIR"
+    exit 1
+fi
+
 # Clean if requested
 if [ "$CLEAN" = true ]; then
     echo "Cleaning build artifacts..."
@@ -181,6 +205,12 @@ if [ ! -f "$BINARY_PATH" ]; then
     exit 1
 fi
 
+# Stage explicit shared model resources beside the packaged sidecar.
+mkdir -p "$DIST_SHARED_MANIFESTS_DIR"
+cp "$MODEL_CATALOG_PATH" "$DIST_SHARED_MODEL_DIR/MODEL_CATALOG.json"
+cp "$MODEL_MANIFEST_PATH" "$DIST_SHARED_MODEL_DIR/MODEL_MANIFEST.json"
+cp "$MODEL_MANIFESTS_DIR"/*.json "$DIST_SHARED_MANIFESTS_DIR/"
+
 # Get binary size
 BINARY_SIZE=$(stat -c%s "$BINARY_PATH" 2>/dev/null || stat -f%z "$BINARY_PATH")
 BINARY_SIZE_MB=$(echo "scale=2; $BINARY_SIZE / 1048576" | bc)
@@ -213,6 +243,16 @@ if [ "$VERIFY" = true ]; then
     else
         echo "✗ audio.list_devices: FAILED"
         echo "  Response: $DEVICES_RESULT"
+        exit 1
+    fi
+
+    # Test model.get_status to ensure packaged model resources are resolvable.
+    MODEL_STATUS_RESULT=$(echo '{"jsonrpc":"2.0","id":3,"method":"model.get_status"}' | sidecar_timeout_run 10 "$BINARY_PATH" 2>/dev/null || echo "FAILED")
+    if echo "$MODEL_STATUS_RESULT" | grep -q '"result"'; then
+        echo "✓ model.get_status: OK"
+    else
+        echo "✗ model.get_status: FAILED"
+        echo "  Response: $MODEL_STATUS_RESULT"
         exit 1
     fi
 

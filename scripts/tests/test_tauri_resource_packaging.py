@@ -29,6 +29,10 @@ class TauriResourcePackagingTests(unittest.TestCase):
     def test_model_manifests_directory_is_packaged(self) -> None:
         self.assertIn("../shared/model/manifests/*", self.resource_set)
 
+    def test_model_catalog_and_manifest_files_are_packaged(self) -> None:
+        self.assertIn("../shared/model/MODEL_CATALOG.json", self.resource_set)
+        self.assertIn("../shared/model/MODEL_MANIFEST.json", self.resource_set)
+
     def test_resource_globs_resolve_to_existing_files(self) -> None:
         for pattern in (
             "../shared/contracts/*",
