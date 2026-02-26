@@ -20,6 +20,7 @@ import type {
   HotkeyStatus,
   InjectionConfig,
   ModelStatus,
+  ModelState,
   ModelStatusPayload,
   PresetInfo,
   Progress,
@@ -201,8 +202,31 @@ function normalizeModelStatusPayload(
   payload: ModelStatusPayload,
   current: ModelStatus | null
 ): ModelStatus {
+  const normalizeModelState = (value: unknown): ModelState => {
+    if (typeof value !== 'string') {
+      return 'unknown';
+    }
+
+    const normalized = value.toLowerCase();
+    if (normalized === 'installing') return 'loading';
+    if (normalized === 'available') return 'missing';
+    if (
+      normalized === 'missing'
+      || normalized === 'downloading'
+      || normalized === 'loading'
+      || normalized === 'verifying'
+      || normalized === 'ready'
+      || normalized === 'error'
+      || normalized === 'unknown'
+    ) {
+      return normalized;
+    }
+
+    return 'unknown';
+  };
+
   const next: ModelStatus = {
-    status: payload.status,
+    status: normalizeModelState(payload.status),
   };
 
   if ('seq' in payload && typeof payload.seq === 'number') {
@@ -780,9 +804,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   _setModelStatus: (status) => {
-    set((state) => ({
-      modelStatus: normalizeModelStatusPayload(status, state.modelStatus),
-    }));
+    set((state) => {
+      const nextStatus = normalizeModelStatusPayload(status, state.modelStatus);
+      const isInstalling =
+        nextStatus.status === 'loading'
+        || nextStatus.status === 'downloading'
+        || nextStatus.status === 'verifying';
+
+      return {
+        modelStatus: nextStatus,
+        downloadProgress: isInstalling ? (nextStatus.progress ?? state.downloadProgress) : null,
+      };
+    });
   },
 
   _setDownloadProgress: (progress) => {
