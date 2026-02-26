@@ -193,6 +193,47 @@ describe('Recording command integration', () => {
     expect(useAppStore.getState().history).toEqual([existing]);
   });
 
+  it('prevents double-start by hiding start button while recording', () => {
+    render(<StatusDashboard />);
+
+    // Start button present when idle
+    expect(screen.getByTestId('recording-start-button')).toBeDefined();
+
+    act(() => {
+      useAppStore.getState()._setRecordingStatus({
+        phase: 'recording',
+        session_id: 'session-double-start',
+        started_at: '2026-02-19T00:00:00Z',
+        seq: 10,
+      });
+    });
+
+    // Start button gone while recording
+    expect(screen.queryByTestId('recording-start-button')).toBeNull();
+    // Stop/cancel should be visible instead
+    expect(screen.getByTestId('recording-stop-button')).toBeDefined();
+    expect(screen.getByTestId('recording-cancel-button')).toBeDefined();
+  });
+
+  it('stores recording session info including started_at timestamp', () => {
+    render(<StatusDashboard />);
+
+    act(() => {
+      useAppStore.getState()._setRecordingStatus({
+        phase: 'recording',
+        session_id: 'session-timer',
+        started_at: '2026-02-26T12:00:00Z',
+        seq: 20,
+      });
+    });
+
+    const status = useAppStore.getState().recordingStatus;
+    expect(status).not.toBeNull();
+    expect(status!.phase).toBe('recording');
+    expect(status!.session_id).toBe('session-timer');
+    expect(status!.started_at).toBe('2026-02-26T12:00:00Z');
+  });
+
   it('handles invoke failures by entering error state without crashing UI', async () => {
     setMockInvokeHandler((cmd) => {
       if (cmd === 'start_recording') {

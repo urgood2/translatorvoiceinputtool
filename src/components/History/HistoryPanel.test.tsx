@@ -292,6 +292,29 @@ describe('HistoryPanel', () => {
     }
   });
 
+  it('renders many entries inside scrollable overflow container', () => {
+    const manyEntries: TranscriptEntry[] = Array.from({ length: 50 }, (_, i) => ({
+      id: `entry-${i}`,
+      text: `Transcript entry number ${i}`,
+      raw_text: `Transcript entry number ${i}`,
+      final_text: `Transcript entry number ${i}`,
+      timestamp: new Date(Date.now() - i * 60000).toISOString(),
+      audio_duration_ms: 2000,
+      transcription_duration_ms: 500,
+      injection_result: { status: 'injected' as const },
+    }));
+
+    render(<HistoryPanel entries={manyEntries} onCopy={vi.fn().mockResolvedValue(undefined)} />);
+
+    const scrollRegion = screen.getByTestId('history-scroll-region');
+    expect(scrollRegion).toBeDefined();
+    expect(scrollRegion.className).toContain('overflow-y-auto');
+
+    expect(screen.getByText('50 entries')).toBeDefined();
+    expect(screen.getByText('Transcript entry number 0')).toBeDefined();
+    expect(screen.getByText('Transcript entry number 49')).toBeDefined();
+  });
+
   it('opens confirmation dialog and cancels clear-all', () => {
     const onClearAll = vi.fn().mockResolvedValue(undefined);
     render(
