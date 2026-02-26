@@ -130,10 +130,14 @@ main() {
         error_kind=$(echo "$error_test" | jq -r '.error.data.kind // "unknown"')
         log_info "focus" "errors" "Error response format verified" "{\"error_kind\":\"$error_kind\"}"
 
-        # Verify error has structured data
-        if [ "$error_kind" != "unknown" ] && [ "$error_kind" != "null" ]; then
+        # Verify error kind is specifically from audio.meter_start handling,
+        # not a generic E_METHOD_NOT_FOUND or unrelated error.
+        if [ "$error_kind" = "E_DEVICE_NOT_FOUND" ] || [ "$error_kind" = "E_AUDIO_IO" ] || [ "$error_kind" = "E_METER_RUNNING" ]; then
             ((E2E_ASSERTIONS_PASSED++)) || true
-            log_info "test" "assert" "PASS: Errors include structured kind field"
+            log_info "test" "assert" "PASS: audio.meter_start returned expected error kind: $error_kind"
+        else
+            ((E2E_ASSERTIONS_FAILED++)) || true
+            log_info "test" "assert" "FAIL: audio.meter_start returned unexpected error kind: $error_kind (expected E_DEVICE_NOT_FOUND, E_AUDIO_IO, or E_METER_RUNNING)"
         fi
     fi
 
