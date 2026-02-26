@@ -12,6 +12,16 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .resources import (
+    CONTRACTS_DIR_REL,
+    MODEL_CATALOG_REL,
+    MODEL_MANIFEST_REL,
+    MODEL_MANIFESTS_DIR_REL,
+    PRESETS_REL,
+    resolve_shared_path,
+    resolve_shared_path_optional,
+)
+
 RPC_TIMEOUT_SECONDS = 5.0
 VALID_STATUS_STATES = {"idle", "loading_model", "recording", "transcribing", "error"}
 VALID_STATUS_MODEL_STATES = {"missing", "downloading", "verifying", "ready", "error"}
@@ -248,6 +258,85 @@ def validate_replacements_get_rules_result(result: dict[str, Any]) -> None:
         raise SelfTestError("replacements.get_rules result.rules must be an array")
 
 
+def validate_shared_resources() -> None:
+    """Verify that essential shared resources are resolvable."""
+    # Required resources - must exist
+    required = [
+        (PRESETS_REL, "Replacement presets"),
+        (MODEL_MANIFEST_REL, "Model manifest"),
+        (MODEL_CATALOG_REL, "Model catalog"),
+    ]
+    for rel, label in required:
+        path = resolve_shared_path_optional(rel)
+        if path is None:
+            raise SelfTestError(
+                f"Required shared resource not found: {label} ({rel})"
+            )
+        _log(f"  {label}: {path}")
+
+    # Optional directories - warn but don't fail
+    optional_dirs = [
+        (CONTRACTS_DIR_REL, "Contracts"),
+        (MODEL_MANIFESTS_DIR_REL, "Model manifests"),
+    ]
+    for rel, label in optional_dirs:
+        path = resolve_shared_path_optional(rel)
+        if path is None:
+            _log(f"  {label}: NOT FOUND (optional)")
+        elif not path.is_dir():
+            _log(f"  {label}: {path} (not a directory, unexpected)")
+        else:
+            _log(f"  {label}: {path}")
+
+
+def validate_presets_loadable() -> None:
+    """Verify that the presets file is valid JSON with expected structure."""
+    path = resolve_shared_path(PRESETS_REL)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        raise SelfTestError(f"Failed to parse presets file {path}: {e}") from e
+
+    if not isinstance(data, (list, dict)):
+        raise SelfTestError(
+            f"Presets file must be a JSON object or array, got {type(data).__name__}"
+        )
+
+
+def validate_model_manifest_loadable() -> None:
+    """Verify that MODEL_MANIFEST.json is valid JSON with expected keys."""
+    path = resolve_shared_path(MODEL_MANIFEST_REL)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        raise SelfTestError(f"Failed to parse model manifest {path}: {e}") from e
+
+    if not isinstance(data, dict):
+        raise SelfTestError("Model manifest must be a JSON object")
+
+    if "model_id" not in data:
+        raise SelfTestError("Model manifest missing required 'model_id' field")
+
+
+def validate_model_catalog_loadable() -> None:
+    """Verify that MODEL_CATALOG.json is valid JSON with expected structure."""
+    path = resolve_shared_path(MODEL_CATALOG_REL)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        raise SelfTestError(f"Failed to parse model catalog {path}: {e}") from e
+
+    if not isinstance(data, dict):
+        raise SelfTestError("Model catalog must be a JSON object")
+
+    models = data.get("models")
+    if not isinstance(models, list):
+        raise SelfTestError("Model catalog must contain a 'models' array")
+
+
 def _run_step(label: str, fn) -> None:
     _log(f"Testing {label}...")
     try:
@@ -259,6 +348,13 @@ def _run_step(label: str, fn) -> None:
 
 
 def run_self_test() -> None:
+    # Phase 1: Static resource resolution (no subprocess needed)
+    _run_step("shared resource resolution", validate_shared_resources)
+    _run_step("presets loadable", validate_presets_loadable)
+    _run_step("model manifest loadable", validate_model_manifest_loadable)
+    _run_step("model catalog loadable", validate_model_catalog_loadable)
+
+    # Phase 2: Live sidecar process validation
     command, env = build_sidecar_command()
     _log(f"Starting sidecar process: {' '.join(command)}")
 

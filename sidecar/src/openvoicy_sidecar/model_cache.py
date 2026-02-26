@@ -33,6 +33,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 from .protocol import Request, log
+from .resources import MODEL_MANIFEST_REL, resolve_shared_path, resolve_shared_path_optional
 
 # === Constants ===
 
@@ -887,10 +888,8 @@ def handle_model_get_status(request: Request) -> dict[str, Any]:
     manager = get_cache_manager()
 
     # Try to load manifest if not already loaded
-    manifest_path = (
-        Path(__file__).parent.parent.parent.parent / "shared" / "model" / "MODEL_MANIFEST.json"
-    )
-    if manifest_path.exists():
+    manifest_path = resolve_shared_path_optional(MODEL_MANIFEST_REL)
+    if manifest_path is not None:
         try:
             manifest = manager.load_manifest(manifest_path)
             manager.check_cache(manifest)
@@ -911,10 +910,9 @@ def handle_model_download(request: Request) -> dict[str, Any]:
     manager = get_cache_manager()
 
     # Load manifest
-    manifest_path = (
-        Path(__file__).parent.parent.parent.parent / "shared" / "model" / "MODEL_MANIFEST.json"
-    )
-    if not manifest_path.exists():
+    try:
+        manifest_path = resolve_shared_path(MODEL_MANIFEST_REL)
+    except FileNotFoundError:
         raise ModelCacheError("Model manifest not found")
 
     manifest = manager.load_manifest(manifest_path)
