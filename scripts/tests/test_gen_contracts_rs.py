@@ -63,6 +63,7 @@ class GenContractsRsTests(unittest.TestCase):
             self.assertNotIn(str(self.repo_root), output)
             self.assertNotIn("Generated at", output)
             self.assertIn("AUTO-GENERATED from shared/contracts/*.v1.json", output)
+            self.assertIn("Regenerate with: python scripts/gen_contracts_rs.py", output)
 
 
 if __name__ == "__main__":

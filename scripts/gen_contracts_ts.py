@@ -218,6 +218,8 @@ def generate_types(tauri_commands: dict[str, Any], tauri_events: dict[str, Any],
     lines.append(" * - shared/contracts/tauri.commands.v1.json")
     lines.append(" * - shared/contracts/tauri.events.v1.json")
     lines.append(" * - shared/contracts/sidecar.rpc.v1.json")
+    lines.append(" *")
+    lines.append(" * Regenerate with: python scripts/gen_contracts_ts.py")
     lines.append(" */")
     lines.append("")
 

@@ -6,6 +6,8 @@
  * - shared/contracts/tauri.commands.v1.json
  * - shared/contracts/tauri.events.v1.json
  * - shared/contracts/sidecar.rpc.v1.json
+ *
+ * Regenerate with: python scripts/gen_contracts_ts.py
  */
 
 // TauriCommand local definitions
