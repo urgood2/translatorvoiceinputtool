@@ -8,14 +8,45 @@
  * - Model info (ID, revision, size)
  */
 
-import { useState } from 'react';
-import type { ModelStatus, ModelState, Progress } from '../../types';
+import { useEffect, useMemo, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import type { AppConfig, ModelCatalogEntry, ModelStatus, ModelState, Progress } from '../../types';
 
 interface ModelSettingsProps {
   status: ModelStatus | null;
   onDownload: () => Promise<void>;
   onPurgeCache: () => Promise<void>;
+  onSelectModel?: (modelId: string) => Promise<void>;
   isLoading?: boolean;
+}
+
+function parseCatalogEntries(payload: unknown): ModelCatalogEntry[] {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+
+  return payload.filter((entry): entry is ModelCatalogEntry => {
+    return (
+      typeof entry === 'object'
+      && entry !== null
+      && 'model_id' in entry
+      && typeof (entry as ModelCatalogEntry).model_id === 'string'
+      && 'family' in entry
+      && typeof (entry as ModelCatalogEntry).family === 'string'
+      && 'display_name' in entry
+      && typeof (entry as ModelCatalogEntry).display_name === 'string'
+      && 'description' in entry
+      && typeof (entry as ModelCatalogEntry).description === 'string'
+      && 'supported_languages' in entry
+      && Array.isArray((entry as ModelCatalogEntry).supported_languages)
+      && 'default_language' in entry
+      && typeof (entry as ModelCatalogEntry).default_language === 'string'
+      && 'size_bytes' in entry
+      && typeof (entry as ModelCatalogEntry).size_bytes === 'number'
+      && 'manifest_path' in entry
+      && typeof (entry as ModelCatalogEntry).manifest_path === 'string'
+    );
+  });
 }
 
 /** Format bytes to human-readable size. */
@@ -31,17 +62,19 @@ function formatBytes(bytes: number): string {
 function getStatusConfig(state: ModelState): { color: string; icon: string; label: string } {
   switch (state) {
     case 'missing':
-      return { color: 'text-yellow-600 dark:text-yellow-400', icon: '⚠️', label: 'Not Downloaded' };
+      return { color: 'text-yellow-600 dark:text-yellow-400', icon: '⚠️', label: 'Available' };
+    case 'loading':
+      return { color: 'text-blue-600 dark:text-blue-400', icon: '⚙️', label: 'Installing...' };
     case 'downloading':
-      return { color: 'text-blue-600 dark:text-blue-400', icon: '⬇️', label: 'Downloading...' };
+      return { color: 'text-blue-600 dark:text-blue-400', icon: '⬇️', label: 'Installing...' };
     case 'verifying':
-      return { color: 'text-blue-600 dark:text-blue-400', icon: '🔍', label: 'Verifying...' };
+      return { color: 'text-blue-600 dark:text-blue-400', icon: '🔍', label: 'Installing...' };
     case 'ready':
       return { color: 'text-green-600 dark:text-green-400', icon: '✅', label: 'Ready' };
     case 'error':
       return { color: 'text-red-600 dark:text-red-400', icon: '❌', label: 'Error' };
     case 'unknown':
-      return { color: 'text-gray-600 dark:text-gray-400', icon: '❔', label: 'Unknown' };
+      return { color: 'text-gray-600 dark:text-gray-400', icon: '❔', label: 'Available' };
   }
 
   // Exhaustive fallback for future enum extensions.
@@ -84,11 +117,93 @@ export function ModelSettings({
   status,
   onDownload,
   onPurgeCache,
+  onSelectModel,
   isLoading,
 }: ModelSettingsProps) {
-  const [actionInProgress, setActionInProgress] = useState<'download' | 'purge' | null>(null);
+  const [actionInProgress, setActionInProgress] = useState<'download' | 'purge' | 'select' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showPurgeConfirm, setShowPurgeConfirm] = useState(false);
+  const [catalogEntries, setCatalogEntries] = useState<ModelCatalogEntry[]>([]);
+  const [isCatalogLoading, setIsCatalogLoading] = useState(false);
+  const [activeModelId, setActiveModelId] = useState<string | null>(status?.model_id ?? null);
+  const [selectedLanguage, setSelectedLanguage] = useState<string>('auto');
+
+  useEffect(() => {
+    if (typeof status?.model_id === 'string' && status.model_id.length > 0) {
+      setActiveModelId(status.model_id);
+    }
+  }, [status?.model_id]);
+
+  useEffect(() => {
+    let active = true;
+    const loadCatalog = async () => {
+      setIsCatalogLoading(true);
+      try {
+        const payload = await invoke<unknown>('get_model_catalog');
+        if (!active) return;
+        setCatalogEntries(parseCatalogEntries(payload));
+      } catch (loadError) {
+        if (active) {
+          console.warn('Failed to load model catalog in ModelSettings', loadError);
+        }
+      } finally {
+        if (active) {
+          setIsCatalogLoading(false);
+        }
+      }
+    };
+
+    void loadCatalog();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const loadLanguageConfig = async () => {
+      try {
+        const config = await invoke<unknown>('get_config');
+        if (!active || typeof config !== 'object' || config === null) return;
+
+        const modelConfig = (config as AppConfig).model;
+        if (modelConfig?.model_id) {
+          setActiveModelId(modelConfig.model_id);
+        }
+        if (typeof modelConfig?.language === 'string' && modelConfig.language.length > 0) {
+          setSelectedLanguage(modelConfig.language);
+        } else {
+          setSelectedLanguage('auto');
+        }
+      } catch {
+        // Best-effort load; keep defaults.
+      }
+    };
+
+    void loadLanguageConfig();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const selectedCatalogEntry = useMemo(() => {
+    const currentModelId = activeModelId ?? status?.model_id;
+    if (!currentModelId) return null;
+    return catalogEntries.find((entry) => entry.model_id === currentModelId) ?? null;
+  }, [activeModelId, catalogEntries, status?.model_id]);
+
+  useEffect(() => {
+    if (!selectedCatalogEntry || selectedCatalogEntry.family !== 'whisper') {
+      return;
+    }
+    const available = new Set([
+      'auto',
+      ...selectedCatalogEntry.supported_languages.map((language) => language.toLowerCase()),
+    ]);
+    if (!available.has(selectedLanguage.toLowerCase())) {
+      setSelectedLanguage('auto');
+    }
+  }, [selectedCatalogEntry, selectedLanguage]);
 
   const handleDownload = async () => {
     setError(null);
@@ -115,6 +230,60 @@ export function ModelSettings({
     }
   };
 
+  const defaultSelectModel = async (modelId: string) => {
+    const config = await invoke<AppConfig>('get_config');
+    const nextConfig: AppConfig = {
+      ...config,
+      model: {
+        model_id: modelId,
+        device: config.model?.device ?? null,
+        preferred_device: config.model?.preferred_device ?? 'auto',
+        language: config.model?.language ?? null,
+      },
+    };
+    await invoke('update_config', { config: nextConfig });
+  };
+
+  const handleSelectModel = async (modelId: string) => {
+    setError(null);
+    setActionInProgress('select');
+    try {
+      if (onSelectModel) {
+        await onSelectModel(modelId);
+      } else {
+        await defaultSelectModel(modelId);
+      }
+      setActiveModelId(modelId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to select model');
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
+  const handleLanguageChange = async (language: string) => {
+    setError(null);
+    setSelectedLanguage(language);
+    setActionInProgress('select');
+    try {
+      const config = await invoke<AppConfig>('get_config');
+      const nextConfig: AppConfig = {
+        ...config,
+        model: {
+          model_id: activeModelId ?? config.model?.model_id ?? null,
+          device: config.model?.device ?? null,
+          preferred_device: config.model?.preferred_device ?? 'auto',
+          language,
+        },
+      };
+      await invoke('update_config', { config: nextConfig });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update model language');
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
   // Loading state
   if (!status) {
     return (
@@ -131,8 +300,14 @@ export function ModelSettings({
   }
 
   const statusConfig = getStatusConfig(status.status);
-  const isDownloading = status.status === 'downloading' || status.status === 'verifying';
-  const canDownload = status.status === 'missing' || status.status === 'error';
+  const isInstalling =
+    status.status === 'loading'
+    || status.status === 'downloading'
+    || status.status === 'verifying';
+  const canInstall =
+    status.status === 'missing'
+    || status.status === 'error'
+    || status.status === 'unknown';
   const canPurge = status.status === 'ready';
 
   return (
@@ -149,7 +324,7 @@ export function ModelSettings({
               {status.model_id}
             </div>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              NVIDIA Parakeet TDT 0.6B - High-quality speech recognition
+              {selectedCatalogEntry?.description ?? 'NVIDIA Parakeet TDT 0.6B - High-quality speech recognition'}
             </p>
           </div>
           <div className={`flex items-center gap-1 ${statusConfig.color}`}>
@@ -159,8 +334,94 @@ export function ModelSettings({
         </div>
       </div>
 
+      {/* Catalog selector */}
+      <div className="space-y-2">
+        <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+          Available Models
+        </h4>
+        {isCatalogLoading && (
+          <p className="text-xs text-gray-500 dark:text-gray-400" role="status" aria-live="polite">
+            Loading model catalog...
+          </p>
+        )}
+        {catalogEntries.length > 0 && (
+          <div className="space-y-2">
+            {catalogEntries.map((entry) => {
+              const isActive = (activeModelId ?? status.model_id) === entry.model_id;
+              const cardStatus =
+                status.model_id === entry.model_id ? status.status : ('missing' as ModelState);
+              const cardStatusConfig = getStatusConfig(cardStatus);
+
+              return (
+                <div
+                  key={entry.model_id}
+                  className={`rounded-lg border p-3 ${
+                    isActive
+                      ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-900/10'
+                      : 'border-gray-200 dark:border-gray-700'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{entry.display_name}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 font-mono break-all">{entry.model_id}</p>
+                      <p className="text-xs text-gray-600 dark:text-gray-300 mt-1">{entry.family} • {formatBytes(entry.size_bytes)}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs ${cardStatusConfig.color}`}>{cardStatusConfig.label}</span>
+                      <button
+                        type="button"
+                        onClick={() => void handleSelectModel(entry.model_id)}
+                        disabled={isLoading || actionInProgress !== null || isActive}
+                        className="px-3 py-1 rounded text-xs font-medium bg-gray-100 dark:bg-gray-700
+                                   text-gray-800 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600
+                                   disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isActive && status.status === 'ready' ? 'Active' : isActive ? 'Selected' : 'Select'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {selectedCatalogEntry?.family === 'whisper' && (
+          <div className="space-y-1">
+            <label
+              htmlFor="whisper-language"
+              className="text-xs font-medium text-gray-700 dark:text-gray-300"
+            >
+              Language
+            </label>
+            <select
+              id="whisper-language"
+              aria-label="Language"
+              value={selectedLanguage}
+              onChange={(event) => void handleLanguageChange(event.target.value)}
+              disabled={isLoading || actionInProgress !== null}
+              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800
+                         text-sm text-gray-900 dark:text-gray-100 px-3 py-2
+                         disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <option value="auto">Auto detect</option>
+              {selectedCatalogEntry.supported_languages
+                .map((language) => language.toLowerCase())
+                .filter((language, index, values) => values.indexOf(language) === index)
+                .filter((language) => language !== 'auto')
+                .map((language) => (
+                  <option key={language} value={language}>
+                    {language.toUpperCase()}
+                  </option>
+                ))}
+            </select>
+          </div>
+        )}
+      </div>
+
       {/* Download progress */}
-      {isDownloading && status.progress && (
+      {isInstalling && status.progress && (
         <ProgressBar progress={status.progress} />
       )}
 
@@ -168,8 +429,8 @@ export function ModelSettings({
       {status.status === 'missing' && (
         <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
           <p className="text-sm text-yellow-700 dark:text-yellow-300">
-            The speech recognition model needs to be downloaded before you can use voice transcription.
-            Download size is approximately <strong>2.5 GB</strong>.
+            This model is available but not installed yet.
+            Install it to enable voice transcription with this model.
           </p>
         </div>
       )}
@@ -198,7 +459,7 @@ export function ModelSettings({
       {/* Actions */}
       <div className="flex gap-3">
         {/* Download/Retry button */}
-        {canDownload && (
+        {canInstall && (
           <button
             type="button"
             onClick={handleDownload}
@@ -206,18 +467,18 @@ export function ModelSettings({
             className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-md text-sm font-medium
                        transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {actionInProgress === 'download' ? 'Starting...' : status.status === 'error' ? 'Retry Download' : 'Download Model'}
+            {actionInProgress === 'download' ? 'Starting...' : status.status === 'error' ? 'Retry Install' : 'Install Model'}
           </button>
         )}
 
-        {/* Downloading indicator */}
-        {isDownloading && (
+        {/* Installing indicator */}
+        {isInstalling && (
           <button
             type="button"
             disabled
             className="px-4 py-2 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded-md text-sm font-medium cursor-not-allowed"
           >
-            {status.status === 'verifying' ? 'Verifying...' : 'Downloading...'}
+            Installing...
           </button>
         )}
 

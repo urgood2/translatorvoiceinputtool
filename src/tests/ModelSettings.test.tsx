@@ -50,7 +50,7 @@ describe('ModelSettings', () => {
     expect(screen.getByText('Model is ready for transcription.')).toBeDefined();
   });
 
-  it('shows missing status with download button', () => {
+  it('shows missing status with install button', () => {
     const status: ModelStatus = {
       model_id: 'parakeet-tdt-0.6b-v3',
       status: 'missing',
@@ -62,9 +62,9 @@ describe('ModelSettings', () => {
         onPurgeCache={vi.fn()}
       />
     );
-    expect(screen.getByText('Not Downloaded')).toBeDefined();
-    expect(screen.getByText('Download Model')).toBeDefined();
-    expect(screen.getByText(/needs to be downloaded/)).toBeDefined();
+    expect(screen.getByText('Available')).toBeDefined();
+    expect(screen.getByText('Install Model')).toBeDefined();
+    expect(screen.getByText(/available but not installed/)).toBeDefined();
   });
 
   it('calls onDownload when download button clicked', async () => {
@@ -82,7 +82,7 @@ describe('ModelSettings', () => {
     );
 
     await act(async () => {
-      fireEvent.click(screen.getByText('Download Model'));
+      fireEvent.click(screen.getByText('Install Model'));
     });
 
     expect(onDownload).toHaveBeenCalled();
@@ -102,7 +102,7 @@ describe('ModelSettings', () => {
       />
     );
     // Text appears in both status label and disabled button
-    expect(screen.getAllByText('Downloading...')).toHaveLength(2);
+    expect(screen.getAllByText('Installing...')).toHaveLength(2);
     // formatBytes uses parseFloat which removes trailing zeros (512.0 -> 512)
     expect(screen.getByText(/512 MB/)).toBeDefined();
   });
@@ -120,7 +120,7 @@ describe('ModelSettings', () => {
       />
     );
     // Text appears in both status label and disabled button
-    expect(screen.getAllByText('Verifying...')).toHaveLength(2);
+    expect(screen.getAllByText('Installing...')).toHaveLength(2);
   });
 
   it('shows error status with retry button', () => {
@@ -138,7 +138,7 @@ describe('ModelSettings', () => {
     );
     expect(screen.getByText('Error')).toBeDefined();
     expect(screen.getByText('Download failed: network error')).toBeDefined();
-    expect(screen.getByText('Retry Download')).toBeDefined();
+    expect(screen.getByText('Retry Install')).toBeDefined();
   });
 
   it('shows unknown status safely', () => {
@@ -154,7 +154,7 @@ describe('ModelSettings', () => {
       />
     );
 
-    expect(screen.getByText('Unknown')).toBeDefined();
+    expect(screen.getByText('Available')).toBeDefined();
   });
 
   it('shows purge cache button when ready', () => {
@@ -251,7 +251,7 @@ describe('ModelSettings', () => {
     );
 
     await act(async () => {
-      fireEvent.click(screen.getByText('Download Model'));
+      fireEvent.click(screen.getByText('Install Model'));
     });
 
     expect(screen.getByText('Network error')).toBeDefined();
@@ -271,7 +271,7 @@ describe('ModelSettings', () => {
       />
     );
 
-    expect(screen.getByText('Download Model')).toHaveProperty('disabled', true);
+    expect(screen.getByText('Install Model')).toHaveProperty('disabled', true);
   });
 
   it('does not show download button when downloading', () => {
@@ -288,7 +288,7 @@ describe('ModelSettings', () => {
       />
     );
 
-    expect(screen.queryByText('Download Model')).toBeNull();
+    expect(screen.queryByText('Install Model')).toBeNull();
   });
 
   it('does not show purge button when not ready', () => {
@@ -309,7 +309,7 @@ describe('ModelSettings', () => {
 
   // ── Install button state matrix ──────────────────────────────────
 
-  it('shows "Download Model" for missing state, not "Retry"', () => {
+  it('shows "Install Model" for missing state, not "Retry"', () => {
     const status: ModelStatus = {
       model_id: 'parakeet-tdt-0.6b-v3',
       status: 'missing',
@@ -317,11 +317,11 @@ describe('ModelSettings', () => {
     render(
       <ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />
     );
-    expect(screen.getByText('Download Model')).toBeDefined();
-    expect(screen.queryByText('Retry Download')).toBeNull();
+    expect(screen.getByText('Install Model')).toBeDefined();
+    expect(screen.queryByText('Retry Install')).toBeNull();
   });
 
-  it('shows "Retry Download" for error state, not "Download Model"', () => {
+  it('shows "Retry Install" for error state, not "Install Model"', () => {
     const status: ModelStatus = {
       model_id: 'parakeet-tdt-0.6b-v3',
       status: 'error',
@@ -330,8 +330,8 @@ describe('ModelSettings', () => {
     render(
       <ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />
     );
-    expect(screen.getByText('Retry Download')).toBeDefined();
-    expect(screen.queryByText('Download Model')).toBeNull();
+    expect(screen.getByText('Retry Install')).toBeDefined();
+    expect(screen.queryByText('Install Model')).toBeNull();
   });
 
   it('hides download button during verifying state', () => {
@@ -342,8 +342,8 @@ describe('ModelSettings', () => {
     render(
       <ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />
     );
-    expect(screen.queryByText('Download Model')).toBeNull();
-    expect(screen.queryByText('Retry Download')).toBeNull();
+    expect(screen.queryByText('Install Model')).toBeNull();
+    expect(screen.queryByText('Retry Install')).toBeNull();
   });
 
   // ── Progress display ──────────────────────────────────────────
@@ -380,8 +380,8 @@ describe('ModelSettings', () => {
     render(
       <ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />
     );
-    // Downloading label in status and button
-    expect(screen.getAllByText('Downloading...')).toHaveLength(2);
+    // Installing label in status and button
+    expect(screen.getAllByText('Installing...')).toHaveLength(2);
     // But no progress percentage
     expect(screen.queryByText('%')).toBeNull();
   });

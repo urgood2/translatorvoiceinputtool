@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
+import { invoke } from '@tauri-apps/api/core';
 import { ModelSettings } from '../ModelSettings';
 import type { ModelStatus } from '../../../types';
 
@@ -27,21 +28,21 @@ describe('ModelSettings', () => {
     expect(screen.queryByLabelText(/language/i)).toBeNull();
   });
 
-  test('shows download button for missing state', () => {
+  test('shows install button for missing state', () => {
     const status = makeStatus({ status: 'missing' });
     render(<ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />);
 
-    const downloadButton = screen.getByRole('button', { name: 'Download Model' });
+    const downloadButton = screen.getByRole('button', { name: 'Install Model' });
     expect(downloadButton).toBeDefined();
     expect(downloadButton).toHaveProperty('disabled', false);
   });
 
-  test('shows retry button for error state', () => {
+  test('shows retry install button for error state', () => {
     const status = makeStatus({ status: 'error', error: 'network timeout' });
     render(<ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />);
 
-    expect(screen.getByRole('button', { name: 'Retry Download' })).toBeDefined();
-    expect(screen.queryByRole('button', { name: 'Download Model' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Retry Install' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Install Model' })).toBeNull();
   });
 
   test('shows in-progress install state when downloading', () => {
@@ -51,9 +52,9 @@ describe('ModelSettings', () => {
     });
     render(<ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />);
 
-    expect(screen.getByRole('button', { name: 'Downloading...' })).toHaveProperty('disabled', true);
-    expect(screen.queryByRole('button', { name: 'Download Model' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Retry Download' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Installing...' })).toHaveProperty('disabled', true);
+    expect(screen.queryByRole('button', { name: 'Install Model' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry Install' })).toBeNull();
   });
 
   test('shows temporary install button state while download action is starting', async () => {
@@ -69,7 +70,7 @@ describe('ModelSettings', () => {
     render(<ModelSettings status={status} onDownload={onDownload} onPurgeCache={vi.fn()} />);
 
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Download Model' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Install Model' }));
     });
 
     expect(screen.getByRole('button', { name: 'Starting...' })).toHaveProperty('disabled', true);
@@ -89,5 +90,138 @@ describe('ModelSettings', () => {
     expect(screen.getByText('25%')).toBeDefined();
     expect(screen.getByText(/256 B/)).toBeDefined();
     expect(screen.getByText(/1 KB/)).toBeDefined();
+  });
+
+  test('loads model catalog and renders model cards', async () => {
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'get_model_catalog') {
+        return Promise.resolve([
+          {
+            model_id: 'nvidia/parakeet-tdt-0.6b-v3',
+            family: 'parakeet',
+            display_name: 'Parakeet 0.6B',
+            description: 'Fast and accurate',
+            supported_languages: ['en'],
+            default_language: 'en',
+            size_bytes: 1024,
+            manifest_path: 'model/MODEL_MANIFEST.json',
+          },
+          {
+            model_id: 'openai/whisper-small',
+            family: 'whisper',
+            display_name: 'Whisper Small',
+            description: 'Multilingual transcription',
+            supported_languages: ['en', 'es'],
+            default_language: 'auto',
+            size_bytes: 2048,
+            manifest_path: 'model/MODEL_MANIFEST.json',
+          },
+        ] as unknown);
+      }
+      return Promise.resolve(undefined as unknown);
+    });
+
+    const status = makeStatus({ status: 'ready', model_id: 'nvidia/parakeet-tdt-0.6b-v3' });
+    render(<ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />);
+
+    expect(await screen.findByText('Available Models')).toBeDefined();
+    expect(await screen.findByText('Parakeet 0.6B')).toBeDefined();
+    expect(await screen.findByText('Whisper Small')).toBeDefined();
+  });
+
+  test('calls onSelectModel when selecting a different model', async () => {
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'get_model_catalog') {
+        return Promise.resolve([
+          {
+            model_id: 'nvidia/parakeet-tdt-0.6b-v3',
+            family: 'parakeet',
+            display_name: 'Parakeet 0.6B',
+            description: 'Fast and accurate',
+            supported_languages: ['en'],
+            default_language: 'en',
+            size_bytes: 1024,
+            manifest_path: 'model/MODEL_MANIFEST.json',
+          },
+          {
+            model_id: 'openai/whisper-small',
+            family: 'whisper',
+            display_name: 'Whisper Small',
+            description: 'Multilingual transcription',
+            supported_languages: ['en', 'es'],
+            default_language: 'auto',
+            size_bytes: 2048,
+            manifest_path: 'model/MODEL_MANIFEST.json',
+          },
+        ] as unknown);
+      }
+      return Promise.resolve(undefined as unknown);
+    });
+
+    const onSelectModel = vi.fn().mockResolvedValue(undefined);
+    const status = makeStatus({ status: 'ready', model_id: 'nvidia/parakeet-tdt-0.6b-v3' });
+    render(
+      <ModelSettings
+        status={status}
+        onDownload={vi.fn()}
+        onPurgeCache={vi.fn()}
+        onSelectModel={onSelectModel}
+      />
+    );
+
+    await screen.findByText('Whisper Small');
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Select' }));
+    });
+
+    expect(onSelectModel).toHaveBeenCalledWith('openai/whisper-small');
+  });
+
+  test('shows language dropdown when selected model family is whisper', async () => {
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'get_model_catalog') {
+        return Promise.resolve([
+          {
+            model_id: 'openai/whisper-small',
+            family: 'whisper',
+            display_name: 'Whisper Small',
+            description: 'Multilingual transcription',
+            supported_languages: ['en', 'de'],
+            default_language: 'auto',
+            size_bytes: 2048,
+            manifest_path: 'model/MODEL_MANIFEST.json',
+          },
+        ] as unknown);
+      }
+      if (cmd === 'get_config') {
+        return Promise.resolve({
+          schema_version: 1,
+          audio: {},
+          hotkeys: {},
+          injection: {},
+          model: {
+            model_id: 'openai/whisper-small',
+            device: null,
+            preferred_device: 'auto',
+            language: 'auto',
+          },
+          replacements: [],
+          ui: {},
+          history: {},
+          presets: {},
+        } as unknown);
+      }
+      return Promise.resolve(undefined as unknown);
+    });
+
+    const status = makeStatus({ status: 'ready', model_id: 'openai/whisper-small' });
+    render(<ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />);
+
+    const dropdown = await screen.findByRole('combobox', { name: /language/i });
+    expect(dropdown).toBeDefined();
+    expect(screen.getByRole('option', { name: 'Auto detect' })).toBeDefined();
+    expect(screen.getByRole('option', { name: 'EN' })).toBeDefined();
+    expect(screen.getByRole('option', { name: 'DE' })).toBeDefined();
   });
 });
