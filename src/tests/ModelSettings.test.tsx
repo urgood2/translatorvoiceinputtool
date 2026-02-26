@@ -306,4 +306,138 @@ describe('ModelSettings', () => {
 
     expect(screen.queryByText('Purge Cache')).toBeNull();
   });
+
+  // ── Install button state matrix ──────────────────────────────────
+
+  it('shows "Download Model" for missing state, not "Retry"', () => {
+    const status: ModelStatus = {
+      model_id: 'parakeet-tdt-0.6b-v3',
+      status: 'missing',
+    };
+    render(
+      <ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />
+    );
+    expect(screen.getByText('Download Model')).toBeDefined();
+    expect(screen.queryByText('Retry Download')).toBeNull();
+  });
+
+  it('shows "Retry Download" for error state, not "Download Model"', () => {
+    const status: ModelStatus = {
+      model_id: 'parakeet-tdt-0.6b-v3',
+      status: 'error',
+      error: 'Network timeout',
+    };
+    render(
+      <ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />
+    );
+    expect(screen.getByText('Retry Download')).toBeDefined();
+    expect(screen.queryByText('Download Model')).toBeNull();
+  });
+
+  it('hides download button during verifying state', () => {
+    const status: ModelStatus = {
+      model_id: 'parakeet-tdt-0.6b-v3',
+      status: 'verifying',
+    };
+    render(
+      <ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />
+    );
+    expect(screen.queryByText('Download Model')).toBeNull();
+    expect(screen.queryByText('Retry Download')).toBeNull();
+  });
+
+  // ── Progress display ──────────────────────────────────────────
+
+  it('shows percentage in progress bar', () => {
+    const status: ModelStatus = {
+      model_id: 'parakeet-tdt-0.6b-v3',
+      status: 'downloading',
+      progress: { current: 250, total: 1000, unit: 'bytes' },
+    };
+    render(
+      <ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />
+    );
+    expect(screen.getByText('25%')).toBeDefined();
+  });
+
+  it('shows 0% progress when total is 0', () => {
+    const status: ModelStatus = {
+      model_id: 'parakeet-tdt-0.6b-v3',
+      status: 'downloading',
+      progress: { current: 100, total: 0, unit: 'bytes' },
+    };
+    render(
+      <ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />
+    );
+    expect(screen.getByText('0%')).toBeDefined();
+  });
+
+  it('does not show progress bar for downloading without progress data', () => {
+    const status: ModelStatus = {
+      model_id: 'parakeet-tdt-0.6b-v3',
+      status: 'downloading',
+    };
+    render(
+      <ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />
+    );
+    // Downloading label in status and button
+    expect(screen.getAllByText('Downloading...')).toHaveLength(2);
+    // But no progress percentage
+    expect(screen.queryByText('%')).toBeNull();
+  });
+
+  // ── Model info display ──────────────────────────────────────────
+
+  it('shows model description text', () => {
+    const status: ModelStatus = {
+      model_id: 'parakeet-tdt-0.6b-v3',
+      status: 'ready',
+    };
+    render(
+      <ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />
+    );
+    expect(screen.getByText(/NVIDIA Parakeet/)).toBeDefined();
+  });
+
+  it('renders heading "Speech Recognition Model"', () => {
+    const status: ModelStatus = {
+      model_id: 'parakeet-tdt-0.6b-v3',
+      status: 'ready',
+    };
+    render(
+      <ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={vi.fn()} />
+    );
+    expect(screen.getByText('Speech Recognition Model')).toBeDefined();
+  });
+
+  // ── Error recovery ──────────────────────────────────────────
+
+  it('shows error from purge failure', async () => {
+    const onPurge = vi.fn().mockRejectedValue(new Error('Permission denied'));
+    const status: ModelStatus = {
+      model_id: 'parakeet-tdt-0.6b-v3',
+      status: 'ready',
+    };
+    render(
+      <ModelSettings status={status} onDownload={vi.fn()} onPurgeCache={onPurge} />
+    );
+
+    fireEvent.click(screen.getByText('Purge Cache'));
+    await act(async () => {
+      fireEvent.click(screen.getByText('Yes, Delete'));
+    });
+
+    expect(screen.getByText('Permission denied')).toBeDefined();
+  });
+
+  // ── Loading state ──────────────────────────────────────────
+
+  it('loading state shows spinner indicator', () => {
+    render(
+      <ModelSettings status={null} onDownload={vi.fn()} onPurgeCache={vi.fn()} />
+    );
+    // The spinner has animate-spin class
+    const spinner = document.querySelector('.animate-spin');
+    expect(spinner).not.toBeNull();
+  });
 });
