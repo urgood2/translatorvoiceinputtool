@@ -507,6 +507,11 @@ main() {
     local total_ms=$(( $(date +%s%3N) - RECOVERY_STARTED_AT_MS ))
     emit_summary "$total_ms"
 
+    # Fail if any scenario failed, even when all individual assertions passed.
+    if (( SCENARIOS_FAILED > 0 )); then
+        summary_exit=1
+    fi
+
     if [[ $summary_exit -eq 0 ]]; then
         log_info "test" "complete" "Sidecar error recovery test completed" "{\"duration_ms\":$total_ms}"
         record_recovery_line "PASS total_duration_ms=$total_ms"
