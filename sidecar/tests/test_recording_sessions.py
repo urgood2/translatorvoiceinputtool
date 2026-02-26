@@ -34,6 +34,7 @@ class _RecorderStub:
         self,
         device_uid: str | None = None,
         session_id: str | None = None,
+        vad: dict[str, Any] | None = None,
     ) -> str:
         if self.fail_next_start:
             self.fail_next_start = False

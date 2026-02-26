@@ -24,7 +24,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -145,6 +145,8 @@ class AudioRecorder:
         self._level_thread: threading.Thread | None = None
         self._emit_levels = False
         self._callback_error: str | None = None
+        self._vad_detector: Any | None = None
+        self._vad_auto_stop_triggered = False
 
     @property
     def state(self) -> RecordingState:
@@ -156,7 +158,17 @@ class AudioRecorder:
         """Get current session ID, or None if not recording."""
         return self._session.session_id if self._session else None
 
-    def start(self, device_uid: str | None = None, session_id: str | None = None) -> str:
+    @property
+    def vad_detector(self) -> Any | None:
+        """Get active VAD detector for current session, if configured."""
+        return self._vad_detector
+
+    def start(
+        self,
+        device_uid: str | None = None,
+        session_id: str | None = None,
+        vad: Mapping[str, Any] | None = None,
+    ) -> str:
         """Start a new recording session.
 
         Args:
@@ -208,6 +220,8 @@ class AudioRecorder:
                 self.sample_rate = capture_sample_rate
                 self.channels = capture_channels
                 self.max_samples = max_samples
+                self._vad_detector = self._build_vad_detector(vad, capture_sample_rate)
+                self._vad_auto_stop_triggered = False
                 self._state = RecordingState.RECORDING
 
                 # Start level emission thread
@@ -223,6 +237,8 @@ class AudioRecorder:
                 # Clean up on failure
                 self._session = None
                 self._stream = None
+                self._vad_detector = None
+                self._vad_auto_stop_triggered = False
                 log(f"Failed to start recording: {e}")
                 raise OSError(f"Failed to open audio device: {e}") from e
 
@@ -266,6 +282,8 @@ class AudioRecorder:
 
             # Reset state
             self._session = None
+            self._vad_detector = None
+            self._vad_auto_stop_triggered = False
             self._state = RecordingState.IDLE
             self._callback_error = None
 
@@ -306,6 +324,8 @@ class AudioRecorder:
 
             # Discard audio
             self._session = None
+            self._vad_detector = None
+            self._vad_auto_stop_triggered = False
             self._state = RecordingState.IDLE
             self._callback_error = None
 
@@ -354,6 +374,22 @@ class AudioRecorder:
         # Also add to level buffer for emission
         mono_levels = chunk[:, 0] if chunk.ndim > 1 else chunk
         self._level_buffer.extend(mono_levels)
+
+        detector = self._vad_detector
+        if detector is None:
+            return
+
+        try:
+            vad_state = detector.feed_audio(chunk)
+        except Exception as e:
+            # Disable VAD if it fails unexpectedly to preserve recording flow.
+            log(f"VAD disabled after detector error: {e}")
+            with self._lock:
+                self._vad_detector = None
+            return
+
+        if getattr(vad_state, "value", "") == "auto_stop":
+            self._trigger_vad_auto_stop(session.session_id)
 
     def _level_emit_loop(self) -> None:
         """Background loop that emits audio level events during recording."""
@@ -462,6 +498,63 @@ class AudioRecorder:
         channels = max(channels, 1)
         return device_index, sample_rate, channels
 
+    def _build_vad_detector(
+        self,
+        vad: Mapping[str, Any] | None,
+        sample_rate: int,
+    ) -> Any | None:
+        """Create a per-session VAD detector when explicitly enabled."""
+        if not vad:
+            return None
+        if vad.get("enabled") is not True:
+            return None
+
+        from .vad import VadConfig, VoiceActivityDetector
+
+        config = VadConfig(
+            sample_rate=sample_rate,
+            silence_ms=vad.get("silence_ms", 1200),
+            min_speech_ms=vad.get("min_speech_ms", 250),
+        )
+        detector = VoiceActivityDetector(config)
+        log(
+            "VAD enabled for session "
+            f"(backend={detector.backend}, silence_ms={config.silence_ms}, "
+            f"min_speech_ms={config.min_speech_ms})"
+        )
+        return detector
+
+    def _trigger_vad_auto_stop(self, session_id: str) -> None:
+        """Start async auto-stop path once when VAD reaches AUTO_STOP."""
+        with self._lock:
+            if self._vad_auto_stop_triggered:
+                return
+            if self._session is None or self._session.session_id != session_id:
+                return
+            self._vad_auto_stop_triggered = True
+
+        def run_auto_stop() -> None:
+            try:
+                audio_data, duration_ms = self.stop(session_id)
+            except Exception as e:
+                log(f"VAD auto-stop failed during recorder stop: {e}")
+                return
+
+            try:
+                _begin_transcription(self, session_id, audio_data, duration_ms)
+                log(
+                    f"VAD auto-stop completed: session={session_id}, "
+                    f"duration={duration_ms}ms"
+                )
+            except Exception as e:
+                log(f"VAD auto-stop failed during transcription handoff: {e}")
+
+        threading.Thread(
+            target=run_auto_stop,
+            daemon=True,
+            name=f"vad-auto-stop-{session_id[:8]}",
+        ).start()
+
 
 # === Global Recorder Instance ===
 
@@ -526,14 +619,14 @@ def handle_recording_start(request: Request) -> dict[str, Any]:
     """
     device_uid = request.params.get("device_uid")
     session_id = request.params.get("session_id")
+    vad_params = request.params.get("vad")
+    if not isinstance(vad_params, dict):
+        vad_params = None
 
     recorder = get_recorder()
 
     try:
-        if session_id:
-            started_session_id = recorder.start(device_uid, session_id=session_id)
-        else:
-            started_session_id = recorder.start(device_uid)
+        started_session_id = recorder.start(device_uid, session_id=session_id, vad=vad_params)
 
         # Emit status change once recording has started successfully.
         from .notifications import emit_status_changed
@@ -575,36 +668,7 @@ def handle_recording_stop(request: Request) -> dict[str, Any]:
 
     try:
         audio_data, duration_ms = recorder.stop(session_id)
-
-        # Preprocess before transcription so ASR always receives normalized pipeline output.
-        from .preprocess import TARGET_SAMPLE_RATE, preprocess_audio
-
-        processed_audio = preprocess_audio(
-            audio_data,
-            {
-                "input_sample_rate": recorder.sample_rate,
-                "target_sample_rate": TARGET_SAMPLE_RATE,
-                "normalize": False,
-                "audio": {"trim_silence": True},
-            },
-        )
-
-        # Emit status change
-        from .notifications import emit_status_changed
-
-        emit_status_changed("transcribing", "Processing audio...")
-
-        # Start async transcription (this returns immediately)
-        from .notifications import transcribe_session_async
-
-        transcribe_session_async(session_id, processed_audio, TARGET_SAMPLE_RATE)
-
-        return {
-            "audio_duration_ms": duration_ms,
-            "sample_rate": recorder.sample_rate,
-            "channels": recorder.channels,
-            "session_id": session_id,
-        }
+        return _begin_transcription(recorder, session_id, audio_data, duration_ms)
     except RuntimeError as e:
         error_msg = str(e).lower()
         if "not recording" in error_msg:
@@ -614,6 +678,43 @@ def handle_recording_stop(request: Request) -> dict[str, Any]:
         raise RecordingError(str(e))
     except OSError as e:
         raise RecordingError(str(e), "E_AUDIO_IO")
+
+
+def _begin_transcription(
+    recorder: AudioRecorder,
+    session_id: str,
+    audio_data: np.ndarray,
+    duration_ms: int,
+) -> dict[str, Any]:
+    """Run preprocess + async transcription pipeline after recording stop."""
+    from .preprocess import TARGET_SAMPLE_RATE, preprocess_audio
+
+    processed_audio = preprocess_audio(
+        audio_data,
+        {
+            "input_sample_rate": recorder.sample_rate,
+            "target_sample_rate": TARGET_SAMPLE_RATE,
+            "normalize": False,
+            "audio": {"trim_silence": True},
+        },
+    )
+
+    # Emit status change
+    from .notifications import emit_status_changed
+
+    emit_status_changed("transcribing", "Processing audio...")
+
+    # Start async transcription (this returns immediately)
+    from .notifications import transcribe_session_async
+
+    transcribe_session_async(session_id, processed_audio, TARGET_SAMPLE_RATE)
+
+    return {
+        "audio_duration_ms": duration_ms,
+        "sample_rate": recorder.sample_rate,
+        "channels": recorder.channels,
+        "session_id": session_id,
+    }
 
 
 def handle_recording_cancel(request: Request) -> dict[str, Any]:

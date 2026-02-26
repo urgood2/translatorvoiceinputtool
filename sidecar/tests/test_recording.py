@@ -24,6 +24,7 @@ from openvoicy_sidecar.recording import (
     RecordingError,
     RecordingSession,
     RecordingState,
+    CHUNK_SIZE,
     clear_pending_audio,
     get_pending_audio,
     get_recorder,
@@ -276,6 +277,132 @@ class TestAudioRecorder:
             with pytest.raises(RuntimeError, match="already"):
                 recorder.start()
 
+    def test_start_initializes_vad_when_enabled(self, recorder, mock_sounddevice):
+        """Recorder should create a VAD detector only when enabled in start params."""
+        with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
+            session_id = recorder.start(
+                vad={
+                    "enabled": True,
+                    "silence_ms": 1500,
+                    "min_speech_ms": 300,
+                }
+            )
+
+            assert recorder.vad_detector is not None
+            assert recorder.vad_detector._config.sample_rate == 48000
+            assert recorder.vad_detector._config.silence_ms == 1500
+            assert recorder.vad_detector._config.min_speech_ms == 300
+
+            recorder.cancel(session_id)
+
+    def test_start_skips_vad_when_disabled(self, recorder, mock_sounddevice):
+        """Recorder should not create a VAD detector when enabled flag is false."""
+        with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
+            session_id = recorder.start(
+                vad={
+                    "enabled": False,
+                    "silence_ms": 1500,
+                    "min_speech_ms": 300,
+                }
+            )
+
+            assert recorder.vad_detector is None
+            recorder.cancel(session_id)
+
+    def test_vad_auto_stop_triggers_stop_and_transcription_handoff(
+        self, mock_sounddevice, reset_global_recorder
+    ):
+        """VAD AUTO_STOP should run the same stop+transcription handoff as recording.stop."""
+        processed_audio = np.array([0.25, -0.25], dtype=np.float32)
+        transcription_started = threading.Event()
+
+        with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
+            with (
+                patch(
+                    "openvoicy_sidecar.preprocess.preprocess_audio",
+                    return_value=processed_audio,
+                ) as mock_preprocess,
+                patch(
+                    "openvoicy_sidecar.notifications.transcribe_session_async",
+                    side_effect=lambda *_args, **_kwargs: transcription_started.set(),
+                ) as mock_transcribe,
+                patch("openvoicy_sidecar.notifications.emit_status_changed") as mock_status_changed,
+            ):
+                start_result = handle_recording_start(
+                    Request(
+                        method="recording.start",
+                        id=1,
+                        params={
+                            "vad": {
+                                "enabled": True,
+                                "silence_ms": 400,
+                                "min_speech_ms": 100,
+                            }
+                        },
+                    )
+                )
+                session_id = start_result["session_id"]
+                recorder = get_recorder()
+
+                speech_chunk = np.full((CHUNK_SIZE, recorder.channels), 0.2, dtype=np.float32)
+                silence_chunk = np.zeros((CHUNK_SIZE, recorder.channels), dtype=np.float32)
+
+                # Build enough speech to satisfy min_speech_ms.
+                for _ in range(6):
+                    recorder._audio_callback(speech_chunk, CHUNK_SIZE, None, None)
+
+                # Then enough silence to exceed configured silence_ms threshold.
+                for _ in range(30):
+                    recorder._audio_callback(silence_chunk, CHUNK_SIZE, None, None)
+
+                assert transcription_started.wait(timeout=2.0)
+
+                deadline = time.monotonic() + 2.0
+                while recorder.state != RecordingState.IDLE and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert recorder.state == RecordingState.IDLE
+
+        preprocess_args, preprocess_kwargs = mock_preprocess.call_args
+        assert preprocess_args[0].dtype == np.float32
+        assert preprocess_kwargs == {}
+        assert preprocess_args[1]["target_sample_rate"] == TARGET_SAMPLE_RATE
+        assert preprocess_args[1]["normalize"] is False
+        assert preprocess_args[1]["audio"]["trim_silence"] is True
+
+        mock_transcribe.assert_called_once()
+        transcribe_args, _ = mock_transcribe.call_args
+        assert transcribe_args[0] == session_id
+        np.testing.assert_array_equal(transcribe_args[1], processed_audio)
+        assert transcribe_args[2] == TARGET_SAMPLE_RATE
+        assert ("transcribing", "Processing audio...") in [
+            (call.args[0], call.args[1]) for call in mock_status_changed.call_args_list
+        ]
+
+    def test_vad_disabled_does_not_auto_stop_existing_flow(
+        self, mock_sounddevice, reset_global_recorder
+    ):
+        """Long silence should not auto-stop when VAD is disabled."""
+        with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
+            with patch("openvoicy_sidecar.notifications.transcribe_session_async") as mock_transcribe:
+                start_result = handle_recording_start(
+                    Request(
+                        method="recording.start",
+                        id=1,
+                        params={"vad": {"enabled": False}},
+                    )
+                )
+                recorder = get_recorder()
+                silence_chunk = np.zeros((CHUNK_SIZE, recorder.channels), dtype=np.float32)
+
+                for _ in range(40):
+                    recorder._audio_callback(silence_chunk, CHUNK_SIZE, None, None)
+
+                assert recorder.state == RecordingState.RECORDING
+                assert recorder.session_id == start_result["session_id"]
+                mock_transcribe.assert_not_called()
+
+                recorder.cancel(start_result["session_id"])
+
     def test_stop_recording(self, recorder, mock_sounddevice):
         """Should stop recording and return audio data."""
         with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
@@ -447,6 +574,37 @@ class TestRecordingHandlers:
             recorder = get_recorder()
             if recorder.state == RecordingState.RECORDING:
                 recorder.cancel(recorder.session_id)
+
+    def test_handle_recording_start_forwards_vad_params(self, mock_recorder, monkeypatch):
+        """Should forward nested VAD params from recording.start to recorder.start."""
+        monkeypatch.setattr("openvoicy_sidecar.recording.get_recorder", lambda: mock_recorder)
+        mock_recorder.start.return_value = "session-vad"
+
+        with patch("openvoicy_sidecar.notifications.emit_status_changed"):
+            result = handle_recording_start(
+                Request(
+                    method="recording.start",
+                    id=1,
+                    params={
+                        "vad": {
+                            "enabled": True,
+                            "silence_ms": 1750,
+                            "min_speech_ms": 320,
+                        }
+                    },
+                )
+            )
+
+        assert result["session_id"] == "session-vad"
+        mock_recorder.start.assert_called_once_with(
+            None,
+            session_id=None,
+            vad={
+                "enabled": True,
+                "silence_ms": 1750,
+                "min_speech_ms": 320,
+            },
+        )
 
     def test_handle_recording_start_emits_recording_status_changed(
         self, mock_sounddevice, reset_global_recorder
