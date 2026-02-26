@@ -453,12 +453,16 @@ def run_server() -> None:
                 )
             except CacheCorruptError as e:
                 log(f"Cache corrupt error: {e}")
+                details = dict(getattr(e, "details", {}) or {})
+                if e.file_path and "file_path" not in details:
+                    details["file_path"] = e.file_path
+                details.setdefault("recoverable", getattr(e, "recoverable", True))
                 response = make_error(
                     request.id,
                     ERROR_CACHE_CORRUPT,
                     str(e),
                     "E_CACHE_CORRUPT",
-                    {"file_path": e.file_path} if e.file_path else None,
+                    details or None,
                 )
             except ModelInUseError as e:
                 log(f"Model in use error: {e}")

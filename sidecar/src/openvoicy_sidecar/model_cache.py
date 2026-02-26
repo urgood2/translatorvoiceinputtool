@@ -46,6 +46,7 @@ LOCK_TIMEOUT_SECONDS = 600  # 10 minutes for slow downloads
 # Keep status-path cache checks responsive when another operation holds the lock.
 CHECK_CACHE_LOCK_TIMEOUT_SECONDS = 1.0
 DOWNLOAD_CHUNK_SIZE = 8192
+HASH_CHUNK_SIZE = 65536
 DISK_SPACE_BUFFER = 1.1  # 10% buffer
 
 TRUSTED_HF_HOSTS = ("huggingface.co", "hf.co")
@@ -197,8 +198,16 @@ class NetworkError(ModelCacheError):
 class CacheCorruptError(ModelCacheError):
     """Raised when cache verification fails."""
 
-    def __init__(self, message: str, file_path: str = ""):
+    def __init__(
+        self,
+        message: str,
+        file_path: str = "",
+        details: Optional[dict[str, Any]] = None,
+        recoverable: bool = True,
+    ):
         self.file_path = file_path
+        self.details = details or {}
+        self.recoverable = recoverable
         super().__init__(message, "E_CACHE_CORRUPT")
 
 
@@ -260,9 +269,52 @@ def compute_sha256(file_path: Path) -> str:
     """Compute SHA-256 hash of a file."""
     sha256 = hashlib.sha256()
     with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(DOWNLOAD_CHUNK_SIZE), b""):
+        for chunk in iter(lambda: f.read(HASH_CHUNK_SIZE), b""):
             sha256.update(chunk)
     return sha256.hexdigest()
+
+
+def verify_sha256(file_path: Path, expected_hash: str) -> tuple[bool, str]:
+    """Verify file SHA-256 hash with streaming reads.
+
+    Returns:
+        Tuple of (matches, actual_sha256). For placeholder/empty expected hashes,
+        returns (True, "") to indicate hash verification was intentionally skipped.
+    """
+    normalized_expected = expected_hash.strip().lower()
+    if not normalized_expected or normalized_expected == "verify_on_first_download":
+        return True, ""
+
+    actual_sha256 = compute_sha256(file_path)
+    return actual_sha256 == normalized_expected, actual_sha256
+
+
+def _cleanup_partial_file(file_path: Path) -> None:
+    """Remove a staged partial file, best-effort."""
+    try:
+        file_path.unlink()
+    except OSError:
+        pass
+
+
+def _hash_mismatch_details(
+    *,
+    expected_sha256: str,
+    actual_sha256: str,
+    file_path: Path,
+    io_error: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build structured details for E_CACHE_CORRUPT hash failures."""
+    details: dict[str, Any] = {
+        "expected_sha256": expected_sha256,
+        "actual_sha256": actual_sha256,
+        "file_path": str(file_path),
+        "suggested_recovery": "Purge cache and reinstall model.",
+        "recoverable": True,
+    }
+    if io_error:
+        details["io_error"] = io_error
+    return details
 
 
 # === Cache Lock ===
@@ -814,16 +866,58 @@ class ModelCacheManager:
 
                     download_with_mirrors(file_info, dest_path, update_progress)
 
-                    # Verify file
+                    # Verify hash first (integrity gate), then verify size.
                     with self._state_lock:
                         self._status = ModelStatus.VERIFYING
-                    if not verify_file(dest_path, file_info.sha256, file_info.size_bytes):
-                        try:
-                            dest_path.unlink()
-                        except OSError:
-                            pass
+
+                    try:
+                        hash_ok, actual_sha256 = verify_sha256(dest_path, file_info.sha256)
+                    except OSError as error:
+                        _cleanup_partial_file(dest_path)
                         raise CacheCorruptError(
-                            f"Verification failed for {file_info.path}", str(dest_path)
+                            "Downloaded model file hash mismatch. "
+                            "File may be corrupted or incomplete.",
+                            str(dest_path),
+                            details=_hash_mismatch_details(
+                                expected_sha256=file_info.sha256,
+                                actual_sha256="",
+                                file_path=dest_path,
+                                io_error=str(error),
+                            ),
+                        ) from error
+
+                    if not hash_ok:
+                        _cleanup_partial_file(dest_path)
+                        raise CacheCorruptError(
+                            "Downloaded model file hash mismatch. "
+                            "File may be corrupted or incomplete.",
+                            str(dest_path),
+                            details=_hash_mismatch_details(
+                                expected_sha256=file_info.sha256,
+                                actual_sha256=actual_sha256,
+                                file_path=dest_path,
+                            ),
+                        )
+
+                    if file_info.size_bytes > 0:
+                        actual_size = dest_path.stat().st_size
+                        if actual_size != file_info.size_bytes:
+                            _cleanup_partial_file(dest_path)
+                            raise CacheCorruptError(
+                                f"Size mismatch for {file_info.path}",
+                                str(dest_path),
+                                details={
+                                    "expected_size_bytes": file_info.size_bytes,
+                                    "actual_size_bytes": actual_size,
+                                    "file_path": str(dest_path),
+                                    "recoverable": True,
+                                },
+                            )
+
+                    if file_info.sha256 == "VERIFY_ON_FIRST_DOWNLOAD":
+                        log(
+                            "Skipping SHA-256 verification placeholder for "
+                            f"{file_info.path}; proceeding with size check only"
                         )
 
                 with self._state_lock:

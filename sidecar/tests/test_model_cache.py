@@ -38,6 +38,7 @@ from openvoicy_sidecar.model_cache import (
     get_cache_directory,
     handle_model_install,
     verify_file,
+    verify_sha256,
     verify_manifest,
 )
 from openvoicy_sidecar.protocol import Request
@@ -234,6 +235,25 @@ class TestVerification:
         test_file.write_bytes(b"test content")
 
         assert verify_file(test_file, "VERIFY_ON_FIRST_DOWNLOAD", len("test content"))
+
+    def test_verify_sha256_matches(self, tmp_path):
+        """Should return actual hash and success for a matching SHA-256."""
+        test_file = tmp_path / "test.bin"
+        test_file.write_bytes(b"test content")
+        expected = compute_sha256(test_file)
+
+        ok, actual = verify_sha256(test_file, expected)
+        assert ok is True
+        assert actual == expected
+
+    def test_verify_sha256_mismatch(self, tmp_path):
+        """Should return actual hash when SHA-256 does not match."""
+        test_file = tmp_path / "test.bin"
+        test_file.write_bytes(b"test content")
+
+        ok, actual = verify_sha256(test_file, "0" * 64)
+        assert ok is False
+        assert actual == compute_sha256(test_file)
 
 
 # === Unit Tests: ModelManifest ===
@@ -557,7 +577,11 @@ class TestModelCacheIntegration:
         # Patch verify to always succeed (skip hash check)
         with patch("openvoicy_sidecar.model_cache.download_with_mirrors", side_effect=mock_download):
             with patch("openvoicy_sidecar.model_cache.verify_file", return_value=True):
-                model_dir = manager.download_model(sample_manifest)
+                with patch(
+                    "openvoicy_sidecar.model_cache.verify_sha256",
+                    return_value=(True, sample_manifest.files[0].sha256),
+                ):
+                    model_dir = manager.download_model(sample_manifest)
 
         assert model_dir.exists()
         assert (model_dir / "manifest.json").exists()
@@ -572,12 +596,19 @@ class TestModelCacheIntegration:
             dest.write_bytes(b"corrupt")
 
         with patch("openvoicy_sidecar.model_cache.download_with_mirrors", side_effect=mock_download):
-            with pytest.raises(CacheCorruptError):
+            with pytest.raises(CacheCorruptError) as exc_info:
                 manager.download_model(sample_manifest)
 
+        error = exc_info.value
+        assert error.code == "E_CACHE_CORRUPT"
+        assert error.details["expected_sha256"] == sample_manifest.files[0].sha256
+        assert error.details["actual_sha256"]
+        assert "purge" in error.details["suggested_recovery"].lower()
+        assert error.details["recoverable"] is True
+        assert not (temp_cache_dir / ".partial" / sample_manifest.model_id / "model.bin").exists()
         assert manager.status == ModelStatus.ERROR
         assert manager.error is not None
-        assert "Verification failed" in manager.error
+        assert "hash mismatch" in manager.error.lower()
 
     def test_concurrent_downloads_blocked(self, temp_cache_dir, sample_manifest):
         """Should block concurrent downloads with lock."""
@@ -593,22 +624,30 @@ class TestModelCacheIntegration:
         def download1():
             with patch("openvoicy_sidecar.model_cache.download_with_mirrors", side_effect=slow_download):
                 with patch("openvoicy_sidecar.model_cache.verify_file", return_value=True):
-                    try:
-                        manager1.download_model(sample_manifest)
-                        results["manager1"] = "success"
-                    except Exception as e:
-                        results["manager1"] = f"error: {e}"
+                    with patch(
+                        "openvoicy_sidecar.model_cache.verify_sha256",
+                        return_value=(True, sample_manifest.files[0].sha256),
+                    ):
+                        try:
+                            manager1.download_model(sample_manifest)
+                            results["manager1"] = "success"
+                        except Exception as e:
+                            results["manager1"] = f"error: {e}"
 
         def download2():
             time.sleep(0.1)  # Start slightly after manager1
             # This should wait for lock
             with patch("openvoicy_sidecar.model_cache.download_with_mirrors", side_effect=slow_download):
                 with patch("openvoicy_sidecar.model_cache.verify_file", return_value=True):
-                    try:
-                        manager2.download_model(sample_manifest)
-                        results["manager2"] = "success"
-                    except Exception as e:
-                        results["manager2"] = f"error: {e}"
+                    with patch(
+                        "openvoicy_sidecar.model_cache.verify_sha256",
+                        return_value=(True, sample_manifest.files[0].sha256),
+                    ):
+                        try:
+                            manager2.download_model(sample_manifest)
+                            results["manager2"] = "success"
+                        except Exception as e:
+                            results["manager2"] = f"error: {e}"
 
         t1 = threading.Thread(target=download1)
         t2 = threading.Thread(target=download2)
