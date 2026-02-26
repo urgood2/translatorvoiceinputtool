@@ -472,7 +472,7 @@ main() {
     # Summary
     # =========================================================================
     local total_ms
-    total_ms=$(elapsed_ms "$test_start")
+    total_ms=$(( $(date +%s%3N) - test_start ))
 
     local unexpected_events_json='[]'
     if [ ${#UNEXPECTED_EVENTS[@]} -gt 0 ]; then
