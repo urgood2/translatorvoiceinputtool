@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAppStore, selectAppState, selectReplacementBadgeCount } from './store';
-import { useTauriEvents } from './hooks';
+import { useReducedMotion, useTauriEvents } from './hooks';
 import {
   SelfCheck,
   Diagnostics,
@@ -21,6 +21,7 @@ type AppTab = 'status' | 'history' | 'replacements' | 'settings';
 function App() {
   // Set up Tauri event listeners
   useTauriEvents();
+  useReducedMotion();
 
   // Get store state and actions
   const appState = useAppStore(selectAppState);
