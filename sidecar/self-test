@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Convenience wrapper to run the sidecar self-test from the source tree
+# without requiring PYTHONPATH or an editable install.
+#
+# Usage (from repo root or sidecar/):
+#   sidecar/self-test
+#   ./self-test          # if cwd is sidecar/
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC_DIR="$SCRIPT_DIR/src"
+
+exec env PYTHONPATH="${SRC_DIR}${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -m openvoicy_sidecar.self_test "$@"

@@ -13,4 +13,7 @@ uv sync --extra test
 
 # Run tests
 pytest tests/
+
+# Self-test (source tree, no install required)
+./self-test
 ```
