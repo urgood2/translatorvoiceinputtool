@@ -60,7 +60,11 @@ elif current_os == 'Windows':
 
 # Add the openvoicy_sidecar package
 package_datas = [('src/openvoicy_sidecar', 'openvoicy_sidecar')]
-preset_datas = [('../shared/replacements/PRESETS.json', 'shared/replacements')]
+shared_datas = [
+    ('../shared/contracts', 'shared/contracts'),
+    ('../shared/model', 'shared/model'),
+    ('../shared/replacements', 'shared/replacements'),
+]
 
 # Hidden imports that PyInstaller might miss
 hidden_imports = [
@@ -78,7 +82,7 @@ a = Analysis(
     ['entry_point.py'],
     pathex=[],
     binaries=sounddevice_binaries,
-    datas=sounddevice_datas + package_datas + preset_datas,
+    datas=sounddevice_datas + package_datas + shared_datas,
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},

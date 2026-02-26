@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 from ..model_cache import ModelCacheManager, ModelManifest, ModelStatus
 from ..protocol import Request, log, write_event
+from ..resources import MODEL_CATALOG_REL, MODEL_MANIFEST_REL, resolve_shared_path, resolve_shared_path_optional
 from .base import (
     ASRBackend,
     ASRError,
@@ -48,11 +49,9 @@ __all__ = [
     "handle_asr_status",
 ]
 
-# Default manifest path
-DEFAULT_MANIFEST_PATH = Path(__file__).parent.parent.parent.parent.parent / "shared" / "model" / "MODEL_MANIFEST.json"
-DEFAULT_CATALOG_PATH = (
-    Path(__file__).parent.parent.parent.parent.parent / "shared" / "model" / "MODEL_CATALOG.json"
-)
+# Default manifest / catalog paths (resolved at call-time, not import-time)
+_DEFAULT_MANIFEST_REL = MODEL_MANIFEST_REL
+_DEFAULT_CATALOG_REL = MODEL_CATALOG_REL
 
 
 def load_manifest(model_id: str) -> ModelManifest:
@@ -67,10 +66,10 @@ def load_manifest(model_id: str) -> ModelManifest:
     Raises:
         ModelNotFoundError: If manifest not found.
     """
-    manifest_path = DEFAULT_MANIFEST_PATH
-
-    if not manifest_path.exists():
-        raise ModelNotFoundError(f"Model manifest not found: {manifest_path}")
+    try:
+        manifest_path = resolve_shared_path(_DEFAULT_MANIFEST_REL)
+    except FileNotFoundError:
+        raise ModelNotFoundError(f"Model manifest not found (searched for {_DEFAULT_MANIFEST_REL})")
 
     try:
         with open(manifest_path) as f:
@@ -100,10 +99,11 @@ def _model_id_matches(candidate: str, model_id: str) -> bool:
 
 def load_model_catalog() -> list[dict[str, Any]]:
     """Load MODEL_CATALOG.json entries, failing soft when unavailable."""
-    if not DEFAULT_CATALOG_PATH.exists():
+    catalog_path = resolve_shared_path_optional(_DEFAULT_CATALOG_REL)
+    if catalog_path is None:
         return []
     try:
-        with open(DEFAULT_CATALOG_PATH) as f:
+        with open(catalog_path) as f:
             data = json.load(f)
         models = data.get("models", [])
         if isinstance(models, list):

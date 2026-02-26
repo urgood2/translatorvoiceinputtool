@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .resources import PRESETS_REL, list_shared_candidates, resolve_shared_path_optional
 from .asr import (
     ASRError,
     DeviceUnavailableError,
@@ -101,61 +102,26 @@ PROTOCOL_VERSION = "v1"
 
 def get_startup_preset_candidates() -> list[Path]:
     """Return candidate preset paths for dev and packaged runtime layouts."""
-    candidates: list[Path] = []
-
-    env_path = os.environ.get("OPENVOICY_PRESETS_PATH")
-    if env_path:
-        candidates.append(Path(env_path).expanduser())
-
-    # Dev mode: repository layout
-    candidates.append(Path(__file__).resolve().parents[3] / "shared" / "replacements" / "PRESETS.json")
-
-    # Packaged layouts: sidecar next to resources or in app bundle resources
-    exe_dir = Path(sys.executable).resolve().parent
-    candidates.append(exe_dir / "shared" / "replacements" / "PRESETS.json")
-    candidates.append(exe_dir.parent / "Resources" / "shared" / "replacements" / "PRESETS.json")
-
-    # PyInstaller onefile extraction directory
-    meipass_dir = getattr(sys, "_MEIPASS", None)
-    if meipass_dir:
-        candidates.append(Path(meipass_dir) / "shared" / "replacements" / "PRESETS.json")
-
-    # Working-directory fallback
-    candidates.append(Path.cwd() / "shared" / "replacements" / "PRESETS.json")
-
-    # De-duplicate while preserving order
-    unique: list[Path] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = str(candidate)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(candidate)
-
-    return unique
+    return list_shared_candidates(PRESETS_REL)
 
 
 def load_startup_presets() -> None:
     """Load replacement presets on startup without crashing on missing/invalid files."""
-    candidates = get_startup_preset_candidates()
-    for preset_path in candidates:
-        log(f"Checking preset path: {preset_path}")
-        if not preset_path.exists():
-            log(f"Preset path missing: {preset_path}")
-            continue
-
-        presets = load_presets_from_file(preset_path)
-        if presets:
-            log(f"Loaded {len(presets)} preset(s) from {preset_path}")
-        else:
-            log(f"Preset file found at {preset_path}, but no presets were loaded")
+    preset_path = resolve_shared_path_optional(PRESETS_REL)
+    if preset_path is None:
+        candidates = get_startup_preset_candidates()
+        log(
+            "Preset file not found on startup; continuing with empty presets. "
+            f"Checked {len(candidates)} path(s)."
+        )
         return
 
-    log(
-        "Preset file not found on startup; continuing with empty presets. "
-        f"Checked {len(candidates)} path(s)."
-    )
+    log(f"Checking preset path: {preset_path}")
+    presets = load_presets_from_file(preset_path)
+    if presets:
+        log(f"Loaded {len(presets)} preset(s) from {preset_path}")
+    else:
+        log(f"Preset file found at {preset_path}, but no presets were loaded")
 
 
 def handle_system_ping(request: Request) -> dict[str, Any]:
