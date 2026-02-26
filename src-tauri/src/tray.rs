@@ -49,6 +49,7 @@ const ICON_DISABLED: &[u8] = include_bytes!("../icons/tray-disabled.png");
 const MAX_RECENT_TRANSCRIPTS: usize = 5;
 const MAX_RECENT_TRANSCRIPT_CHARS: usize = 50;
 const TRAY_REBUILD_POLL_INTERVAL_MS: u64 = 100;
+#[cfg(test)]
 const TRAY_REFLECTION_TARGET_MS: u64 = 250;
 
 /// Flat audio-device record needed by the tray menu builder.
@@ -102,6 +103,7 @@ pub enum TrayMenuEntry {
 
 type SystemTrayMenu = Menu<tauri::Wry>;
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrayRefreshTrigger {
     StateChange,
@@ -109,6 +111,7 @@ enum TrayRefreshTrigger {
     PollFallback,
 }
 
+#[cfg(test)]
 fn estimated_reflection_latency_ms(trigger: TrayRefreshTrigger) -> u64 {
     match trigger {
         // State broadcasts and explicit tray:update events are handled immediately
@@ -120,6 +123,7 @@ fn estimated_reflection_latency_ms(trigger: TrayRefreshTrigger) -> u64 {
     }
 }
 
+#[cfg(test)]
 fn satisfies_reflection_target(trigger: TrayRefreshTrigger) -> bool {
     estimated_reflection_latency_ms(trigger) <= TRAY_REFLECTION_TARGET_MS
 }
@@ -824,7 +828,9 @@ pub fn start_tray_loop(
                                 log::warn!("Failed to update tray: {}", e);
                             } else {
                                 log::info!(
-                                    "Tray state-refresh completed: trigger=state_change delta_ms={}",
+                                    "Tray state-refresh completed: trigger=state_change event_ts={} rebuild_done_ts={} delta_ms={}",
+                                    event.timestamp.to_rfc3339(),
+                                    chrono::Utc::now().to_rfc3339(),
                                     started.elapsed().as_millis()
                                 );
                             }
