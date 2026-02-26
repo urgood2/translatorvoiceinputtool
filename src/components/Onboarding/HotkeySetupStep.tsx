@@ -87,9 +87,8 @@ export function HotkeySetupStep({ onReady: _onReady }: HotkeySetupStepProps) {
         <label id="onboarding-hotkey-label" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
           Recording Hotkey
         </label>
-        <div
-          tabIndex={0}
-          role="button"
+        <button
+          type="button"
           aria-label="Recording hotkey"
           aria-describedby="onboarding-hotkey-description"
           onKeyDown={handleKeyDown}
@@ -104,7 +103,7 @@ export function HotkeySetupStep({ onReady: _onReady }: HotkeySetupStepProps) {
                      cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500`}
         >
           {isRecording ? 'Press keys...' : primaryHotkey || 'Click to set'}
-        </div>
+        </button>
         <p id="onboarding-hotkey-description" className="mt-1 text-xs text-gray-500 dark:text-gray-400">
           Click the box above and press your preferred key combination.
         </p>
