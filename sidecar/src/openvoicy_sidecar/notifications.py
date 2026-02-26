@@ -380,8 +380,7 @@ def transcribe_session_async(
             # Import here to avoid circular imports
             from .preprocess import preprocess
             from .asr import get_engine, NotInitializedError
-            from .postprocess import normalize
-            from .replacements import get_current_rules, process_text
+            from .replacements import get_current_rules, process_text_with_full_stats
 
             # Preprocess audio
             processed_audio = preprocess(audio, sample_rate)
@@ -404,14 +403,10 @@ def transcribe_session_async(
             result = engine.transcribe(processed_audio)
             compute_ms = int((time_module.time() - start_time) * 1000)
 
-            # Post-process
+            # Post-process: use the exact same pipeline as replacements.preview
             raw_text = result.text
-            text = normalize(raw_text)
-
-            # Apply replacements
             rules = get_current_rules()
-            if rules:
-                text, _ = process_text(text, rules)
+            text, _, _, _ = process_text_with_full_stats(raw_text, rules=rules)
 
             # Emit result
             emit_transcription_complete(

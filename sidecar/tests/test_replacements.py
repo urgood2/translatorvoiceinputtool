@@ -706,6 +706,32 @@ class TestReplacementHandlers:
         assert result["truncated"] is False
         assert result["applied_rules_count"] == 0
 
+    def test_preview_reports_applied_presets(self, reset_active_rules):
+        """Should include preset IDs when preset-origin rules are applied."""
+        request = Request(
+            method="replacements.preview",
+            id=3,
+            params={
+                "text": "Use BTW here",
+                "rules": [
+                    {
+                        "id": "common:btw",
+                        "enabled": True,
+                        "kind": "literal",
+                        "pattern": "BTW",
+                        "replacement": "by the way",
+                        "word_boundary": True,
+                        "origin": "preset",
+                    }
+                ],
+            },
+        )
+
+        result = handle_replacements_preview(request)
+        assert result["result"] == "Use by the way here"
+        assert result["applied_rules_count"] == 1
+        assert result["applied_presets"] == ["common"]
+
     def test_process_text_with_stats_reports_rule_applications(self):
         """process_text_with_stats should count rules that actually mutate text."""
         rules = [

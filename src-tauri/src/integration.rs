@@ -341,6 +341,8 @@ pub struct SidecarReplacementPreviewResult {
     pub truncated: bool,
     #[serde(default)]
     pub applied_rules_count: Option<usize>,
+    #[serde(default)]
+    pub applied_presets: Option<Vec<String>>,
 }
 
 fn is_configured_device_available(

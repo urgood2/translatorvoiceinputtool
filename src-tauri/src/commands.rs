@@ -682,6 +682,7 @@ fn preview_replacement_local(
         result,
         truncated: false,
         applied_rules_count,
+        applied_presets: Vec::new(),
     }
 }
 

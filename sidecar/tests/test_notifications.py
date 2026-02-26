@@ -412,8 +412,9 @@ class TestAsyncTranscriptionPipeline:
     """Tests for transcribe_session_async."""
 
     def test_replacements_result_text_is_string(self, mock_write_notification):
-        """Tuple return from replacements should be unpacked before notification emit."""
+        """Shared replacement pipeline result should be unpacked before notification emit."""
         audio = np.array([0.1, 0.2], dtype=np.float32)
+        active_rules = [object()]
 
         fake_engine = MagicMock()
         fake_engine.is_ready.return_value = True
@@ -423,14 +424,17 @@ class TestAsyncTranscriptionPipeline:
             patch("openvoicy_sidecar.notifications.threading.Thread", ImmediateThread),
             patch("openvoicy_sidecar.preprocess.preprocess", return_value=audio),
             patch("openvoicy_sidecar.asr.get_engine", return_value=fake_engine),
-            patch("openvoicy_sidecar.postprocess.normalize", side_effect=lambda t: t),
-            patch("openvoicy_sidecar.replacements.get_current_rules", return_value=[object()]),
-            patch("openvoicy_sidecar.replacements.process_text", return_value=("fixed text", False)),
+            patch("openvoicy_sidecar.replacements.get_current_rules", return_value=active_rules),
+            patch(
+                "openvoicy_sidecar.replacements.process_text_with_full_stats",
+                return_value=("fixed text", False, 1, []),
+            ) as mock_process_text_with_full_stats,
             patch("openvoicy_sidecar.notifications.emit_status_changed"),
             patch("openvoicy_sidecar.notifications.emit_transcription_error") as mock_error,
         ):
             transcribe_session_async("session-1", audio, 16000)
 
+        mock_process_text_with_full_stats.assert_called_once_with("raw text", rules=active_rules)
         mock_error.assert_not_called()
         complete_calls = [
             call

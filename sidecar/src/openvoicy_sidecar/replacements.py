@@ -292,8 +292,22 @@ def apply_replacements_with_stats(
     Returns:
         Tuple of (result_text, was_truncated, applied_rules_count).
     """
+    result, truncated, applied_rules_count, _ = apply_replacements_with_full_stats(text, rules)
+    return result, truncated, applied_rules_count
+
+
+def apply_replacements_with_full_stats(
+    text: str, rules: list[ReplacementRule]
+) -> tuple[str, bool, int, list[str]]:
+    """Apply all replacement rules and return full statistics.
+
+    Returns:
+        Tuple of (result_text, was_truncated, applied_rules_count, applied_presets).
+    """
     result = text
     applied_rules_count = 0
+    applied_preset_ids = set()
+
     for rule in rules:
         if not rule.enabled:
             continue
@@ -301,6 +315,10 @@ def apply_replacements_with_stats(
         next_result = apply_single_rule(result, rule)
         if next_result != result:
             applied_rules_count += 1
+            # Track preset if this rule came from a preset
+            if rule.origin == "preset" and ":" in rule.id:
+                preset_id = rule.id.split(":", 1)[0]
+                applied_preset_ids.add(preset_id)
         result = next_result
 
     # Check output length
@@ -310,7 +328,7 @@ def apply_replacements_with_stats(
         truncated = True
         log(f"Output truncated to {MAX_OUTPUT_LENGTH} chars")
 
-    return result, truncated, applied_rules_count
+    return result, truncated, applied_rules_count, sorted(applied_preset_ids)
 
 
 # === Full Pipeline ===
@@ -360,6 +378,23 @@ def process_text_with_stats(
     Returns:
         Tuple of (processed_text, was_truncated, applied_rules_count).
     """
+    processed, truncated, applied_rules_count, _ = process_text_with_full_stats(
+        text, rules=rules, skip_normalize=skip_normalize, skip_macros=skip_macros
+    )
+    return processed, truncated, applied_rules_count
+
+
+def process_text_with_full_stats(
+    text: str,
+    rules: list[ReplacementRule] | None = None,
+    skip_normalize: bool = False,
+    skip_macros: bool = False,
+) -> tuple[str, bool, int, list[str]]:
+    """Apply the full pipeline and report full replacement statistics.
+
+    Returns:
+        Tuple of (processed_text, was_truncated, applied_rules_count, applied_presets).
+    """
     from .postprocess import normalize
 
     # Stage 1: Normalize
@@ -372,9 +407,9 @@ def process_text_with_stats(
 
     # Stage 3: Replacements
     rules = rules or []
-    text, truncated, applied_rules_count = apply_replacements_with_stats(text, rules)
+    text, truncated, applied_rules_count, applied_presets = apply_replacements_with_full_stats(text, rules)
 
-    return text, truncated, applied_rules_count
+    return text, truncated, applied_rules_count, applied_presets
 
 
 # === Preset Management ===
@@ -584,7 +619,8 @@ def handle_replacements_get_preset_rules(request: Request) -> dict[str, Any]:
 def handle_replacements_preview(request: Request) -> dict[str, Any]:
     """Handle replacements.preview request.
 
-    Apply rules to input text without saving.
+    Apply rules to input text without saving. Uses the EXACT SAME pipeline as
+    transcription to ensure preview/apply parity.
 
     Params:
         text: Input text to process.
@@ -595,6 +631,8 @@ def handle_replacements_preview(request: Request) -> dict[str, Any]:
     Returns:
         result: Processed text.
         truncated: Whether output was truncated.
+        applied_rules_count: Number of rules that made changes.
+        applied_presets: List of preset IDs that contributed rules.
     """
     text = request.params.get("text", "")
     rules_data = request.params.get("rules")
@@ -610,7 +648,8 @@ def handle_replacements_preview(request: Request) -> dict[str, Any]:
     else:
         rules = get_active_rules()
 
-    result, truncated, applied_rules_count = process_text_with_stats(
+    # Use the same pipeline as transcription for perfect parity
+    result, truncated, applied_rules_count, applied_presets = process_text_with_full_stats(
         text,
         rules=rules,
         skip_normalize=skip_normalize,
@@ -621,4 +660,5 @@ def handle_replacements_preview(request: Request) -> dict[str, Any]:
         "result": result,
         "truncated": truncated,
         "applied_rules_count": applied_rules_count,
+        "applied_presets": applied_presets,
     }
