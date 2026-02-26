@@ -13,6 +13,7 @@ import {
   ReplacementList,
   PresetsPanel,
 } from './components';
+import { OnboardingWizard } from './components/Onboarding';
 import type { DiagnosticsReport, ReplacementRule } from './types';
 
 type AppTab = 'status' | 'history' | 'replacements' | 'settings';
@@ -57,6 +58,7 @@ function App() {
   const [diagnosticsReport, setDiagnosticsReport] = useState<DiagnosticsReport | null>(null);
   const [activeTab, setActiveTab] = useState<AppTab>('status');
   const [presetRulesById, setPresetRulesById] = useState<Map<string, ReplacementRule[]>>(new Map());
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
 
   // Initialize store on mount
   useEffect(() => {
@@ -188,6 +190,12 @@ function App() {
         </div>
       </div>
     );
+  }
+
+  // Onboarding gate: show wizard for new users
+  // Treat missing onboarding_completed as "already completed" (migration safety)
+  if (config && config.ui.onboarding_completed === false && !onboardingDismissed) {
+    return <OnboardingWizard onComplete={() => setOnboardingDismissed(true)} />;
   }
 
   const tabs = [
