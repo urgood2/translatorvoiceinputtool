@@ -769,8 +769,8 @@ export type SidecarRpcMethodSystemShutdownResult = {
 };
 
 export type SidecarRpcMethodName = "asr.initialize" | "asr.status" | "asr.transcribe" | "audio.list_devices" | "audio.meter_start" | "audio.meter_status" | "audio.meter_stop" | "audio.set_device" | "model.download" | "model.get_status" | "model.install" | "model.purge_cache" | "recording.cancel" | "recording.start" | "recording.status" | "recording.stop" | "replacements.get_preset_rules" | "replacements.get_presets" | "replacements.get_rules" | "replacements.preview" | "replacements.set_rules" | "status.get" | "system.info" | "system.ping" | "system.shutdown";
-export type SidecarRpcRequiredMethodName = "asr.initialize" | "audio.list_devices" | "audio.meter_start" | "audio.meter_stop" | "audio.set_device" | "model.get_status" | "model.purge_cache" | "recording.cancel" | "recording.start" | "recording.stop" | "replacements.set_rules" | "status.get" | "system.info" | "system.ping" | "system.shutdown";
-export type SidecarRpcOptionalMethodName = "asr.status" | "asr.transcribe" | "audio.meter_status" | "model.download" | "model.install" | "recording.status" | "replacements.get_preset_rules" | "replacements.get_presets" | "replacements.get_rules" | "replacements.preview";
+export type SidecarRpcRequiredMethodName = "asr.initialize" | "audio.list_devices" | "audio.meter_start" | "audio.meter_stop" | "audio.set_device" | "model.get_status" | "model.purge_cache" | "recording.cancel" | "recording.start" | "recording.stop" | "replacements.get_presets" | "replacements.get_rules" | "replacements.set_rules" | "status.get" | "system.info" | "system.ping" | "system.shutdown";
+export type SidecarRpcOptionalMethodName = "asr.status" | "asr.transcribe" | "audio.meter_status" | "model.download" | "model.install" | "recording.status" | "replacements.get_preset_rules" | "replacements.preview";
 export interface SidecarRpcMethodParamsMap {
   "asr.initialize": SidecarRpcMethodAsrInitializeParams;
   "asr.status": SidecarRpcMethodAsrStatusParams;
@@ -877,3 +877,92 @@ export interface SidecarRpcNotificationParamsMap {
   "event.transcription_complete": SidecarRpcNotificationEventTranscriptionCompleteParams;
   "event.transcription_error": SidecarRpcNotificationEventTranscriptionErrorParams;
 }
+
+// Command name constants
+export const COMMAND_CAN_START_RECORDING = "can_start_recording" as const;
+export const COMMAND_CANCEL_RECORDING = "cancel_recording" as const;
+export const COMMAND_CLEAR_HISTORY = "clear_history" as const;
+export const COMMAND_COPY_LAST_TRANSCRIPT = "copy_last_transcript" as const;
+export const COMMAND_COPY_TRANSCRIPT = "copy_transcript" as const;
+export const COMMAND_DOWNLOAD_MODEL = "download_model" as const;
+export const COMMAND_EXPORT_HISTORY = "export_history" as const;
+export const COMMAND_GENERATE_DIAGNOSTICS = "generate_diagnostics" as const;
+export const COMMAND_GET_APP_STATE = "get_app_state" as const;
+export const COMMAND_GET_AVAILABLE_PRESETS = "get_available_presets" as const;
+export const COMMAND_GET_CAPABILITIES = "get_capabilities" as const;
+export const COMMAND_GET_CAPABILITY_ISSUES = "get_capability_issues" as const;
+export const COMMAND_GET_CONFIG = "get_config" as const;
+export const COMMAND_GET_HOTKEY_STATUS = "get_hotkey_status" as const;
+export const COMMAND_GET_MODEL_CATALOG = "get_model_catalog" as const;
+export const COMMAND_GET_MODEL_STATUS = "get_model_status" as const;
+export const COMMAND_GET_RECENT_LOGS = "get_recent_logs" as const;
+export const COMMAND_GET_REPLACEMENT_RULES = "get_replacement_rules" as const;
+export const COMMAND_GET_TRANSCRIPT_HISTORY = "get_transcript_history" as const;
+export const COMMAND_IS_ENABLED = "is_enabled" as const;
+export const COMMAND_LIST_AUDIO_DEVICES = "list_audio_devices" as const;
+export const COMMAND_LOAD_PRESET = "load_preset" as const;
+export const COMMAND_PREVIEW_REPLACEMENT = "preview_replacement" as const;
+export const COMMAND_PURGE_MODEL_CACHE = "purge_model_cache" as const;
+export const COMMAND_RESET_CONFIG_TO_DEFAULTS = "reset_config_to_defaults" as const;
+export const COMMAND_RESTART_SIDECAR = "restart_sidecar" as const;
+export const COMMAND_RUN_SELF_CHECK = "run_self_check" as const;
+export const COMMAND_SET_AUDIO_DEVICE = "set_audio_device" as const;
+export const COMMAND_SET_ENABLED = "set_enabled" as const;
+export const COMMAND_SET_HOTKEY = "set_hotkey" as const;
+export const COMMAND_SET_REPLACEMENT_RULES = "set_replacement_rules" as const;
+export const COMMAND_START_MIC_TEST = "start_mic_test" as const;
+export const COMMAND_START_RECORDING = "start_recording" as const;
+export const COMMAND_STOP_MIC_TEST = "stop_mic_test" as const;
+export const COMMAND_STOP_RECORDING = "stop_recording" as const;
+export const COMMAND_TOGGLE_ENABLED = "toggle_enabled" as const;
+export const COMMAND_UPDATE_CONFIG = "update_config" as const;
+
+// Event name constants
+export const EVENT_APP_ERROR = "app:error" as const;
+export const EVENT_AUDIO_LEVEL = "audio:level" as const;
+export const EVENT_MODEL_PROGRESS = "model:progress" as const;
+export const EVENT_MODEL_STATUS = "model:status" as const;
+export const EVENT_RECORDING_STATUS = "recording:status" as const;
+export const EVENT_SIDECAR_STATUS = "sidecar:status" as const;
+export const EVENT_STATUS_CHANGED = "status:changed" as const;
+export const EVENT_STATE_CHANGED = "state:changed" as const;
+export const EVENT_STATE_CHANGED_LEGACY = "state_changed" as const;
+export const EVENT_TRANSCRIPT_COMPLETE = "transcript:complete" as const;
+export const EVENT_TRANSCRIPTION_COMPLETE = "transcription:complete" as const;
+export const EVENT_TRANSCRIPT_ERROR = "transcript:error" as const;
+export const EVENT_TRANSCRIPTION_ERROR = "transcription:error" as const;
+
+// Sidecar RPC method name constants
+export const RPC_METHOD_ASR_INITIALIZE = "asr.initialize" as const;
+export const RPC_METHOD_ASR_STATUS = "asr.status" as const;
+export const RPC_METHOD_ASR_TRANSCRIBE = "asr.transcribe" as const;
+export const RPC_METHOD_AUDIO_LIST_DEVICES = "audio.list_devices" as const;
+export const RPC_METHOD_AUDIO_METER_START = "audio.meter_start" as const;
+export const RPC_METHOD_AUDIO_METER_STATUS = "audio.meter_status" as const;
+export const RPC_METHOD_AUDIO_METER_STOP = "audio.meter_stop" as const;
+export const RPC_METHOD_AUDIO_SET_DEVICE = "audio.set_device" as const;
+export const RPC_METHOD_MODEL_DOWNLOAD = "model.download" as const;
+export const RPC_METHOD_MODEL_GET_STATUS = "model.get_status" as const;
+export const RPC_METHOD_MODEL_INSTALL = "model.install" as const;
+export const RPC_METHOD_MODEL_PURGE_CACHE = "model.purge_cache" as const;
+export const RPC_METHOD_RECORDING_CANCEL = "recording.cancel" as const;
+export const RPC_METHOD_RECORDING_START = "recording.start" as const;
+export const RPC_METHOD_RECORDING_STATUS = "recording.status" as const;
+export const RPC_METHOD_RECORDING_STOP = "recording.stop" as const;
+export const RPC_METHOD_REPLACEMENTS_GET_PRESET_RULES = "replacements.get_preset_rules" as const;
+export const RPC_METHOD_REPLACEMENTS_GET_PRESETS = "replacements.get_presets" as const;
+export const RPC_METHOD_REPLACEMENTS_GET_RULES = "replacements.get_rules" as const;
+export const RPC_METHOD_REPLACEMENTS_PREVIEW = "replacements.preview" as const;
+export const RPC_METHOD_REPLACEMENTS_SET_RULES = "replacements.set_rules" as const;
+export const RPC_METHOD_STATUS_GET = "status.get" as const;
+export const RPC_METHOD_SYSTEM_INFO = "system.info" as const;
+export const RPC_METHOD_SYSTEM_PING = "system.ping" as const;
+export const RPC_METHOD_SYSTEM_SHUTDOWN = "system.shutdown" as const;
+
+// Deprecated event alias mapping (canonical -> legacy names)
+export const EVENT_ALIASES: Record<string, readonly string[]> = {
+  "sidecar:status": ["status:changed"],
+  "state:changed": ["state_changed"],
+  "transcript:complete": ["transcription:complete"],
+  "transcript:error": ["transcription:error"],
+};

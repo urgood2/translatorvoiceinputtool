@@ -195,6 +195,11 @@ def emit_defs(lines: list[str], ctx: ContractContext) -> None:
         lines.append("")
 
 
+def upper_snake(name: str) -> str:
+    """Convert 'foo:bar' / 'foo.bar' / 'foo_bar' to 'FOO_BAR'."""
+    return re.sub(r"[^A-Za-z0-9]+", "_", name).upper()
+
+
 def emit_name_union(lines: list[str], type_name: str, names: list[str]) -> None:
     if not names:
         lines.append(f"export type {type_name} = never;")
@@ -336,6 +341,54 @@ def generate_types(tauri_commands: dict[str, Any], tauri_events: dict[str, Any],
         lines.append(f"  {json.dumps(name)}: SidecarRpcNotification{pascal_case(name)}Params;")
     lines.append("}")
     lines.append("")
+
+    # Command name constants
+    lines.append("// Command name constants")
+    for name in command_names:
+        lines.append(f"export const COMMAND_{upper_snake(name)} = {json.dumps(name)} as const;")
+    lines.append("")
+
+    # Event name constants + legacy aliases
+    lines.append("// Event name constants")
+    emitted_event_consts: set[str] = set()
+    for item in event_items:
+        name = item.get("name")
+        if not isinstance(name, str):
+            continue
+        const_name = f"EVENT_{upper_snake(name)}"
+        lines.append(f"export const {const_name} = {json.dumps(name)} as const;")
+        emitted_event_consts.add(const_name)
+        for alias in item.get("deprecated_aliases", []):
+            if not isinstance(alias, str) or not alias:
+                continue
+            alias_const = f"EVENT_{upper_snake(alias)}"
+            if alias_const in emitted_event_consts:
+                alias_const = f"EVENT_{upper_snake(alias)}_LEGACY"
+            lines.append(f"export const {alias_const} = {json.dumps(alias)} as const;")
+            emitted_event_consts.add(alias_const)
+    lines.append("")
+
+    # Sidecar RPC method name constants
+    lines.append("// Sidecar RPC method name constants")
+    for name in method_names:
+        lines.append(f"export const RPC_METHOD_{upper_snake(name)} = {json.dumps(name)} as const;")
+    lines.append("")
+
+    # Event alias mapping (only non-empty)
+    alias_entries: list[tuple[str, list[str]]] = []
+    for item in event_items:
+        name = item.get("name")
+        aliases = item.get("deprecated_aliases", [])
+        if isinstance(name, str) and isinstance(aliases, list) and aliases:
+            alias_entries.append((name, [a for a in aliases if isinstance(a, str) and a]))
+    if alias_entries:
+        lines.append("// Deprecated event alias mapping (canonical -> legacy names)")
+        lines.append("export const EVENT_ALIASES: Record<string, readonly string[]> = {")
+        for name, aliases in sorted(alias_entries):
+            alias_list = ", ".join(json.dumps(a) for a in aliases)
+            lines.append(f"  {json.dumps(name)}: [{alias_list}],")
+        lines.append("};")
+        lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
 
