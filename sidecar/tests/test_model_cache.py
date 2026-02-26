@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -359,6 +360,143 @@ class TestDownload:
         assert dest.exists()
         assert dest.read_bytes() == content
 
+    def test_download_file_aborts_on_content_length_mismatch(self, tmp_path):
+        """Should fail early when server Content-Length disagrees with manifest size."""
+        dest = tmp_path / "downloaded.bin"
+        content = b"test file content"
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_response = MagicMock()
+            mock_response.status = 200
+            mock_response.headers = {"Content-Length": str(len(content) + 5)}
+            mock_response.read.side_effect = [content, b""]
+            mock_response.__enter__ = lambda s: s
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_response
+
+            with pytest.raises(NetworkError) as exc_info:
+                download_file("http://example.com/file.bin", dest, len(content))
+
+        assert "content-length mismatch" in exc_info.value.message.lower()
+        assert not dest.exists()
+
+    def test_download_file_aborts_on_resumed_content_length_mismatch(self, tmp_path):
+        """Should fail early when resumed response length is inconsistent."""
+        dest = tmp_path / "downloaded.bin"
+        dest.write_bytes(b"x" * 10)  # existing partial
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_response = MagicMock()
+            mock_response.status = 206
+            # Expected remaining is 10 bytes (20 total - 10 existing).
+            mock_response.headers = {
+                "Content-Length": "12",
+                "Content-Range": "bytes 10-19/20",
+            }
+            mock_response.read.side_effect = [b"y" * 12, b""]
+            mock_response.__enter__ = lambda s: s
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_response
+
+            with pytest.raises(NetworkError) as exc_info:
+                download_file("http://example.com/file.bin", dest, expected_size=20)
+
+            request = mock_urlopen.call_args.args[0]
+            assert request.headers.get("Range") == "bytes=10-"
+
+        assert "content-length mismatch" in exc_info.value.message.lower()
+        assert dest.read_bytes() == b"x" * 10
+
+    def test_download_file_resumes_when_content_range_matches_partial(self, tmp_path):
+        """Should append bytes when server honors Range request with matching Content-Range."""
+        dest = tmp_path / "downloaded.bin"
+        dest.write_bytes(b"x" * 10)
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_response = MagicMock()
+            mock_response.status = 206
+            mock_response.headers = {
+                "Content-Length": "10",
+                "Content-Range": "bytes 10-19/20",
+            }
+            mock_response.read.side_effect = [b"y" * 10, b""]
+            mock_response.__enter__ = lambda s: s
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_response
+
+            download_file("http://example.com/file.bin", dest, expected_size=20)
+
+            request = mock_urlopen.call_args.args[0]
+            assert request.headers.get("Range") == "bytes=10-"
+
+        assert dest.read_bytes() == (b"x" * 10) + (b"y" * 10)
+
+    def test_download_file_restarts_when_server_ignores_range(self, tmp_path):
+        """Should restart from zero when Range is ignored and server returns 200."""
+        dest = tmp_path / "downloaded.bin"
+        dest.write_bytes(b"stale-partial")
+        fresh = b"01234567890123456789"
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_response = MagicMock()
+            mock_response.status = 200
+            mock_response.headers = {"Content-Length": str(len(fresh))}
+            mock_response.read.side_effect = [fresh, b""]
+            mock_response.__enter__ = lambda s: s
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_response
+
+            download_file("http://example.com/file.bin", dest, expected_size=len(fresh))
+
+            request = mock_urlopen.call_args.args[0]
+            assert request.headers.get("Range") == "bytes=13-"
+
+        assert dest.read_bytes() == fresh
+
+    def test_download_file_aborts_on_invalid_content_range_start(self, tmp_path):
+        """Should fail when resumed response starts at the wrong byte offset."""
+        dest = tmp_path / "downloaded.bin"
+        dest.write_bytes(b"x" * 10)
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_response = MagicMock()
+            mock_response.status = 206
+            mock_response.headers = {
+                "Content-Length": "10",
+                "Content-Range": "bytes 0-9/20",
+            }
+            mock_response.read.side_effect = [b"y" * 10, b""]
+            mock_response.__enter__ = lambda s: s
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_response
+
+            with pytest.raises(NetworkError) as exc_info:
+                download_file("http://example.com/file.bin", dest, expected_size=20)
+
+        assert "content-range start mismatch" in exc_info.value.message.lower()
+        assert dest.read_bytes() == b"x" * 10
+
+    def test_download_file_checks_final_size_after_download(self, tmp_path):
+        """Should fail when final written file size differs from expected."""
+        dest = tmp_path / "downloaded.bin"
+        content = b"short"
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_response = MagicMock()
+            mock_response.status = 200
+            mock_response.headers = {}  # Force post-download size check path.
+            mock_response.read.side_effect = [content, b""]
+            mock_response.__enter__ = lambda s: s
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_response
+
+            with pytest.raises(NetworkError) as exc_info:
+                download_file("http://example.com/file.bin", dest, expected_size=10)
+
+        assert "size mismatch" in exc_info.value.message.lower()
+        assert dest.exists()
+        assert dest.stat().st_size == len(content)
+
     def test_build_download_headers_uses_hf_token_for_trusted_hf_urls_only(self):
         """Should include Authorization header only for trusted Hugging Face HTTPS URLs."""
         with patch.dict(os.environ, {"HF_TOKEN": "hf_test_token"}, clear=False):
@@ -458,6 +596,50 @@ class TestDownload:
 
         assert call_count[0] == 2  # Primary + mirror
         assert dest.read_bytes() == content
+
+    def test_download_with_mirrors_falls_back_on_hash_mismatch(self, tmp_path):
+        """Should try next mirror when post-download verification fails."""
+        dest = tmp_path / "downloaded.bin"
+        calls: list[str] = []
+
+        primary_url = "http://primary.example.com/file.bin"
+        mirror_url = "http://mirror.example.com/file.bin"
+
+        def mock_download(url, path, size, callback):
+            calls.append(url)
+            if url == primary_url:
+                path.write_bytes(b"bad")
+            else:
+                path.write_bytes(b"good")
+
+        def verify_download(url: str, path: Path) -> None:
+            if url == primary_url:
+                raise CacheCorruptError(
+                    "Downloaded model file hash mismatch. File may be corrupted or incomplete.",
+                    str(path),
+                    details={"recoverable": True},
+                )
+
+        file_info = ModelFileInfo(
+            path="file.bin",
+            size_bytes=4,
+            sha256="",
+            primary_url=primary_url,
+            mirror_urls=[mirror_url],
+        )
+
+        with patch("openvoicy_sidecar.model_cache.download_file", side_effect=mock_download):
+            with patch("openvoicy_sidecar.model_cache.log") as mock_log:
+                download_with_mirrors(
+                    file_info,
+                    dest,
+                    verify_callback=verify_download,
+                )
+
+        assert calls == [primary_url, mirror_url]
+        assert dest.read_bytes() == b"good"
+        success_logs = [c.args[0] for c in mock_log.call_args_list if c.args]
+        assert any("Download succeeded from mirror 2/2" in entry for entry in success_logs)
 
     def test_download_all_mirrors_fail(self, tmp_path):
         """Should raise if all mirrors fail."""
@@ -652,6 +834,45 @@ class TestModelCacheIntegration:
         assert manager.status == ModelStatus.ERROR
         assert manager.error is not None
         assert "hash mismatch" in manager.error.lower()
+
+    def test_download_model_retries_next_mirror_on_hash_mismatch(self, temp_cache_dir):
+        """Should fallback to next mirror when first URL yields hash mismatch."""
+        manager = ModelCacheManager()
+        primary_url = "http://primary.example.com/model.bin"
+        mirror_url = "http://mirror.example.com/model.bin"
+
+        manifest = ModelManifest(
+            model_id="mirror-retry-model",
+            revision="r1",
+            display_name="Mirror Retry Model",
+            total_size_bytes=4,
+            files=[
+                ModelFileInfo(
+                    path="model.bin",
+                    size_bytes=4,
+                    sha256=hashlib.sha256(b"good").hexdigest(),
+                    primary_url=primary_url,
+                    mirror_urls=[mirror_url],
+                )
+            ],
+        )
+
+        calls: list[str] = []
+
+        def mock_download(url, dest, size, callback):
+            calls.append(url)
+            if url == primary_url:
+                dest.write_bytes(b"bad!")
+            else:
+                dest.write_bytes(b"good")
+
+        with patch("openvoicy_sidecar.model_cache.download_file", side_effect=mock_download):
+            model_dir = manager.download_model(manifest)
+
+        assert calls == [primary_url, mirror_url]
+        assert model_dir == temp_cache_dir / manifest.model_id
+        assert (model_dir / "model.bin").read_bytes() == b"good"
+        assert manager.status == ModelStatus.READY
 
     def test_concurrent_downloads_blocked(self, temp_cache_dir, sample_manifest):
         """Should block concurrent downloads with lock."""

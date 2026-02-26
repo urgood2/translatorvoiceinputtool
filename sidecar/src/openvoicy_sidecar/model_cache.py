@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import threading
 import time
@@ -448,6 +449,36 @@ def check_disk_space(required_bytes: int) -> None:
 # === Download Functions ===
 
 
+_CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$")
+
+
+def _parse_content_range_header(header_value: str) -> tuple[int, int, Optional[int]]:
+    """Parse ``Content-Range`` header value.
+
+    Returns:
+        ``(start, end, total_or_none)`` where ``total_or_none`` is ``None``
+        when the header uses ``*`` for the total length.
+
+    Raises:
+        ValueError: If the header is malformed.
+    """
+    match = _CONTENT_RANGE_RE.match(header_value.strip())
+    if match is None:
+        raise ValueError(f"invalid Content-Range format: {header_value!r}")
+
+    start = int(match.group(1))
+    end = int(match.group(2))
+    total_str = match.group(3)
+    total = None if total_str == "*" else int(total_str)
+
+    if end < start:
+        raise ValueError(f"invalid Content-Range bounds: {header_value!r}")
+    if total is not None and total <= 0:
+        raise ValueError(f"invalid Content-Range total: {header_value!r}")
+
+    return start, end, total
+
+
 def download_file(
     url: str,
     dest_path: Path,
@@ -471,6 +502,7 @@ def download_file(
 
         # Check for existing partial download
         existing_size = dest_path.stat().st_size if dest_path.exists() else 0
+        requested_resume = existing_size > 0
 
         headers = build_download_headers(existing_size, url)
 
@@ -478,12 +510,47 @@ def download_file(
 
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
+                content_range_start: Optional[int] = None
+                content_range_end: Optional[int] = None
+                content_range_total: Optional[int] = None
+
                 # Check if server supports range requests
-                if existing_size > 0 and response.status == 200:
+                if requested_resume and response.status == 200:
                     # Server doesn't support Range, restart download
                     existing_size = 0
                     mode = "wb"
                 elif response.status == 206:
+                    # Partial content, resume. Validate Content-Range semantics.
+                    content_range_header = response.headers.get("Content-Range")
+                    if not content_range_header:
+                        raise NetworkError("Missing Content-Range header for resumed download", url)
+                    try:
+                        (
+                            content_range_start,
+                            content_range_end,
+                            content_range_total,
+                        ) = _parse_content_range_header(content_range_header)
+                    except ValueError as error:
+                        raise NetworkError(
+                            f"Invalid Content-Range header: {content_range_header!r}",
+                            url,
+                        ) from error
+
+                    if content_range_start != existing_size:
+                        raise NetworkError(
+                            "Server Content-Range start mismatch for resumed download "
+                            f"(expected {existing_size}, got {content_range_start})",
+                            url,
+                        )
+
+                    if expected_size > 0 and content_range_total is not None:
+                        if content_range_total != expected_size:
+                            raise NetworkError(
+                                "Server Content-Range total mismatch for resumed download "
+                                f"(expected {expected_size}, got {content_range_total})",
+                                url,
+                            )
+
                     # Partial content, resume
                     mode = "ab"
                 elif response.status == 200:
@@ -491,10 +558,59 @@ def download_file(
                 else:
                     raise NetworkError(f"Unexpected HTTP status: {response.status}", url)
 
-                # Get content length
-                content_length = response.headers.get("Content-Length")
-                if content_length:
-                    total = existing_size + int(content_length)
+                # Validate server-reported content length before downloading.
+                # For resumed transfers (206), Content-Length is the remaining bytes.
+                content_length_header = response.headers.get("Content-Length")
+                reported_length: Optional[int] = None
+                if content_length_header:
+                    try:
+                        reported_length = int(content_length_header)
+                    except ValueError as error:
+                        raise NetworkError(
+                            f"Invalid Content-Length header: {content_length_header!r}",
+                            url,
+                        ) from error
+                    if reported_length < 0:
+                        raise NetworkError(
+                            f"Invalid negative Content-Length header: {reported_length}",
+                            url,
+                        )
+
+                if expected_size > 0 and reported_length is not None:
+                    if response.status == 206:
+                        expected_remaining = expected_size - existing_size
+                        if expected_remaining < 0:
+                            raise NetworkError(
+                                "Resume offset exceeds expected file size "
+                                f"({existing_size} > {expected_size})",
+                                url,
+                            )
+                        if reported_length != expected_remaining:
+                            raise NetworkError(
+                                "Server Content-Length mismatch for resumed download "
+                                f"(expected remaining {expected_remaining}, got {reported_length})",
+                                url,
+                            )
+                        if (
+                            content_range_start is not None
+                            and content_range_end is not None
+                        ):
+                            expected_range_length = content_range_end - content_range_start + 1
+                            if reported_length != expected_range_length:
+                                raise NetworkError(
+                                    "Server Content-Length and Content-Range mismatch "
+                                    f"(Content-Length {reported_length}, range length {expected_range_length})",
+                                    url,
+                                )
+                    elif response.status == 200 and reported_length != expected_size:
+                        raise NetworkError(
+                            "Server Content-Length mismatch for download "
+                            f"(expected {expected_size}, got {reported_length})",
+                            url,
+                        )
+
+                if reported_length is not None:
+                    total = existing_size + reported_length
                 else:
                     total = expected_size if expected_size > 0 else 0
 
@@ -509,6 +625,15 @@ def download_file(
                         downloaded += len(chunk)
                         if progress_callback:
                             progress_callback(downloaded, total)
+
+                # Additional post-download integrity check on final size.
+                if expected_size > 0:
+                    actual_size = dest_path.stat().st_size
+                    if actual_size != expected_size:
+                        raise NetworkError(
+                            f"Downloaded file size mismatch (expected {expected_size}, got {actual_size})",
+                            url,
+                        )
 
         except urllib.error.HTTPError as e:
             raise NetworkError(f"HTTP error {e.code}: {e.reason}", url)
@@ -552,6 +677,7 @@ def download_with_mirrors(
     file_info: ModelFileInfo,
     dest_path: Path,
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    verify_callback: Optional[Callable[[str, Path], None]] = None,
 ) -> None:
     """Download a file, trying mirrors on failure.
 
@@ -559,9 +685,11 @@ def download_with_mirrors(
         file_info: File information with URLs.
         dest_path: Destination file path.
         progress_callback: Called with (current, total) bytes.
+        verify_callback: Optional per-URL verification hook called after each
+            successful download attempt. Raise to fail over to the next mirror.
 
     Raises:
-        NetworkError: If all mirrors fail.
+        ModelCacheError: If all mirrors fail.
     """
     urls = [file_info.primary_url] + file_info.mirror_urls
     urls = [u for u in urls if u]  # Filter empty URLs
@@ -569,18 +697,28 @@ def download_with_mirrors(
     if not urls:
         raise NetworkError("No download URLs available", "")
 
-    last_error = None
+    last_error: Optional[ModelCacheError] = None
 
-    for url in urls:
+    for idx, url in enumerate(urls, start=1):
         try:
-            log(f"Downloading from {url}")
+            log(f"Downloading from mirror {idx}/{len(urls)}: {url}")
             download_file(url, dest_path, file_info.size_bytes, progress_callback)
+            if verify_callback is not None:
+                verify_callback(url, dest_path)
+            log(f"Download succeeded from mirror {idx}/{len(urls)}: {url}")
             return
-        except NetworkError as e:
+        except (NetworkError, CacheCorruptError) as e:
             last_error = e
-            log(f"Download failed from {url}: {e.message}, trying next mirror")
+            # Reset staged file before trying a different mirror source.
+            _cleanup_partial_file(dest_path)
+            log(
+                f"Download failed from mirror {idx}/{len(urls)}: {url}: "
+                f"{e.message}; trying next mirror"
+            )
 
-    raise last_error or NetworkError("All mirrors failed", "")
+    if last_error is not None:
+        raise last_error
+    raise NetworkError("All mirrors failed", "")
 
 
 # === Verification ===
@@ -902,63 +1040,90 @@ class ModelCacheManager:
                         if progress_callback:
                             progress_callback(self.progress)
 
-                    download_with_mirrors(file_info, dest_path, update_progress)
-
-                    # Verify hash first (integrity gate), then verify size.
-                    with self._state_lock:
-                        self._status = ModelStatus.VERIFYING
-                    if progress_callback:
-                        progress_callback(self.progress)
-
-                    try:
-                        hash_ok, actual_sha256 = verify_sha256(dest_path, file_info.sha256)
-                    except OSError as error:
-                        _cleanup_partial_file(dest_path)
-                        raise CacheCorruptError(
-                            "Downloaded model file hash mismatch. "
-                            "File may be corrupted or incomplete.",
-                            str(dest_path),
-                            details=_hash_mismatch_details(
-                                expected_sha256=file_info.sha256,
-                                actual_sha256="",
-                                file_path=dest_path,
-                                io_error=str(error),
-                            ),
-                        ) from error
-
-                    if not hash_ok:
-                        _cleanup_partial_file(dest_path)
-                        raise CacheCorruptError(
-                            "Downloaded model file hash mismatch. "
-                            "File may be corrupted or incomplete.",
-                            str(dest_path),
-                            details=_hash_mismatch_details(
-                                expected_sha256=file_info.sha256,
-                                actual_sha256=actual_sha256,
-                                file_path=dest_path,
-                            ),
-                        )
-
-                    if file_info.size_bytes > 0:
-                        actual_size = dest_path.stat().st_size
-                        if actual_size != file_info.size_bytes:
-                            _cleanup_partial_file(dest_path)
+                    def verify_downloaded_path(downloaded_path: Path) -> None:
+                        try:
+                            hash_ok, actual_sha256 = verify_sha256(downloaded_path, file_info.sha256)
+                        except OSError as error:
                             raise CacheCorruptError(
-                                f"Size mismatch for {file_info.path}",
-                                str(dest_path),
-                                details={
-                                    "expected_size_bytes": file_info.size_bytes,
-                                    "actual_size_bytes": actual_size,
-                                    "file_path": str(dest_path),
-                                    "recoverable": True,
-                                },
+                                "Downloaded model file hash mismatch. "
+                                "File may be corrupted or incomplete.",
+                                str(downloaded_path),
+                                details=_hash_mismatch_details(
+                                    expected_sha256=file_info.sha256,
+                                    actual_sha256="",
+                                    file_path=downloaded_path,
+                                    io_error=str(error),
+                                ),
+                            ) from error
+
+                        if not hash_ok:
+                            raise CacheCorruptError(
+                                "Downloaded model file hash mismatch. "
+                                "File may be corrupted or incomplete.",
+                                str(downloaded_path),
+                                details=_hash_mismatch_details(
+                                    expected_sha256=file_info.sha256,
+                                    actual_sha256=actual_sha256,
+                                    file_path=downloaded_path,
+                                ),
                             )
 
-                    if file_info.sha256 == "VERIFY_ON_FIRST_DOWNLOAD":
-                        log(
-                            "Skipping SHA-256 verification placeholder for "
-                            f"{file_info.path}; proceeding with size check only"
+                        if file_info.size_bytes > 0:
+                            actual_size = downloaded_path.stat().st_size
+                            if actual_size != file_info.size_bytes:
+                                raise CacheCorruptError(
+                                    f"Size mismatch for {file_info.path}",
+                                    str(downloaded_path),
+                                    details={
+                                        "expected_size_bytes": file_info.size_bytes,
+                                        "actual_size_bytes": actual_size,
+                                        "file_path": str(downloaded_path),
+                                        "recoverable": True,
+                                    },
+                                )
+
+                        if file_info.sha256 == "VERIFY_ON_FIRST_DOWNLOAD":
+                            log(
+                                "Skipping SHA-256 verification placeholder for "
+                                f"{file_info.path}; proceeding with size check only"
+                            )
+
+                    verified_by_selected_mirror = False
+
+                    def verify_mirror_attempt(_url: str, downloaded_path: Path) -> None:
+                        nonlocal verified_by_selected_mirror
+                        with self._state_lock:
+                            self._status = ModelStatus.VERIFYING
+                        if progress_callback:
+                            progress_callback(self.progress)
+                        verify_downloaded_path(downloaded_path)
+                        verified_by_selected_mirror = True
+
+                    try:
+                        download_with_mirrors(
+                            file_info,
+                            dest_path,
+                            update_progress,
+                            verify_callback=verify_mirror_attempt,
                         )
+                    except TypeError as error:
+                        # Compatibility path for tests/mocks that monkeypatch
+                        # download_with_mirrors with the legacy 3-arg signature.
+                        if "verify_callback" not in str(error):
+                            raise
+                        download_with_mirrors(file_info, dest_path, update_progress)
+
+                    # Final guard for tests/mocks that bypass per-mirror verification.
+                    if not verified_by_selected_mirror:
+                        with self._state_lock:
+                            self._status = ModelStatus.VERIFYING
+                        if progress_callback:
+                            progress_callback(self.progress)
+                        try:
+                            verify_downloaded_path(dest_path)
+                        except CacheCorruptError:
+                            _cleanup_partial_file(dest_path)
+                            raise
 
                 with self._state_lock:
                     self._progress.files_completed = len(manifest.files)
