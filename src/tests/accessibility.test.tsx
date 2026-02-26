@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { computeAccessibleName } from 'dom-accessibility-api';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { TabBar } from '../components/Layout/TabBar';
 import { HistoryPanel } from '../components/History/HistoryPanel';
 import { StatusIndicator } from '../components/StatusIndicator';
@@ -273,7 +274,8 @@ describe('Accessibility Regression Coverage', () => {
     expect(screen.getByText('Error')).toBeDefined();
   });
 
-  it('logs modal focus behavior and verifies dialog semantics', async () => {
+  it('logs modal focus behavior and verifies focus trap dialog semantics', async () => {
+    const user = userEvent.setup();
     const entries = [createTranscript('t-2', 'Another sample transcript.')];
     render(
       <HistoryPanel
@@ -299,13 +301,25 @@ describe('Accessibility Regression Coverage', () => {
     expect(names).toContain('Cancel');
     expect(names).toContain('Clear All');
 
-    const last = focusables[focusables.length - 1];
-    last.focus();
-    fireEvent.keyDown(last, { key: 'Tab' });
+    const cancelButton = screen.getByTestId('history-clear-cancel');
+    const confirmButton = screen.getByTestId('history-clear-confirm');
+
+    expect(document.activeElement).toBe(cancelButton);
+
+    await user.tab();
+    expect(document.activeElement).toBe(confirmButton);
+
+    await user.tab();
+    expect(document.activeElement).toBe(cancelButton);
+
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(confirmButton);
+
     console.info('[a11y] Modal focus trap check active element:', (document.activeElement as HTMLElement)?.outerHTML);
 
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByTestId('history-clear-all-button'));
   });
 
   it('core light/dark text contrast meets WCAG AA (>= 4.5:1)', () => {

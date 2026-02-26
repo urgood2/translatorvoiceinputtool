@@ -9,7 +9,7 @@
  * - Audio duration display
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { TranscriptEntry } from '../../types';
 import { HistoryEntry } from './HistoryEntry';
 
@@ -19,12 +19,23 @@ export interface HistoryPanelProps {
   onClearAll?: () => Promise<void>;
 }
 
+function getFocusableElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )
+  );
+}
+
 export function HistoryPanel({ entries, onCopy, onClearAll }: HistoryPanelProps) {
   const [searchInput, setSearchInput] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
+  const clearAllButtonRef = useRef<HTMLButtonElement | null>(null);
+  const clearDialogRef = useRef<HTMLDivElement | null>(null);
+  const wasDialogOpenRef = useRef(false);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -53,6 +64,58 @@ export function HistoryPanel({ entries, onCopy, onClearAll }: HistoryPanelProps)
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
   }, [showClearConfirm, isClearing]);
+
+  useEffect(() => {
+    if (!showClearConfirm) {
+      if (wasDialogOpenRef.current) {
+        wasDialogOpenRef.current = false;
+        clearAllButtonRef.current?.focus();
+      }
+      return;
+    }
+
+    wasDialogOpenRef.current = true;
+    const dialog = clearDialogRef.current;
+    if (!dialog) {
+      return;
+    }
+
+    const focusable = getFocusableElements(dialog);
+    focusable[0]?.focus();
+
+    const handleTab = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') {
+        return;
+      }
+
+      const targets = getFocusableElements(dialog);
+      if (targets.length === 0) {
+        return;
+      }
+
+      const first = targets[0];
+      const last = targets[targets.length - 1];
+      const active = document.activeElement;
+
+      if (event.shiftKey) {
+        if (active === first || !dialog.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+        return;
+      }
+
+      if (active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    dialog.addEventListener('keydown', handleTab);
+    return () => {
+      dialog.removeEventListener('keydown', handleTab);
+    };
+  }, [showClearConfirm]);
 
   const filteredEntries = useMemo(() => {
     if (debouncedQuery.length === 0) {
@@ -115,6 +178,7 @@ export function HistoryPanel({ entries, onCopy, onClearAll }: HistoryPanelProps)
           <button
             type="button"
             data-testid="history-clear-all-button"
+            ref={clearAllButtonRef}
             disabled={clearDisabled}
             onClick={() => setShowClearConfirm(true)}
             aria-label="Clear all transcript history"
@@ -179,6 +243,7 @@ export function HistoryPanel({ entries, onCopy, onClearAll }: HistoryPanelProps)
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div
             role="dialog"
+            ref={clearDialogRef}
             aria-modal="true"
             aria-labelledby="history-clear-title"
             aria-describedby="history-clear-description"
