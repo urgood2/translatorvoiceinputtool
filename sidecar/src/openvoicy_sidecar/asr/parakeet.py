@@ -14,6 +14,7 @@ import numpy as np
 
 from ..protocol import log
 from .base import (
+    ASRBackend,
     ASRState,
     DeviceUnavailableError,
     InitProgress,
@@ -60,11 +61,14 @@ def select_device(device_pref: str) -> str:
         return "cuda" if check_cuda_available() else "cpu"
 
 
-class ParakeetBackend:
+class ParakeetBackend(ASRBackend):
     """ASR backend using NVIDIA Parakeet TDT model.
 
     This backend uses the NeMo framework to load and run inference
     with the Parakeet TDT (Token Duration Transducer) model.
+
+    The implementation is legacy-sync first (for current ASREngine usage)
+    but now also exposes the formal ASRBackend methods.
     """
 
     def __init__(self):
@@ -72,12 +76,14 @@ class ParakeetBackend:
         self._device: str = "cpu"
         self._state: ASRState = ASRState.UNINITIALIZED
         self._model_path: Optional[Path] = None
+        self._language: Optional[str] = None
 
     def initialize(
         self,
-        model_path: Path,
+        model_path: Path | str,
         device: str,
         progress_callback: Optional[ProgressCallback] = None,
+        language: Optional[str] = None,
     ) -> None:
         """Initialize the Parakeet model.
 
@@ -85,7 +91,24 @@ class ParakeetBackend:
             model_path: Path to the model directory containing .nemo file.
             device: Device to use ("cpu" or "cuda").
             progress_callback: Optional callback for progress updates.
+            language: Optional language hint. Parakeet currently ignores
+                explicit language selection and always runs in auto mode.
         """
+        # Compatibility: the formal ASRBackend signature accepts language as
+        # the third argument, while the legacy path passes a callback there.
+        if progress_callback is not None and not callable(progress_callback):
+            language = str(progress_callback)
+            progress_callback = None
+
+        self._language = None if language in (None, "", "auto") else str(language)
+        if self._language is not None:
+            log(
+                f"Parakeet backend does not support explicit language='{self._language}'; "
+                "using backend default"
+            )
+
+        resolved_model_path = model_path if isinstance(model_path, Path) else Path(model_path)
+
         if progress_callback:
             progress_callback(
                 InitProgress(state="loading_model", detail="Checking dependencies...")
@@ -113,10 +136,10 @@ class ParakeetBackend:
             raise DeviceUnavailableError("CUDA not available", "cuda")
 
         # Find the .nemo file
-        nemo_file = self._find_nemo_file(model_path)
+        nemo_file = self._find_nemo_file(resolved_model_path)
         if not nemo_file:
             self._state = ASRState.ERROR
-            raise ModelLoadError(f"No .nemo file found in {model_path}")
+            raise ModelLoadError(f"No .nemo file found in {resolved_model_path}")
 
         if progress_callback:
             progress_callback(
@@ -151,7 +174,7 @@ class ParakeetBackend:
             log(f"Model loaded in {load_time:.2f}s on {device}")
 
             self._device = device
-            self._model_path = model_path
+            self._model_path = resolved_model_path
             self._state = ASRState.READY
 
             if progress_callback:
@@ -239,6 +262,21 @@ class ParakeetBackend:
         """Get the device the model is running on."""
         return self._device
 
+    async def get_status(self) -> dict[str, Any]:
+        """Return formal ASR backend status payload."""
+        return {
+            "state": self._state.value,
+            "model_id": self._model_path.name if self._model_path else None,
+            "device": self._device,
+            "ready": self.is_ready(),
+            "language": self._language,
+        }
+
+    def supports_language(self, language: str) -> bool:
+        """Parakeet backend currently supports only auto/default language."""
+        normalized = language.strip().lower()
+        return normalized in {"", "auto"}
+
     def get_state(self) -> ASRState:
         """Get the current state."""
         return self._state
@@ -263,4 +301,5 @@ class ParakeetBackend:
 
         self._state = ASRState.UNINITIALIZED
         self._model_path = None
+        self._language = None
         log("Model unloaded")

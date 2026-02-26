@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import openvoicy_sidecar.asr as asr_module
 from openvoicy_sidecar.asr.base import ASRBackend, LegacyASRBackend
 from openvoicy_sidecar.asr.dispatch import (
     UnsupportedFamilyError,
@@ -58,6 +59,18 @@ def test_parakeet_and_whisper_implement_legacy_backend_protocol() -> None:
     assert isinstance(get_backend("whisper"), LegacyASRBackend)
 
 
+def test_parakeet_implements_formal_asr_backend_interface() -> None:
+    backend = get_backend("parakeet")
+    assert isinstance(backend, ASRBackend)
+
+
+def test_create_backend_routes_parakeet_and_whisper_families() -> None:
+    parakeet = asr_module.create_backend("parakeet", {})
+    whisper = asr_module.create_backend("whisper", {})
+    assert isinstance(parakeet, asr_module.ParakeetBackend)
+    assert isinstance(whisper, asr_module.WhisperBackend)
+
+
 def test_formal_asr_backend_interface_defines_required_abstract_methods() -> None:
     assert ASRBackend.__abstractmethods__ == {
         "initialize",
@@ -88,3 +101,12 @@ def test_register_backend_allows_new_family() -> None:
     backend = get_backend("stub")
     assert isinstance(backend, StubBackend)
     assert "stub" in registered_families()
+
+
+def test_create_backend_uses_registry_for_custom_families() -> None:
+    class StubBackend:
+        pass
+
+    register_backend("stub", StubBackend)
+    backend = asr_module.create_backend("stub", {"test": True})
+    assert isinstance(backend, StubBackend)

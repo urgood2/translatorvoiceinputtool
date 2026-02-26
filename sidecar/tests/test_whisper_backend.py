@@ -88,7 +88,7 @@ def test_asr_initialize_language_en_configures_whisper_backend(
     backend = _FakeWhisperBackend()
     _patch_fast_initialize_path(monkeypatch)
     monkeypatch.setattr(asr_module, "resolve_model_family", lambda _model_id: "whisper")
-    monkeypatch.setattr(asr_module, "get_backend", lambda _family: backend)
+    monkeypatch.setattr(asr_module, "create_backend", lambda _family, _config=None: backend)
 
     result = asr_module.handle_asr_initialize(
         _initialize_request(
@@ -111,7 +111,7 @@ def test_asr_initialize_language_auto_enables_auto_detection(
     backend = _FakeWhisperBackend()
     _patch_fast_initialize_path(monkeypatch)
     monkeypatch.setattr(asr_module, "resolve_model_family", lambda _model_id: "whisper")
-    monkeypatch.setattr(asr_module, "get_backend", lambda _family: backend)
+    monkeypatch.setattr(asr_module, "create_backend", lambda _family, _config=None: backend)
 
     asr_module.handle_asr_initialize(
         _initialize_request(
@@ -133,7 +133,7 @@ def test_asr_initialize_without_language_uses_model_default(
     _patch_fast_initialize_path(monkeypatch)
     monkeypatch.setattr(asr_module, "resolve_model_family", lambda _model_id: "whisper")
     monkeypatch.setattr(asr_module, "resolve_default_language", lambda _model_id: "de")
-    monkeypatch.setattr(asr_module, "get_backend", lambda _family: backend)
+    monkeypatch.setattr(asr_module, "create_backend", lambda _family, _config=None: backend)
 
     asr_module.handle_asr_initialize(
         _initialize_request({"model_id": "openai/whisper-small", "device_pref": "cpu"})
@@ -148,7 +148,7 @@ def test_asr_initialize_invalid_language_returns_clear_error(
     backend = _FakeWhisperBackend(fail_language=True)
     _patch_fast_initialize_path(monkeypatch)
     monkeypatch.setattr(asr_module, "resolve_model_family", lambda _model_id: "whisper")
-    monkeypatch.setattr(asr_module, "get_backend", lambda _family: backend)
+    monkeypatch.setattr(asr_module, "create_backend", lambda _family, _config=None: backend)
 
     with pytest.raises(ASRError) as exc_info:
         asr_module.handle_asr_initialize(

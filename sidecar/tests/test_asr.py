@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -242,6 +243,22 @@ class TestParakeetBackend:
 
         assert backend._state == ASRState.UNINITIALIZED
         assert backend._model is None
+
+    def test_supports_language_only_auto(self):
+        """Formal interface should report explicit language as unsupported."""
+        backend = ParakeetBackend()
+        assert backend.supports_language("auto")
+        assert not backend.supports_language("en")
+
+    def test_get_status_returns_formal_interface_payload(self):
+        """Formal async status endpoint should return canonical fields."""
+        backend = ParakeetBackend()
+        status = asyncio.run(backend.get_status())
+
+        assert status["state"] == ASRState.UNINITIALIZED.value
+        assert status["ready"] is False
+        assert status["device"] == "cpu"
+        assert "language" in status
 
 
 # === Unit Tests: ASREngine ===

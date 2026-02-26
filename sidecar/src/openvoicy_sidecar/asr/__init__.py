@@ -14,7 +14,12 @@ from typing import Any, Optional
 
 from ..model_cache import ModelCacheManager, ModelManifest, ModelStatus
 from ..protocol import Request, log, write_event
-from ..resources import MODEL_CATALOG_REL, MODEL_MANIFEST_REL, resolve_shared_path, resolve_shared_path_optional
+from ..resources import (
+    MODEL_CATALOG_REL,
+    MODEL_MANIFEST_REL,
+    resolve_shared_path,
+    resolve_shared_path_optional,
+)
 from .base import (
     ASRBackend,
     ASRError,
@@ -31,6 +36,7 @@ from .base import (
 )
 from .dispatch import UnsupportedFamilyError, get_backend
 from .parakeet import ParakeetBackend, check_cuda_available, select_device
+from .whisper import WhisperBackend
 
 # Re-export public API
 __all__ = [
@@ -49,6 +55,7 @@ __all__ = [
     "handle_asr_initialize",
     "handle_asr_transcribe",
     "handle_asr_status",
+    "create_backend",
 ]
 
 # Default manifest / catalog paths (resolved at call-time, not import-time)
@@ -136,7 +143,7 @@ def load_model_catalog() -> list[dict[str, Any]]:
         if isinstance(models, list):
             return [entry for entry in models if isinstance(entry, dict)]
     except Exception as error:
-        log(f"Failed to load model catalog {DEFAULT_CATALOG_PATH}: {error}")
+        log(f"Failed to load model catalog {_DEFAULT_CATALOG_REL}: {error}")
     return []
 
 
@@ -170,6 +177,25 @@ def resolve_default_language(model_id: str) -> Optional[str]:
         if language:
             return language
     return None
+
+
+def create_backend(
+    family: str,
+    config: Optional[dict[str, Any]] = None,
+) -> ASRBackend:
+    """Factory for ASR backends selected by model family.
+
+    Args:
+        family: Model family from catalog (for example, "parakeet", "whisper").
+        config: Optional backend factory config (reserved for future extension).
+    """
+    _ = config  # Reserved for future backend-specific options.
+    normalized_family = family.strip().lower()
+    if normalized_family == "parakeet":
+        return ParakeetBackend()
+    if normalized_family == "whisper":
+        return WhisperBackend()
+    return get_backend(normalized_family)
 
 
 class ASREngine:
@@ -323,14 +349,17 @@ class ASREngine:
 
             family = resolve_model_family(model_id)
             log(f"Selecting ASR backend: family={family} model_id={model_id}")
-            if family == "parakeet":
-                backend = ParakeetBackend()
-            else:
-                try:
-                    backend = get_backend(family)
-                except UnsupportedFamilyError:
-                    self._state = ASRState.ERROR
-                    raise
+            try:
+                backend = create_backend(
+                    family,
+                    {
+                        "model_id": model_id,
+                        "device_pref": device_pref,
+                    },
+                )
+            except UnsupportedFamilyError:
+                self._state = ASRState.ERROR
+                raise
 
             if hasattr(backend, "set_language"):
                 set_language = getattr(backend, "set_language")
