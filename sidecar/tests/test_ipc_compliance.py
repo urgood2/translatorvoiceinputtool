@@ -30,7 +30,7 @@ from openvoicy_sidecar.audio_meter import (
     handle_audio_meter_status,
     handle_audio_meter_stop,
 )
-from openvoicy_sidecar.protocol import ERROR_METHOD_NOT_FOUND, Request
+from openvoicy_sidecar.protocol import ERROR_INTERNAL, ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND, Request
 from openvoicy_sidecar.recording import (
     AlreadyRecordingError,
     NotRecordingError,
@@ -480,6 +480,38 @@ def test_missing_required_params_returns_error_not_crash(run_sidecar: Any) -> No
     assert "error" in responses[0]
     assert responses[0]["error"]["data"]["kind"] == "E_INVALID_SESSION"
     _log("Assertion: missing required params returns structured error -> PASS")
+
+
+def test_invalid_params_type_returns_jsonrpc_error(run_sidecar: Any) -> None:
+    """Regression (2eev): wrong-type params must return structured error, not crash."""
+    _log("Testing invalid params type for replacements.set_rules")
+    # Send rules as a number instead of a list — wrong type
+    bad_request = '{"jsonrpc":"2.0","id":72,"method":"replacements.set_rules","params":{"rules":42}}'
+    # Follow up with a ping to prove the server is still alive after the error
+    ping_request = '{"jsonrpc":"2.0","id":73,"method":"system.ping"}'
+    # Shutdown to ensure clean process exit
+    shutdown_request = '{"jsonrpc":"2.0","id":74,"method":"system.shutdown","params":{"reason":"compliance-test"}}'
+    responses, _ = run_sidecar([bad_request, ping_request, shutdown_request], timeout=10.0)
+    assert len(responses) >= 2, "Server must survive bad params and respond to subsequent requests"
+
+    _log(f"Response(bad)={responses[0]}")
+    _log(f"Response(ping)={responses[1]}")
+
+    # The bad request must return a structured JSON-RPC error
+    assert "error" in responses[0], "Expected error response for wrong-type params"
+    error = responses[0]["error"]
+    assert isinstance(error["code"], int), "Error code must be an integer"
+    assert error["code"] in (ERROR_INTERNAL, ERROR_INVALID_PARAMS), (
+        f"Expected error code {ERROR_INTERNAL} or {ERROR_INVALID_PARAMS}, got {error['code']}"
+    )
+    assert isinstance(error["message"], str), "Error message must be a string"
+    assert "data" in error, "Error must include data field"
+    assert isinstance(error["data"]["kind"], str), "Error data.kind must be a string"
+
+    # The ping must succeed — proving the server didn't crash
+    assert "result" in responses[1], "Ping must succeed after error"
+    assert responses[1]["result"]["protocol"] == "v1"
+    _log("Assertion: invalid params type returns structured error, server survives -> PASS")
 
 
 def test_system_shutdown_process_exit() -> None:

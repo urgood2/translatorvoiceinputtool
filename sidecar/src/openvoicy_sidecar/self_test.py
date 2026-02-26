@@ -178,11 +178,15 @@ class SidecarRpcProcess:
                 )
             return result
 
-    def shutdown(self) -> None:
+    def shutdown(self) -> int | None:
+        """Send shutdown and wait for clean exit.
+
+        Returns the process exit code, or None if no process was running.
+        """
         if self._proc is None:
-            return
+            return None
         if self._proc.poll() is not None:
-            return
+            return self._proc.returncode
 
         try:
             if self._proc.stdin is not None:
@@ -206,6 +210,8 @@ class SidecarRpcProcess:
             except subprocess.TimeoutExpired:
                 self._proc.kill()
                 self._proc.wait(timeout=2.0)
+
+        return self._proc.returncode
 
 
 def validate_ping_result(result: dict[str, Any]) -> None:
@@ -369,7 +375,22 @@ def run_self_test() -> None:
             lambda: validate_replacements_get_rules_result(sidecar.call("replacements.get_rules")),
         )
     finally:
-        sidecar.shutdown()
+        exit_code = sidecar.shutdown()
+
+    # Phase 3: Verify clean exit
+    # Exit code 0 = clean exit.
+    # Negative codes (e.g. -15/SIGTERM, -9/SIGKILL) are acceptable when we
+    # explicitly sent shutdown and then terminated the process ourselves.
+    # Only positive non-zero codes indicate an unexpected crash.
+    def _check_exit() -> None:
+        if exit_code is None:
+            raise SelfTestError("Sidecar process was not running at shutdown")
+        if exit_code > 0:
+            raise SelfTestError(
+                f"Sidecar exited with error code {exit_code} after shutdown"
+            )
+
+    _run_step("clean exit after shutdown", _check_exit)
 
 
 def main() -> int:
