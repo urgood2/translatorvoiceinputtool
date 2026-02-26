@@ -9,6 +9,7 @@ import { useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../store/appStore';
 import { MicSetupStep } from './MicSetupStep';
+import { HotkeySetupStep } from './HotkeySetupStep';
 import { ModelReadinessStep } from './ModelReadinessStep';
 
 const STEPS = ['Welcome', 'Microphone', 'Hotkey', 'Model', 'Complete'] as const;
@@ -23,6 +24,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
   const config = useAppStore((s) => s.config);
 
   const step: Step = STEPS[currentStep] ?? 'Welcome';
+  const stepHandlesContinue = step === 'Microphone' || step === 'Model';
 
   const handleNext = useCallback(() => {
     if (currentStep < STEPS.length - 1) {
@@ -82,12 +84,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
         )}
 
         {step === 'Hotkey' && (
-          <div>
-            <h2 className="text-2xl font-bold mb-4">Hotkey Configuration</h2>
-            <p className="text-gray-600 dark:text-gray-400 mb-8">
-              Configure the keyboard shortcut to start recording.
-            </p>
-          </div>
+          <HotkeySetupStep onReady={handleNext} />
         )}
 
         {step === 'Model' && (
@@ -132,7 +129,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
               >
                 Get Started
               </button>
-            ) : (
+            ) : !stepHandlesContinue ? (
               <button
                 type="button"
                 onClick={handleNext}
@@ -140,7 +137,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
               >
                 Next
               </button>
-            )}
+            ) : null}
           </div>
         </div>
       </div>

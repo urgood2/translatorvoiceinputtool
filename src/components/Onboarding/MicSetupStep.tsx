@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useCallback } from 'react';
+import { useState } from 'react';
 import { useAppStore } from '../../store/appStore';
 import { MicrophoneTest } from '../Settings/MicrophoneTest';
 
@@ -14,7 +15,7 @@ export interface MicSetupStepProps {
   onReady: () => void;
 }
 
-export function MicSetupStep({ onReady: _onReady }: MicSetupStepProps) {
+export function MicSetupStep({ onReady }: MicSetupStepProps) {
   const devices = useAppStore((s) => s.devices);
   const selectedDeviceUid = useAppStore((s) => s.selectedDeviceUid);
   const audioLevel = useAppStore((s) => s.audioLevel);
@@ -23,6 +24,8 @@ export function MicSetupStep({ onReady: _onReady }: MicSetupStepProps) {
   const selectDevice = useAppStore((s) => s.selectDevice);
   const startMicTest = useAppStore((s) => s.startMicTest);
   const stopMicTest = useAppStore((s) => s.stopMicTest);
+  const [hasTestedMic, setHasTestedMic] = useState(false);
+  const [confirmedWorking, setConfirmedWorking] = useState(false);
 
   // Load devices on mount
   useEffect(() => {
@@ -42,13 +45,29 @@ export function MicSetupStep({ onReady: _onReady }: MicSetupStepProps) {
     async (e: React.ChangeEvent<HTMLSelectElement>) => {
       const uid = e.target.value || null;
       await selectDevice(uid);
+      setConfirmedWorking(false);
+      setHasTestedMic(false);
     },
     [selectDevice],
   );
 
+  const handleStartTest = useCallback(async () => {
+    await startMicTest();
+    setHasTestedMic(true);
+  }, [startMicTest]);
+
+  const handleContinue = useCallback(async () => {
+    if (isMeterRunning) {
+      await stopMicTest();
+    }
+    onReady();
+  }, [isMeterRunning, onReady, stopMicTest]);
+
   const currentDevice =
     devices.find((d) => d.uid === selectedDeviceUid) ||
     devices.find((d) => d.is_default);
+  const hasSelectedDevice = Boolean(selectedDeviceUid || currentDevice?.uid);
+  const canContinue = hasSelectedDevice && hasTestedMic && confirmedWorking;
 
   return (
     <div>
@@ -95,11 +114,41 @@ export function MicSetupStep({ onReady: _onReady }: MicSetupStepProps) {
       <div className="text-left">
         <MicrophoneTest
           deviceUid={selectedDeviceUid ?? undefined}
-          onStartTest={startMicTest}
+          onStartTest={handleStartTest}
           onStopTest={stopMicTest}
           audioLevel={audioLevel}
           isRunning={isMeterRunning}
         />
+      </div>
+
+      <div className="mt-6 text-left space-y-3">
+        <label className="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
+          <input
+            type="checkbox"
+            checked={confirmedWorking}
+            onChange={(e) => setConfirmedWorking(e.target.checked)}
+            disabled={!hasTestedMic || !hasSelectedDevice}
+            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
+          />
+          <span>
+            I tested this microphone and it is working.
+          </span>
+        </label>
+        {!hasTestedMic && (
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Start the mic test first, then confirm before continuing.
+          </p>
+        )}
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={handleContinue}
+            disabled={!canContinue}
+            className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Continue
+          </button>
+        </div>
       </div>
     </div>
   );

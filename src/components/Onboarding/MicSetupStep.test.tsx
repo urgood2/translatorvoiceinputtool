@@ -117,6 +117,49 @@ describe('MicSetupStep', () => {
     expect(startMicTestSpy).toHaveBeenCalled();
   });
 
+  test('confirmation checkbox is disabled until mic test starts', () => {
+    render(<MicSetupStep onReady={vi.fn()} />);
+    const checkbox = screen.getByRole('checkbox') as HTMLInputElement;
+    expect(checkbox.disabled).toBe(true);
+  });
+
+  test('continue button is enabled only after test + confirmation', async () => {
+    render(<MicSetupStep onReady={vi.fn()} />);
+    const continueButton = screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement;
+    const checkbox = screen.getByRole('checkbox') as HTMLInputElement;
+
+    expect(continueButton.disabled).toBe(true);
+    expect(checkbox.disabled).toBe(true);
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Start Test'));
+    });
+
+    expect(checkbox.disabled).toBe(false);
+    expect(continueButton.disabled).toBe(true);
+
+    fireEvent.click(checkbox);
+    expect(continueButton.disabled).toBe(false);
+  });
+
+  test('continue calls onReady and stops running mic test', async () => {
+    useAppStore.setState({ isMeterRunning: true });
+    const onReady = vi.fn();
+    render(<MicSetupStep onReady={onReady} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Start Test'));
+    });
+    fireEvent.click(screen.getByRole('checkbox'));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    });
+
+    expect(stopMicTestSpy).toHaveBeenCalled();
+    expect(onReady).toHaveBeenCalled();
+  });
+
   test('stop test button calls stopMicTest when running', async () => {
     useAppStore.setState({ isMeterRunning: true });
     render(<MicSetupStep onReady={vi.fn()} />);
@@ -160,5 +203,26 @@ describe('MicSetupStep', () => {
     render(<MicSetupStep onReady={vi.fn()} />);
     // Should show default device info since no explicit selection
     expect(screen.getByText('48kHz, 1 channel')).toBeDefined();
+  });
+
+  test('changing device requires re-testing and reconfirmation', async () => {
+    render(<MicSetupStep onReady={vi.fn()} />);
+    const select = screen.getByLabelText('Input Device') as HTMLSelectElement;
+    const checkbox = screen.getByRole('checkbox') as HTMLInputElement;
+    const continueButton = screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement;
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Start Test'));
+    });
+    fireEvent.click(checkbox);
+    expect(continueButton.disabled).toBe(false);
+
+    await act(async () => {
+      fireEvent.change(select, { target: { value: 'mic-2' } });
+    });
+
+    expect(checkbox.checked).toBe(false);
+    expect(checkbox.disabled).toBe(true);
+    expect(continueButton.disabled).toBe(true);
   });
 });
