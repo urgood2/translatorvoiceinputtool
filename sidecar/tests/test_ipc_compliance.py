@@ -13,7 +13,12 @@ from typing import Any
 
 import pytest
 
-from openvoicy_sidecar.asr import handle_asr_status
+from openvoicy_sidecar.asr import ASRError, handle_asr_initialize, handle_asr_status
+from openvoicy_sidecar.model_cache import (
+    ModelInUseError,
+    handle_model_get_status,
+    handle_model_purge_cache,
+)
 from openvoicy_sidecar.audio import (
     AudioDevice,
     DeviceNotFoundError,
@@ -475,3 +480,102 @@ def test_missing_required_params_returns_error_not_crash(run_sidecar: Any) -> No
     assert "error" in responses[0]
     assert responses[0]["error"]["data"]["kind"] == "E_INVALID_SESSION"
     _log("Assertion: missing required params returns structured error -> PASS")
+
+
+def test_system_shutdown_process_exit() -> None:
+    """Regression (25dl): system.shutdown must terminate the sidecar process cleanly."""
+    _log("Testing system.shutdown subprocess-level clean exit")
+    src_path = Path(__file__).parent.parent / "src"
+    shutdown_req = '{"jsonrpc":"2.0","id":80,"method":"system.shutdown","params":{"reason":"compliance-test"}}'
+    proc = subprocess.run(
+        [sys.executable, "-m", "openvoicy_sidecar"],
+        input=shutdown_req + "\n",
+        capture_output=True,
+        text=True,
+        cwd=str(src_path.parent),
+        env={**dict(os.environ), "PYTHONPATH": str(src_path)},
+        timeout=10.0,
+    )
+    responses = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+    assert len(responses) >= 1, "Expected at least one JSON-RPC response"
+    shutdown_resp = next((r for r in responses if r.get("id") == 80), None)
+    assert shutdown_resp is not None, "Missing response for shutdown request"
+    assert shutdown_resp["result"]["status"] == "shutting_down"
+    assert proc.returncode == 0, f"Sidecar should exit cleanly after shutdown, got exit code {proc.returncode}"
+    _log(f"Response={shutdown_resp}, exit_code={proc.returncode}")
+    _log("Assertion: system.shutdown subprocess clean exit -> PASS")
+
+
+def test_model_get_status_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (28gq): model.get_status must return expected status fields."""
+    _log("Testing model.get_status response shape")
+
+    class _CacheManagerStub:
+        def load_manifest(self, _path):
+            return None
+
+        def check_cache(self, _manifest):
+            pass
+
+        def get_status(self, manifest=None):
+            return {
+                "model_id": "test/model",
+                "revision": "r1",
+                "status": "missing",
+                "cache_path": "/tmp/cache",
+            }
+
+    monkeypatch.setattr(
+        "openvoicy_sidecar.model_cache.get_cache_manager",
+        lambda: _CacheManagerStub(),
+    )
+    monkeypatch.setattr(
+        "openvoicy_sidecar.model_cache.resolve_shared_path_optional",
+        lambda _rel: None,
+    )
+    result = handle_model_get_status(_request("model.get_status", 90))
+    _log(f"Response={result}")
+    assert result["model_id"] == "test/model"
+    assert result["status"] in ("missing", "downloading", "verifying", "ready", "error")
+    assert "revision" in result
+    assert "cache_path" in result
+    _log("Assertion: model.get_status shape -> PASS")
+
+
+def test_model_purge_cache_success_and_in_use_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (28gq): model.purge_cache success shape and ModelInUseError path."""
+    _log("Testing model.purge_cache success and error paths")
+
+    class _PurgeableStub:
+        def purge_cache(self, model_id=None):
+            return True
+
+    monkeypatch.setattr(
+        "openvoicy_sidecar.model_cache.get_cache_manager",
+        lambda: _PurgeableStub(),
+    )
+    result = handle_model_purge_cache(_request("model.purge_cache", 91))
+    _log(f"Response(success)={result}")
+    assert result == {"purged": True}
+
+    class _InUseStub:
+        def purge_cache(self, model_id=None):
+            raise ModelInUseError("Model is currently in use")
+
+    monkeypatch.setattr(
+        "openvoicy_sidecar.model_cache.get_cache_manager",
+        lambda: _InUseStub(),
+    )
+    with pytest.raises(ModelInUseError):
+        handle_model_purge_cache(_request("model.purge_cache", 92))
+    _log("Assertion: model.purge_cache success + ModelInUseError -> PASS")
+
+
+def test_asr_initialize_rejects_invalid_device_pref() -> None:
+    """Regression (28gq): asr.initialize must reject invalid device_pref values."""
+    _log("Testing asr.initialize invalid device_pref")
+    with pytest.raises(ASRError, match="Invalid device_pref"):
+        handle_asr_initialize(
+            _request("asr.initialize", 93, {"device_pref": "tpu"})
+        )
+    _log("Assertion: asr.initialize rejects invalid device_pref -> PASS")
