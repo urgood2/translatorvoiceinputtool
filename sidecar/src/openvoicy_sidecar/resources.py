@@ -21,12 +21,14 @@ _THIS_DIR = Path(__file__).resolve().parent  # openvoicy_sidecar/
 
 def _shared_candidates() -> list[Path]:
     """Return candidate root directories for ``shared/``, ordered by priority."""
-    roots: list[Path] = []
-
     # 1. Explicit override via environment variable
     env_root = os.environ.get("OPENVOICY_SHARED_ROOT")
     if env_root:
-        roots.append(Path(env_root).expanduser())
+        # Explicit override is authoritative to avoid silently mixing
+        # packaged assets with dev-layout fallbacks.
+        return [Path(env_root).expanduser()]
+
+    roots: list[Path] = []
 
     # 2. PyInstaller onefile extraction directory
     meipass = getattr(sys, "_MEIPASS", None)

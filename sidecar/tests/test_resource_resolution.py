@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+import openvoicy_sidecar.resources as resources_module
 from openvoicy_sidecar.resources import (
     CONTRACTS_DIR_REL,
     MODEL_CATALOG_REL,
@@ -122,6 +123,53 @@ class TestMeipassResolution:
         assert (path / "sidecar.rpc.v1.json").exists()
 
 
+class TestPackagedExecutableResolution:
+    """Simulate packaged sidecar layout where resources sit next to executable."""
+
+    def test_executable_relative_shared_is_used_when_dev_tree_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        exe_dir = tmp_path / "dist"
+        exe_dir.mkdir(parents=True)
+        _create_shared_tree(exe_dir / "shared")
+
+        fake_module_dir = tmp_path / "no-dev-tree" / "src" / "openvoicy_sidecar"
+        fake_module_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(resources_module, "_THIS_DIR", fake_module_dir)
+        monkeypatch.setattr(sys, "executable", str(exe_dir / "openvoicy-sidecar"), raising=False)
+        monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+        monkeypatch.delenv("OPENVOICY_SHARED_ROOT", raising=False)
+
+        path = resolve_shared_path(PRESETS_REL)
+        assert str(path).startswith(str(exe_dir / "shared"))
+
+    def test_macos_resources_shared_is_resolved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app_root = tmp_path / "OpenVoicy.app" / "Contents"
+        macos_dir = app_root / "MacOS"
+        resources_dir = app_root / "Resources" / "shared"
+        macos_dir.mkdir(parents=True)
+        _create_shared_tree(resources_dir)
+
+        fake_module_dir = tmp_path / "missing-dev" / "src" / "openvoicy_sidecar"
+        fake_module_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(resources_module, "_THIS_DIR", fake_module_dir)
+        monkeypatch.setattr(
+            sys,
+            "executable",
+            str(macos_dir / "openvoicy-sidecar"),
+            raising=False,
+        )
+        monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+        monkeypatch.delenv("OPENVOICY_SHARED_ROOT", raising=False)
+
+        path = resolve_shared_path(MODEL_MANIFEST_REL)
+        assert str(path).startswith(str(resources_dir))
+
+
 # ── Environment override ─────────────────────────────────────────────
 
 
@@ -136,6 +184,16 @@ class TestEnvOverride:
 
         path = resolve_shared_path(PRESETS_REL)
         assert str(custom_shared) in str(path)
+
+    def test_env_override_is_authoritative_no_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        custom_shared = tmp_path / "custom_shared"
+        custom_shared.mkdir(parents=True)
+        monkeypatch.setenv("OPENVOICY_SHARED_ROOT", str(custom_shared))
+
+        with pytest.raises(FileNotFoundError):
+            resolve_shared_path(PRESETS_REL)
 
 
 # ── Missing resource ─────────────────────────────────────────────────
@@ -241,6 +299,30 @@ class TestSelfTestResourceValidators:
 
         with pytest.raises(SelfTestError, match="models"):
             validate_model_catalog_loadable()
+
+    def test_validate_shared_resources_requires_contracts_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from openvoicy_sidecar.self_test import SelfTestError, validate_shared_resources
+
+        bad_shared = tmp_path / "shared"
+        (bad_shared / "replacements").mkdir(parents=True)
+        (bad_shared / "replacements" / "PRESETS.json").write_text("[]")
+        (bad_shared / "model").mkdir(parents=True)
+        (bad_shared / "model" / "MODEL_MANIFEST.json").write_text(
+            json.dumps({"model_id": "test-model"})
+        )
+        (bad_shared / "model" / "MODEL_CATALOG.json").write_text(
+            json.dumps({"models": []})
+        )
+        (bad_shared / "model" / "manifests").mkdir(exist_ok=True)
+        # contracts directory intentionally missing
+
+        # OPENVOICY_SHARED_ROOT is authoritative — no fallback to dev layout
+        monkeypatch.setenv("OPENVOICY_SHARED_ROOT", str(bad_shared))
+
+        with pytest.raises(SelfTestError, match="Contracts"):
+            validate_shared_resources()
 
 
 # ── Well-known relative paths ────────────────────────────────────────

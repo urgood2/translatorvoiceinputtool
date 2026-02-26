@@ -107,6 +107,19 @@ def get_startup_preset_candidates() -> list[Path]:
 
 def load_startup_presets() -> None:
     """Load replacement presets on startup without crashing on missing/invalid files."""
+    # Direct file override takes top priority (backward compat)
+    env_path = os.environ.get("OPENVOICY_PRESETS_PATH")
+    if env_path:
+        direct = Path(env_path).expanduser()
+        if direct.exists():
+            log(f"Checking preset path: {direct}")
+            presets = load_presets_from_file(direct)
+            if presets:
+                log(f"Loaded {len(presets)} preset(s) from {direct}")
+            else:
+                log(f"Preset file found at {direct}, but no presets were loaded")
+            return
+
     preset_path = resolve_shared_path_optional(PRESETS_REL)
     if preset_path is None:
         candidates = get_startup_preset_candidates()

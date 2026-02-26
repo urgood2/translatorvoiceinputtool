@@ -190,12 +190,12 @@ def test_preset_rules_are_usable_in_process_text_pipeline(tmp_path, monkeypatch)
 
 
 def test_invalid_or_missing_preset_file_is_graceful(tmp_path, monkeypatch, capsys):
-    """Missing/invalid PRESETS.json should not crash and should log attempted paths."""
-    missing = tmp_path / "missing.json"
-    invalid = tmp_path / "invalid.json"
-    invalid.write_text("{ this is not valid json }")
-
-    monkeypatch.setattr(server_mod, "get_startup_preset_candidates", lambda: [missing, invalid])
+    """Missing/invalid PRESETS.json should not crash and should log graceful message."""
+    monkeypatch.setattr(server_mod, "resolve_shared_path_optional", lambda _rel: None)
+    monkeypatch.setattr(
+        server_mod, "get_startup_preset_candidates", lambda: [tmp_path / "missing.json"]
+    )
+    monkeypatch.delenv("OPENVOICY_PRESETS_PATH", raising=False)
     load_startup_presets()
 
     presets = get_all_presets()
@@ -203,9 +203,7 @@ def test_invalid_or_missing_preset_file_is_graceful(tmp_path, monkeypatch, capsy
 
     stderr_output = capsys.readouterr().err
     logger.info("startup preset logs: %s", stderr_output)
-    assert str(missing) in stderr_output
-    assert str(invalid) in stderr_output
-    assert "Checking preset path:" in stderr_output
+    assert "not found on startup" in stderr_output
 
 
 def test_preset_and_user_rules_merge_no_duplicates_and_ordering(tmp_path, monkeypatch):

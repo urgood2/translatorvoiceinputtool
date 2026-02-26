@@ -260,33 +260,32 @@ def validate_replacements_get_rules_result(result: dict[str, Any]) -> None:
 
 def validate_shared_resources() -> None:
     """Verify that essential shared resources are resolvable."""
-    # Required resources - must exist
-    required = [
+    required_files = [
         (PRESETS_REL, "Replacement presets"),
         (MODEL_MANIFEST_REL, "Model manifest"),
         (MODEL_CATALOG_REL, "Model catalog"),
     ]
-    for rel, label in required:
+    for rel, label in required_files:
         path = resolve_shared_path_optional(rel)
         if path is None:
             raise SelfTestError(
                 f"Required shared resource not found: {label} ({rel})"
             )
+        if not path.is_file():
+            raise SelfTestError(f"Required shared resource is not a file: {label} ({path})")
         _log(f"  {label}: {path}")
 
-    # Optional directories - warn but don't fail
-    optional_dirs = [
+    required_dirs = [
         (CONTRACTS_DIR_REL, "Contracts"),
         (MODEL_MANIFESTS_DIR_REL, "Model manifests"),
     ]
-    for rel, label in optional_dirs:
+    for rel, label in required_dirs:
         path = resolve_shared_path_optional(rel)
         if path is None:
-            _log(f"  {label}: NOT FOUND (optional)")
-        elif not path.is_dir():
-            _log(f"  {label}: {path} (not a directory, unexpected)")
-        else:
-            _log(f"  {label}: {path}")
+            raise SelfTestError(f"Required shared resource directory not found: {label} ({rel})")
+        if not path.is_dir():
+            raise SelfTestError(f"Required shared resource is not a directory: {label} ({path})")
+        _log(f"  {label}: {path}")
 
 
 def validate_presets_loadable() -> None:

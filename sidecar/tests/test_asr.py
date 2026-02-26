@@ -168,13 +168,13 @@ class TestManifestLoading:
 
     def test_load_manifest_not_found(self):
         """Should raise when manifest file not found."""
-        with patch("openvoicy_sidecar.asr.DEFAULT_MANIFEST_PATH", Path("/nonexistent/path.json")):
+        with patch("openvoicy_sidecar.asr.resolve_shared_path", side_effect=FileNotFoundError("not found")):
             with pytest.raises(ModelNotFoundError):
                 load_manifest("test-model")
 
     def test_load_manifest_wrong_model_id(self, mock_manifest_path):
         """Should raise when model ID doesn't match."""
-        with patch("openvoicy_sidecar.asr.DEFAULT_MANIFEST_PATH", mock_manifest_path):
+        with patch("openvoicy_sidecar.asr.resolve_shared_path", return_value=mock_manifest_path):
             with pytest.raises(ModelNotFoundError) as exc_info:
                 load_manifest("wrong-model")
 
@@ -363,7 +363,7 @@ class TestASRIntegration:
         mock_backend.is_ready.return_value = True
         mock_backend.get_device.return_value = "cpu"
 
-        with patch("openvoicy_sidecar.asr.DEFAULT_MANIFEST_PATH", manifest_path):
+        with patch("openvoicy_sidecar.asr.resolve_shared_path", return_value=manifest_path):
             with patch("openvoicy_sidecar.asr.ParakeetBackend") as MockBackend:
                 MockBackend.return_value = mock_backend
                 with patch.object(engine._cache_manager, "check_cache", return_value=True):
