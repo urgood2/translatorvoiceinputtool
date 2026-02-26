@@ -858,6 +858,52 @@ describe('Internal Actions', () => {
     });
   });
 
+  test('_setDownloadProgress syncs modelStatus.progress while installing', () => {
+    useAppStore.setState({
+      modelStatus: {
+        status: 'downloading',
+        model_id: 'openai/whisper-small',
+      },
+    });
+
+    useAppStore.getState()._setDownloadProgress({
+      current: 75,
+      total: 300,
+      unit: 'bytes',
+    });
+
+    expect(useAppStore.getState().modelStatus).toEqual({
+      status: 'downloading',
+      model_id: 'openai/whisper-small',
+      progress: { current: 75, total: 300, unit: 'bytes' },
+    });
+  });
+
+  test('_setDownloadProgress does not mutate modelStatus when not installing', () => {
+    useAppStore.setState({
+      modelStatus: {
+        status: 'ready',
+        model_id: 'openai/whisper-small',
+      },
+    });
+
+    useAppStore.getState()._setDownloadProgress({
+      current: 75,
+      total: 300,
+      unit: 'bytes',
+    });
+
+    expect(useAppStore.getState().modelStatus).toEqual({
+      status: 'ready',
+      model_id: 'openai/whisper-small',
+    });
+    expect(useAppStore.getState().downloadProgress).toEqual({
+      current: 75,
+      total: 300,
+      unit: 'bytes',
+    });
+  });
+
   test('_setAudioLevel updates audio level', () => {
     useAppStore.getState()._setAudioLevel({
       rms: -20,

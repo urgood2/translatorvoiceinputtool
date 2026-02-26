@@ -819,7 +819,28 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   _setDownloadProgress: (progress) => {
-    set({ downloadProgress: progress });
+    set((state) => {
+      const currentStatus = state.modelStatus;
+      const isInstalling = currentStatus
+        ? (
+            currentStatus.status === 'loading'
+            || currentStatus.status === 'downloading'
+            || currentStatus.status === 'verifying'
+          )
+        : false;
+
+      if (!currentStatus || !isInstalling) {
+        return { downloadProgress: progress };
+      }
+
+      return {
+        downloadProgress: progress,
+        modelStatus: {
+          ...currentStatus,
+          progress: progress ?? undefined,
+        },
+      };
+    });
   },
 
   _setAudioLevel: (level) => {
