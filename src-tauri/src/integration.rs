@@ -342,7 +342,7 @@ fn asr_initialize_language_rejected(error: &RpcError) -> bool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct AsrInitializeResult {
     status: String,
 }
@@ -1139,6 +1139,10 @@ struct RecordingContext {
     raw_text: Option<String>,
     /// Final transcript text from sidecar after post-processing/replacements.
     final_text: Option<String>,
+    /// Optional language reported by sidecar transcription.
+    language: Option<String>,
+    /// Optional confidence reported by sidecar transcription.
+    confidence: Option<f32>,
     /// When true, skip direct injection and force clipboard preservation.
     force_clipboard_only: bool,
     /// Optional reason associated with forced clipboard preservation.
@@ -2298,6 +2302,8 @@ impl IntegrationManager {
             audio_duration_ms: None,
             raw_text: None,
             final_text: None,
+            language: None,
+            confidence: None,
             force_clipboard_only: false,
             force_clipboard_reason: None,
             timing_marks: PipelineTimingMarks::default(),
@@ -3256,6 +3262,8 @@ impl IntegrationManager {
                             mut timing_marks,
                             raw_text,
                             final_text,
+                            language,
+                            confidence,
                             force_clipboard_only,
                             force_clipboard_reason,
                         ) = {
@@ -3266,6 +3274,8 @@ impl IntegrationManager {
                                     ctx.timing_marks.clone(),
                                     ctx.raw_text.clone(),
                                     ctx.final_text.clone(),
+                                    ctx.language.clone(),
+                                    ctx.confidence,
                                     ctx.force_clipboard_only,
                                     ctx.force_clipboard_reason.clone(),
                                 )
@@ -3273,6 +3283,8 @@ impl IntegrationManager {
                                 (
                                     None,
                                     PipelineTimingMarks::default(),
+                                    None,
+                                    None,
                                     None,
                                     None,
                                     false,
@@ -3419,7 +3431,8 @@ impl IntegrationManager {
                             processing_duration_ms as u32,
                             HistoryInjectionResult::from_injection_result(&result),
                         )
-                        .with_session_id(Uuid::parse_str(&session_id).ok());
+                        .with_session_id(Uuid::parse_str(&session_id).ok())
+                        .with_asr_metadata(language, confidence);
                         transcript_entry.raw_text = raw_text;
                         transcript_entry.final_text = final_text.clone();
                         transcript_entry.text = final_text;
@@ -3596,8 +3609,9 @@ impl IntegrationManager {
                             text: String,
                             duration_ms: u64,
                             #[serde(default)]
-                            #[allow(dead_code)]
                             confidence: Option<f64>,
+                            #[serde(default)]
+                            language: Option<String>,
                             #[serde(default)]
                             raw_text: Option<String>,
                             #[serde(default)]
@@ -3622,6 +3636,13 @@ impl IntegrationManager {
                                         stop_audio_duration_ms = ctx.audio_duration_ms;
                                         ctx.raw_text = Some(raw_text.clone());
                                         ctx.final_text = Some(final_text.clone());
+                                        ctx.language = params
+                                            .language
+                                            .as_deref()
+                                            .map(str::trim)
+                                            .filter(|value| !value.is_empty())
+                                            .map(ToString::to_string);
+                                        ctx.confidence = params.confidence.map(|v| v as f32);
                                     }
                                 }
                                 map_transcription_complete_durations(
@@ -4241,6 +4262,161 @@ for raw in sys.stdin:
             .expect("failed to spawn mock model-install fallback sidecar")
     }
 
+    fn spawn_mock_sidecar_asr_language_retry_process(
+        call_log_path: &Path,
+        first_error_kind: &str,
+        first_error_message: &str,
+    ) -> Child {
+        let script = r#"
+import json
+import sys
+
+log_path = sys.argv[1]
+first_error_kind = sys.argv[2]
+first_error_message = sys.argv[3]
+
+def append_call(method, params):
+    with open(log_path, 'a', encoding='utf-8') as handle:
+        handle.write(json.dumps({"method": method, "params": params}) + "\n")
+        handle.flush()
+
+for raw in sys.stdin:
+    line = raw.strip()
+    if not line:
+        continue
+    request = json.loads(line)
+    method = request.get("method")
+    req_id = request.get("id")
+    params = request.get("params") or {}
+    append_call(method, params)
+
+    if method == "asr.initialize":
+        if "language" in params:
+            response = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {
+                    "code": -32602,
+                    "message": first_error_message,
+                    "data": {"kind": first_error_kind}
+                }
+            }
+        else:
+            response = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"status": "ready"}
+            }
+        print(json.dumps(response), flush=True)
+    elif method == "system.shutdown":
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"status": "shutting_down"}
+        }
+        print(json.dumps(response), flush=True)
+        break
+    else:
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {
+                "code": -32601,
+                "message": "Method not found",
+                "data": {"kind": "E_METHOD_NOT_FOUND"}
+            }
+        }
+        print(json.dumps(response), flush=True)
+"#;
+
+        Command::new("python3")
+            .arg("-u")
+            .arg("-c")
+            .arg(script)
+            .arg(call_log_path.as_os_str())
+            .arg(first_error_kind)
+            .arg(first_error_message)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn mock asr-language-retry sidecar")
+    }
+
+    fn spawn_mock_sidecar_asr_initialize_error_process(
+        call_log_path: &Path,
+        error_kind: &str,
+        error_message: &str,
+    ) -> Child {
+        let script = r#"
+import json
+import sys
+
+log_path = sys.argv[1]
+error_kind = sys.argv[2]
+error_message = sys.argv[3]
+
+def append_call(method, params):
+    with open(log_path, 'a', encoding='utf-8') as handle:
+        handle.write(json.dumps({"method": method, "params": params}) + "\n")
+        handle.flush()
+
+for raw in sys.stdin:
+    line = raw.strip()
+    if not line:
+        continue
+    request = json.loads(line)
+    method = request.get("method")
+    req_id = request.get("id")
+    params = request.get("params") or {}
+    append_call(method, params)
+
+    if method == "asr.initialize":
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {
+                "code": -32000,
+                "message": error_message,
+                "data": {"kind": error_kind}
+            }
+        }
+        print(json.dumps(response), flush=True)
+    elif method == "system.shutdown":
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"status": "shutting_down"}
+        }
+        print(json.dumps(response), flush=True)
+        break
+    else:
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {
+                "code": -32601,
+                "message": "Method not found",
+                "data": {"kind": "E_METHOD_NOT_FOUND"}
+            }
+        }
+        print(json.dumps(response), flush=True)
+"#;
+
+        Command::new("python3")
+            .arg("-u")
+            .arg("-c")
+            .arg(script)
+            .arg(call_log_path.as_os_str())
+            .arg(error_kind)
+            .arg(error_message)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn mock asr-initialize-error sidecar")
+    }
+
     fn read_mock_call_log(path: &Path) -> Vec<Value> {
         let raw = fs::read_to_string(path).unwrap_or_default();
         raw.lines()
@@ -4533,7 +4709,8 @@ for raw in sys.stdin:
             120,
             HistoryInjectionResult::Injected,
         )
-        .with_session_id(Some(session_id));
+        .with_session_id(Some(session_id))
+        .with_asr_metadata(Some("en".to_string()), Some(0.91));
 
         println!("[EVENT_TEST] Emitting canonical+legacy transcript complete events");
         emit_with_shared_seq_for_broadcaster(
@@ -4587,6 +4764,10 @@ for raw in sys.stdin:
         assert_eq!(
             complete_entry.get("raw_text").and_then(Value::as_str),
             complete_entry.get("final_text").and_then(Value::as_str)
+        );
+        assert_eq!(
+            complete_entry.get("language").and_then(Value::as_str),
+            Some("en")
         );
 
         assert!(payloads[2].get("error").is_some());
@@ -6162,6 +6343,8 @@ for raw in sys.stdin:
             audio_duration_ms: None,
             raw_text: None,
             final_text: None,
+            language: None,
+            confidence: None,
             force_clipboard_only: false,
             force_clipboard_reason: None,
             timing_marks: PipelineTimingMarks::default(),
@@ -6544,6 +6727,229 @@ for raw in sys.stdin:
             .await
             .expect_err("download_model should fail without sidecar");
         assert!(error.contains("E_SIDECAR_IPC"));
+    }
+
+    #[tokio::test]
+    async fn test_download_model_falls_back_to_legacy_methods_when_model_install_is_unsupported() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
+        let call_log_path = temp_dir.path().join("mock_model_install_fallback_calls.jsonl");
+        fs::write(&call_log_path, "").expect("call log file should be initialized");
+
+        let mut mock_sidecar = spawn_mock_sidecar_model_install_fallback_process(&call_log_path);
+        let stdin = mock_sidecar
+            .stdin
+            .take()
+            .expect("mock sidecar stdin should be piped");
+        let stdout = mock_sidecar
+            .stdout
+            .take()
+            .expect("mock sidecar stdout should be piped");
+
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(Arc::clone(&state_manager));
+
+        let rpc_client = RpcClient::new(stdin, stdout);
+        manager.start_notification_loop(rpc_client.subscribe());
+        *manager.rpc_client.write().await = Some(rpc_client);
+
+        manager
+            .download_model(Some("nvidia/parakeet-tdt-0.6b-v3".to_string()), Some(false))
+            .await
+            .expect("download_model should succeed via legacy fallback path");
+
+        wait_until(Duration::from_secs(2), || read_mock_call_log(&call_log_path).len() >= 3).await;
+
+        let calls = read_mock_call_log(&call_log_path);
+        let methods: Vec<String> = calls
+            .iter()
+            .filter_map(|call| {
+                call.get("method")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            })
+            .collect();
+
+        assert_eq!(
+            methods.get(0),
+            Some(&"model.install".to_string()),
+            "model.install should be attempted first"
+        );
+        assert_eq!(
+            methods.get(1),
+            Some(&"model.download".to_string()),
+            "legacy fallback should call model.download when model.install is unavailable"
+        );
+        assert_eq!(
+            methods.get(2),
+            Some(&"asr.initialize".to_string()),
+            "legacy fallback should initialize ASR after model.download succeeds"
+        );
+
+        assert_eq!(manager.get_model_status().await, ModelStatus::Ready);
+        assert!(manager.recording_controller.is_model_ready().await);
+        assert_eq!(state_manager.get(), AppState::Idle);
+
+        if let Some(client) = manager.rpc_client.write().await.take() {
+            client.shutdown().await;
+        }
+        let _ = mock_sidecar.kill();
+        let _ = mock_sidecar.wait();
+    }
+
+    #[tokio::test]
+    async fn test_asr_initialize_language_fallback_retries_when_language_param_is_rejected() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
+        let call_log_path = temp_dir.path().join("mock_asr_language_retry_calls.jsonl");
+        fs::write(&call_log_path, "").expect("call log file should be initialized");
+
+        let mut mock_sidecar = spawn_mock_sidecar_asr_language_retry_process(
+            &call_log_path,
+            "E_INVALID_PARAMS",
+            "Invalid params: unknown field 'language'",
+        );
+        let stdin = mock_sidecar
+            .stdin
+            .take()
+            .expect("mock sidecar stdin should be piped");
+        let stdout = mock_sidecar
+            .stdout
+            .take()
+            .expect("mock sidecar stdout should be piped");
+        let rpc_client = RpcClient::new(stdin, stdout);
+
+        let result = call_asr_initialize_with_language_fallback(
+            &rpc_client,
+            "openai/whisper-small",
+            "cpu",
+            Some("en".to_string()),
+        )
+        .await
+        .expect("fallback initialize should succeed");
+        assert_eq!(result.status, "ready");
+
+        wait_until(Duration::from_secs(2), || read_mock_call_log(&call_log_path).len() >= 2).await;
+
+        let asr_calls: Vec<Value> = read_mock_call_log(&call_log_path)
+            .into_iter()
+            .filter(|call| call.get("method").and_then(Value::as_str) == Some("asr.initialize"))
+            .collect();
+
+        assert_eq!(asr_calls.len(), 2, "host should retry asr.initialize once");
+        assert_eq!(
+            asr_calls[0]
+                .get("params")
+                .and_then(|params| params.get("language"))
+                .and_then(Value::as_str),
+            Some("en")
+        );
+        assert!(
+            asr_calls[1]
+                .get("params")
+                .and_then(|params| params.get("language"))
+                .is_none(),
+            "fallback retry should remove language parameter"
+        );
+
+        rpc_client.shutdown().await;
+        let _ = mock_sidecar.kill();
+        let _ = mock_sidecar.wait();
+    }
+
+    #[tokio::test]
+    async fn test_asr_initialize_language_fallback_retries_when_method_is_missing() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
+        let call_log_path = temp_dir.path().join("mock_asr_method_missing_calls.jsonl");
+        fs::write(&call_log_path, "").expect("call log file should be initialized");
+
+        let mut mock_sidecar = spawn_mock_sidecar_asr_language_retry_process(
+            &call_log_path,
+            "E_METHOD_NOT_FOUND",
+            "Method not found",
+        );
+        let stdin = mock_sidecar
+            .stdin
+            .take()
+            .expect("mock sidecar stdin should be piped");
+        let stdout = mock_sidecar
+            .stdout
+            .take()
+            .expect("mock sidecar stdout should be piped");
+        let rpc_client = RpcClient::new(stdin, stdout);
+
+        let result = call_asr_initialize_with_language_fallback(
+            &rpc_client,
+            "openai/whisper-small",
+            "cpu",
+            Some("de".to_string()),
+        )
+        .await
+        .expect("fallback initialize should succeed on method-not-found");
+        assert_eq!(result.status, "ready");
+
+        wait_until(Duration::from_secs(2), || read_mock_call_log(&call_log_path).len() >= 2).await;
+
+        let asr_calls: Vec<Value> = read_mock_call_log(&call_log_path)
+            .into_iter()
+            .filter(|call| call.get("method").and_then(Value::as_str) == Some("asr.initialize"))
+            .collect();
+        assert_eq!(asr_calls.len(), 2, "host should retry after method-not-found");
+        assert_eq!(
+            asr_calls[0]
+                .get("params")
+                .and_then(|params| params.get("language"))
+                .and_then(Value::as_str),
+            Some("de")
+        );
+        assert!(
+            asr_calls[1]
+                .get("params")
+                .and_then(|params| params.get("language"))
+                .is_none(),
+            "retry should omit unsupported language parameter"
+        );
+
+        rpc_client.shutdown().await;
+        let _ = mock_sidecar.kill();
+        let _ = mock_sidecar.wait();
+    }
+
+    #[tokio::test]
+    async fn test_asr_initialize_language_fallback_surfaces_whisper_unavailable_message() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
+        let call_log_path = temp_dir.path().join("mock_asr_whisper_unavailable_calls.jsonl");
+        fs::write(&call_log_path, "").expect("call log file should be initialized");
+
+        let mut mock_sidecar = spawn_mock_sidecar_asr_initialize_error_process(
+            &call_log_path,
+            "E_MODEL_LOAD",
+            "Language not supported in this build; install faster-whisper",
+        );
+        let stdin = mock_sidecar
+            .stdin
+            .take()
+            .expect("mock sidecar stdin should be piped");
+        let stdout = mock_sidecar
+            .stdout
+            .take()
+            .expect("mock sidecar stdout should be piped");
+        let rpc_client = RpcClient::new(stdin, stdout);
+
+        let error = call_asr_initialize_with_language_fallback(
+            &rpc_client,
+            "openai/whisper-small",
+            "cpu",
+            Some("en".to_string()),
+        )
+        .await
+        .expect_err("initialize should fail when whisper backend is unavailable");
+        assert!(error
+            .to_string()
+            .contains("Language not supported in this build"));
+        assert!(error.to_string().contains("faster-whisper"));
+
+        rpc_client.shutdown().await;
+        let _ = mock_sidecar.kill();
+        let _ = mock_sidecar.wait();
     }
 
     #[tokio::test]

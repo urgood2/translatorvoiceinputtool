@@ -97,6 +97,17 @@ pub struct Notification {
     pub params: Value,
 }
 
+/// Typed request params for `asr.initialize`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AsrInitializeParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_pref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+}
+
 /// Incoming message that could be either a response or notification.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
@@ -290,6 +301,30 @@ mod tests {
         assert_eq!(notif.method, "heartbeat");
         // params defaults to null
         assert!(notif.params.is_null());
+    }
+
+    #[test]
+    fn test_asr_initialize_params_serialization_includes_language_when_present() {
+        let params = AsrInitializeParams {
+            model_id: Some("openai/whisper-small".to_string()),
+            device_pref: Some("auto".to_string()),
+            language: Some("en".to_string()),
+        };
+
+        let json = serde_json::to_value(params).unwrap();
+        assert_eq!(json.get("language").and_then(Value::as_str), Some("en"));
+    }
+
+    #[test]
+    fn test_asr_initialize_params_serialization_omits_language_when_none() {
+        let params = AsrInitializeParams {
+            model_id: Some("nvidia/parakeet-tdt-0.6b-v3".to_string()),
+            device_pref: Some("cpu".to_string()),
+            language: None,
+        };
+
+        let json = serde_json::to_value(params).unwrap();
+        assert!(json.get("language").is_none());
     }
 
     #[test]
