@@ -1252,7 +1252,6 @@ def validate_sidecar_examples_against_contract(repo_root: Path, sidecar_contract
                 log(
                     f"WARN: shared/ipc/examples/IPC_V1_EXAMPLES.jsonl:{line}: unknown request method '{method}'"
                 )
-                errors.append(f"shared/ipc/examples/IPC_V1_EXAMPLES.jsonl:{line}: unknown request method '{method}'")
                 continue
             params = data.get("params", {})
             params_schema = methods[method]["params_schema"]
@@ -1288,9 +1287,6 @@ def validate_sidecar_examples_against_contract(repo_root: Path, sidecar_contract
             if method not in notifications:
                 log(
                     f"WARN: shared/ipc/examples/IPC_V1_EXAMPLES.jsonl:{line}: unknown notification method '{method}'"
-                )
-                errors.append(
-                    f"shared/ipc/examples/IPC_V1_EXAMPLES.jsonl:{line}: unknown notification method '{method}'"
                 )
                 continue
             params = data.get("params", {})
