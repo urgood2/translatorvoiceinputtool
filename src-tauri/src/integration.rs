@@ -64,6 +64,10 @@ const EVENT_MODEL_STATUS: &str = "model:status";
 const EVENT_SIDECAR_STATUS: &str = "sidecar:status";
 /// Canonical recording phase event name.
 const EVENT_RECORDING_STATUS: &str = "recording:status";
+const DEVICE_HOT_SWAP_POLL_INTERVAL: Duration = Duration::from_millis(1200);
+const DEVICE_HOT_SWAP_DEBOUNCE: Duration = Duration::from_millis(750);
+const DEVICE_REMOVED_CLIPBOARD_REASON: &str =
+    "Audio device disconnected during transcription; transcript copied to clipboard.";
 
 /// Model status tracking.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -505,6 +509,101 @@ fn is_configured_device_available(
         Some(uid) => devices.iter().any(|device| device.uid == uid),
         None => true,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeviceHotSwapDecision {
+    removed_device_uid: Option<String>,
+    removed_device_name: Option<String>,
+    should_stop_recording: bool,
+    should_force_clipboard_only: bool,
+    should_emit_error: bool,
+}
+
+fn decide_device_hot_swap(
+    state: AppState,
+    configured_device_uid: Option<&str>,
+    previous_devices: &[SidecarAudioDevice],
+    current_devices: &[SidecarAudioDevice],
+) -> DeviceHotSwapDecision {
+    let Some(configured_uid) = configured_device_uid else {
+        return DeviceHotSwapDecision {
+            removed_device_uid: None,
+            removed_device_name: None,
+            should_stop_recording: false,
+            should_force_clipboard_only: false,
+            should_emit_error: false,
+        };
+    };
+
+    if current_devices
+        .iter()
+        .any(|device| device.uid.as_str() == configured_uid)
+    {
+        return DeviceHotSwapDecision {
+            removed_device_uid: None,
+            removed_device_name: None,
+            should_stop_recording: false,
+            should_force_clipboard_only: false,
+            should_emit_error: false,
+        };
+    }
+
+    let removed_name = previous_devices
+        .iter()
+        .find(|device| device.uid.as_str() == configured_uid)
+        .map(|device| device.name.clone())
+        .unwrap_or_else(|| configured_uid.to_string());
+
+    let should_stop_recording = state == AppState::Recording;
+    let should_force_clipboard_only = state == AppState::Transcribing;
+    let should_emit_error = should_stop_recording || should_force_clipboard_only;
+
+    DeviceHotSwapDecision {
+        removed_device_uid: Some(configured_uid.to_string()),
+        removed_device_name: Some(removed_name),
+        should_stop_recording,
+        should_force_clipboard_only,
+        should_emit_error,
+    }
+}
+
+fn device_removed_app_error(
+    removed_device_uid: String,
+    removed_device_name: String,
+    fallback_device_uid: Option<String>,
+    had_active_recording: bool,
+    transcript_preserved: bool,
+) -> AppError {
+    AppError::new(
+        ErrorKind::DeviceRemoved.to_sidecar(),
+        "Audio device was disconnected. Recording stopped. Using default device.",
+        Some(json!({
+            "removed_device_uid": removed_device_uid,
+            "removed_device_name": removed_device_name,
+            "fallback_device_uid": fallback_device_uid,
+            "had_active_recording": had_active_recording,
+            "transcript_preserved": transcript_preserved,
+        })),
+        true,
+    )
+}
+
+fn no_audio_device_app_error() -> AppError {
+    AppError::new(
+        ErrorKind::NoAudioDevice.to_sidecar(),
+        "No audio input device is available. Connect a microphone and try again.",
+        Some(json!({
+            "reason": "no_available_input_device"
+        })),
+        true,
+    )
+}
+
+fn device_uid_snapshot(devices: &[SidecarAudioDevice]) -> Vec<String> {
+    let mut snapshot: Vec<String> = devices.iter().map(|device| device.uid.clone()).collect();
+    snapshot.sort();
+    snapshot
 }
 
 fn add_seq_to_payload(payload: Value, seq: u64) -> Value {
@@ -1039,6 +1138,10 @@ struct RecordingContext {
     raw_text: Option<String>,
     /// Final transcript text from sidecar after post-processing/replacements.
     final_text: Option<String>,
+    /// When true, skip direct injection and force clipboard preservation.
+    force_clipboard_only: bool,
+    /// Optional reason associated with forced clipboard preservation.
+    force_clipboard_reason: Option<String>,
     /// Pipeline timing marks for stop -> injection latency tracking.
     timing_marks: PipelineTimingMarks,
 }
@@ -1164,6 +1267,7 @@ impl IntegrationManager {
         self.start_state_loop();
         self.start_recording_event_loop();
         self.start_overlay_window_loop();
+        self.start_device_hot_swap_loop();
 
         // Start watchdog loop
         self.start_watchdog_loop();
@@ -1226,6 +1330,193 @@ impl IntegrationManager {
                         log::warn!("Overlay window sync failed: {}", error);
                     }
                 }
+            }
+        });
+    }
+
+    fn emit_app_error_event(
+        app_handle: &Option<AppHandle>,
+        event_seq: &Arc<AtomicU64>,
+        app_error: &AppError,
+    ) {
+        if let Some(ref handle) = app_handle {
+            emit_with_shared_seq(
+                handle,
+                &[EVENT_APP_ERROR],
+                app_error_event_payload(app_error),
+                event_seq,
+            );
+        }
+    }
+
+    fn persist_default_audio_device_selection() -> Result<(), String> {
+        let mut app_config = config::load_config();
+        app_config.audio.device_uid = None;
+        config::save_config(&app_config).map_err(|error| format!("Failed to save config: {error}"))
+    }
+
+    /// Start device hot-swap monitor loop.
+    ///
+    /// Polls audio.list_devices and handles selected-device disappearance with:
+    /// - stop active recording/transcription handling
+    /// - default device fallback
+    /// - structured, recoverable app:error emission when active session is impacted
+    fn start_device_hot_swap_loop(&self) {
+        let manager = self.clone();
+        let state_manager = Arc::clone(&self.state_manager);
+        let recording_context = Arc::clone(&self.recording_context);
+        let current_session_id = Arc::clone(&self.current_session_id);
+        let app_handle = self.app_handle.clone();
+        let event_seq = Arc::clone(&self.event_seq);
+
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(DEVICE_HOT_SWAP_POLL_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            let mut previous_devices: Option<Vec<SidecarAudioDevice>> = None;
+            let mut last_change_handled_at: Option<Instant> = None;
+            let mut last_device_list_error_at: Option<Instant> = None;
+
+            loop {
+                tick.tick().await;
+
+                let devices = match manager.list_audio_devices().await {
+                    Ok(devices) => devices,
+                    Err(error) => {
+                        let now = Instant::now();
+                        let should_log = last_device_list_error_at
+                            .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(5));
+                        if should_log {
+                            log::debug!("Device hot-swap poll skipped: {}", error);
+                            last_device_list_error_at = Some(now);
+                        }
+                        continue;
+                    }
+                };
+
+                let Some(previous) = previous_devices.as_ref() else {
+                    previous_devices = Some(devices);
+                    continue;
+                };
+
+                if device_uid_snapshot(previous) == device_uid_snapshot(&devices) {
+                    continue;
+                }
+
+                let now = Instant::now();
+                if last_change_handled_at
+                    .is_some_and(|last| now.duration_since(last) < DEVICE_HOT_SWAP_DEBOUNCE)
+                {
+                    previous_devices = Some(devices);
+                    continue;
+                }
+                last_change_handled_at = Some(now);
+
+                if let Some(ref handle) = app_handle {
+                    emit_with_shared_seq(
+                        handle,
+                        &[EVENT_TRAY_UPDATE],
+                        json!({
+                            "reason": "device_list_changed",
+                            "device_count": devices.len(),
+                        }),
+                        &event_seq,
+                    );
+                }
+
+                if devices.is_empty() {
+                    state_manager.transition_to_error(
+                        "No audio input device available. Connect a microphone and try again."
+                            .to_string(),
+                    );
+                    let app_error = no_audio_device_app_error();
+                    Self::emit_app_error_event(&app_handle, &event_seq, &app_error);
+                    previous_devices = Some(devices);
+                    continue;
+                }
+
+                let configured_device_uid = config::load_config().audio.device_uid;
+                let state = state_manager.get();
+                let decision = decide_device_hot_swap(
+                    state,
+                    configured_device_uid.as_deref(),
+                    previous,
+                    &devices,
+                );
+
+                if let Some(removed_uid) = decision.removed_device_uid.clone() {
+                    let removed_name = decision
+                        .removed_device_name
+                        .clone()
+                        .unwrap_or_else(|| removed_uid.clone());
+                    let had_active_recording =
+                        decision.should_emit_error || current_session_id.read().await.is_some();
+                    let mut transcript_preserved = false;
+
+                    if decision.should_stop_recording {
+                        if let Err(error) = manager.stop_recording().await {
+                            log::warn!(
+                                "Failed to stop recording after device removal (partial audio may be lost): {}",
+                                error
+                            );
+                        }
+                    }
+
+                    if decision.should_force_clipboard_only {
+                        let mut context = recording_context.write().await;
+                        if let Some(context) = context.as_mut() {
+                            context.force_clipboard_only = true;
+                            context.force_clipboard_reason =
+                                Some(DEVICE_REMOVED_CLIPBOARD_REASON.to_string());
+                            transcript_preserved = true;
+                        }
+                    }
+
+                    let fallback_device_uid = match manager.set_audio_device(None).await {
+                        Ok(uid) => uid,
+                        Err(error) => {
+                            log::warn!("Failed to switch to default audio device: {}", error);
+                            None
+                        }
+                    };
+
+                    if let Err(error) = Self::persist_default_audio_device_selection() {
+                        log::warn!(
+                            "Failed to persist default audio device after hot-swap: {}",
+                            error
+                        );
+                    }
+
+                    if let Some(ref handle) = app_handle {
+                        emit_with_shared_seq(
+                            handle,
+                            &[EVENT_TRAY_UPDATE],
+                            json!({
+                                "reason": "device_changed",
+                                "removed_device_uid": removed_uid,
+                                "active_device_uid": fallback_device_uid,
+                            }),
+                            &event_seq,
+                        );
+                    }
+
+                    if decision.should_emit_error {
+                        let app_error = device_removed_app_error(
+                            removed_uid,
+                            removed_name,
+                            fallback_device_uid,
+                            had_active_recording,
+                            transcript_preserved,
+                        );
+                        Self::emit_app_error_event(&app_handle, &event_seq, &app_error);
+                    } else {
+                        log::info!(
+                            "Configured audio device removed while idle; switched to default device"
+                        );
+                    }
+                }
+
+                previous_devices = Some(devices);
             }
         });
     }
@@ -1970,6 +2261,8 @@ impl IntegrationManager {
             audio_duration_ms: None,
             raw_text: None,
             final_text: None,
+            force_clipboard_only: false,
+            force_clipboard_reason: None,
             timing_marks: PipelineTimingMarks::default(),
         });
         *current_session_id.write().await = Some(session_id);
@@ -2921,7 +3214,14 @@ impl IntegrationManager {
                         }
 
                         // Snapshot focus context and timing marks for this session.
-                        let (focus_before, mut timing_marks, raw_text, final_text) = {
+                        let (
+                            focus_before,
+                            mut timing_marks,
+                            raw_text,
+                            final_text,
+                            force_clipboard_only,
+                            force_clipboard_reason,
+                        ) = {
                             let ctx = recording_context.read().await;
                             if let Some(ctx) = ctx.as_ref() {
                                 (
@@ -2929,9 +3229,18 @@ impl IntegrationManager {
                                     ctx.timing_marks.clone(),
                                     ctx.raw_text.clone(),
                                     ctx.final_text.clone(),
+                                    ctx.force_clipboard_only,
+                                    ctx.force_clipboard_reason.clone(),
                                 )
                             } else {
-                                (None, PipelineTimingMarks::default(), None, None)
+                                (
+                                    None,
+                                    PipelineTimingMarks::default(),
+                                    None,
+                                    None,
+                                    false,
+                                    None,
+                                )
                             }
                         };
                         let (raw_text, final_text) = resolve_transcript_texts(
@@ -2988,9 +3297,28 @@ impl IntegrationManager {
 
                         timing_marks.t3_postprocess_completed = Some(Instant::now());
 
-                        // Inject text
-                        let mut result =
-                            inject_text(&final_text, expected_focus, &injection_config).await;
+                        let mut result = if force_clipboard_only {
+                            let text_with_suffix =
+                                format!("{}{}", final_text, injection_config.suffix);
+                            let forced_reason = force_clipboard_reason
+                                .unwrap_or_else(|| DEVICE_REMOVED_CLIPBOARD_REASON.to_string());
+                            let fallback_reason =
+                                match crate::injection::set_clipboard_public(&text_with_suffix) {
+                                    Ok(()) => forced_reason,
+                                    Err(clipboard_error) => format!(
+                                        "{}; clipboard fallback failed: {}; transcript preserved in history",
+                                        forced_reason, clipboard_error
+                                    ),
+                                };
+
+                            InjectionResult::ClipboardOnly {
+                                reason: fallback_reason,
+                                text_length: final_text.len(),
+                                timestamp: chrono::Utc::now(),
+                            }
+                        } else {
+                            inject_text(&final_text, expected_focus, &injection_config).await
+                        };
                         timing_marks.t4_injection_completed = Some(Instant::now());
 
                         let pipeline_timings = pipeline_timings_from_marks(&timing_marks);
@@ -5238,6 +5566,109 @@ mod tests {
         assert!(!is_configured_device_available(Some("mic-z"), &devices));
     }
 
+    fn test_device(uid: &str, name: &str) -> SidecarAudioDevice {
+        SidecarAudioDevice {
+            uid: uid.to_string(),
+            name: name.to_string(),
+            is_default: false,
+            default_sample_rate: 48_000,
+            channels: 1,
+        }
+    }
+
+    #[test]
+    fn test_device_hot_swap_decision_during_recording_requests_stop_and_fallback() {
+        let previous = vec![
+            test_device("mic-1", "USB Mic"),
+            test_device("mic-2", "Built-in Mic"),
+        ];
+        let current = vec![test_device("mic-2", "Built-in Mic")];
+
+        let decision =
+            decide_device_hot_swap(AppState::Recording, Some("mic-1"), &previous, &current);
+
+        assert_eq!(decision.removed_device_uid.as_deref(), Some("mic-1"));
+        assert_eq!(decision.removed_device_name.as_deref(), Some("USB Mic"));
+        assert!(decision.should_stop_recording);
+        assert!(!decision.should_force_clipboard_only);
+        assert!(decision.should_emit_error);
+    }
+
+    #[test]
+    fn test_device_hot_swap_decision_mid_transcription_forces_clipboard_preservation() {
+        let previous = vec![
+            test_device("mic-1", "USB Mic"),
+            test_device("mic-2", "Built-in Mic"),
+        ];
+        let current = vec![test_device("mic-2", "Built-in Mic")];
+
+        let decision =
+            decide_device_hot_swap(AppState::Transcribing, Some("mic-1"), &previous, &current);
+
+        assert_eq!(decision.removed_device_uid.as_deref(), Some("mic-1"));
+        assert!(!decision.should_stop_recording);
+        assert!(decision.should_force_clipboard_only);
+        assert!(decision.should_emit_error);
+    }
+
+    #[test]
+    fn test_device_hot_swap_decision_idle_missing_device_updates_without_error() {
+        let previous = vec![
+            test_device("mic-1", "USB Mic"),
+            test_device("mic-2", "Built-in Mic"),
+        ];
+        let current = vec![test_device("mic-2", "Built-in Mic")];
+
+        let decision = decide_device_hot_swap(AppState::Idle, Some("mic-1"), &previous, &current);
+
+        assert_eq!(decision.removed_device_uid.as_deref(), Some("mic-1"));
+        assert!(!decision.should_stop_recording);
+        assert!(!decision.should_force_clipboard_only);
+        assert!(!decision.should_emit_error);
+    }
+
+    #[test]
+    fn test_device_removed_app_error_includes_required_recovery_details() {
+        let error = device_removed_app_error(
+            "mic-1".to_string(),
+            "USB Mic".to_string(),
+            Some("mic-default".to_string()),
+            true,
+            false,
+        );
+
+        assert_eq!(error.code, ErrorKind::DeviceRemoved.to_sidecar());
+        assert_eq!(
+            error.message,
+            "Audio device was disconnected. Recording stopped. Using default device."
+        );
+        assert!(error.recoverable);
+        assert_eq!(
+            error
+                .details
+                .as_ref()
+                .and_then(|details| details.get("removed_device_uid"))
+                .and_then(Value::as_str),
+            Some("mic-1")
+        );
+        assert_eq!(
+            error
+                .details
+                .as_ref()
+                .and_then(|details| details.get("had_active_recording"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            error
+                .details
+                .as_ref()
+                .and_then(|details| details.get("transcript_preserved"))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
     #[test]
     fn test_should_emit_audio_level_throttles_meter_source() {
         let min_interval = Duration::from_millis(AUDIO_LEVEL_METER_MIN_INTERVAL_MS);
@@ -5414,6 +5845,8 @@ mod tests {
             audio_duration_ms: None,
             raw_text: None,
             final_text: None,
+            force_clipboard_only: false,
+            force_clipboard_reason: None,
             timing_marks: PipelineTimingMarks::default(),
         });
 

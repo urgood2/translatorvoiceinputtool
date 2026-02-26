@@ -251,12 +251,15 @@ pub struct AudioDevice {
 #[tauri::command]
 pub async fn list_audio_devices(
     integration_state: tauri::State<'_, IntegrationState>,
+    app: tauri::AppHandle,
 ) -> Result<Vec<AudioDevice>, CommandError> {
     let manager = integration_state.0.read().await;
     let devices = manager
         .list_audio_devices()
         .await
         .map_err(|message| CommandError::Audio { message })?;
+
+    emit_tray_update(&app, "device_list_refreshed");
 
     Ok(devices
         .into_iter()
