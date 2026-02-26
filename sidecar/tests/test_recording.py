@@ -17,6 +17,7 @@ import pytest
 from openvoicy_sidecar.preprocess import TARGET_SAMPLE_RATE
 from openvoicy_sidecar.protocol import Request
 from openvoicy_sidecar.recording import (
+    _begin_transcription,
     AlreadyRecordingError,
     AudioRecorder,
     InvalidSessionError,
@@ -596,15 +597,22 @@ class TestRecordingHandlers:
             )
 
         assert result["session_id"] == "session-vad"
-        mock_recorder.start.assert_called_once_with(
-            None,
-            session_id=None,
-            vad={
+        mock_recorder.start.assert_called_once()
+        start_args, start_kwargs = mock_recorder.start.call_args
+        assert start_args == (None,)
+        assert start_kwargs["session_id"] is None
+        assert start_kwargs["vad"] == {
+            "enabled": True,
+            "silence_ms": 1750,
+            "min_speech_ms": 320,
+        }
+        assert start_kwargs["preprocess"] == {
+            "vad": {
                 "enabled": True,
                 "silence_ms": 1750,
                 "min_speech_ms": 320,
-            },
-        )
+            }
+        }
 
     def test_handle_recording_start_emits_recording_status_changed(
         self, mock_sounddevice, reset_global_recorder
@@ -699,6 +707,71 @@ class TestRecordingHandlers:
             processed_audio,
             TARGET_SAMPLE_RATE,
         )
+
+    def test_handle_recording_stop_respects_preprocess_params_from_start(
+        self, mock_sounddevice, reset_global_recorder
+    ):
+        """Stop should pass preprocess params provided at recording.start."""
+        processed_audio = np.array([0.33, -0.33], dtype=np.float32)
+        with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
+            start_request = Request(
+                method="recording.start",
+                id=1,
+                params={"trim_silence": False, "normalize": True},
+            )
+            start_result = handle_recording_start(start_request)
+            session_id = start_result["session_id"]
+
+            with (
+                patch(
+                    "openvoicy_sidecar.preprocess.preprocess_audio",
+                    return_value=processed_audio,
+                ) as mock_preprocess,
+                patch("openvoicy_sidecar.notifications.emit_status_changed"),
+                patch("openvoicy_sidecar.notifications.transcribe_session_async") as mock_transcribe,
+            ):
+                handle_recording_stop(
+                    Request(
+                        method="recording.stop",
+                        id=2,
+                        params={"session_id": session_id},
+                    )
+                )
+
+        preprocess_args, preprocess_kwargs = mock_preprocess.call_args
+        assert preprocess_args[1]["normalize"] is True
+        assert preprocess_args[1]["audio"]["trim_silence"] is False
+        assert preprocess_kwargs == {}
+
+        mock_transcribe.assert_called_once_with(
+            session_id,
+            processed_audio,
+            TARGET_SAMPLE_RATE,
+        )
+
+    def test_begin_transcription_uses_audio_copy_for_preprocess(self):
+        """Preprocess stage should receive an in-memory copy, not mutate source array."""
+        recorder = AudioRecorder()
+        recorder._preprocess_options = {"normalize": False, "audio": {"trim_silence": True}}
+
+        source_audio = np.array([0.25, -0.5, 0.75], dtype=np.float32)
+        original = source_audio.copy()
+
+        def _mutating_preprocess(audio: np.ndarray, _config: dict[str, Any]) -> np.ndarray:
+            audio[0] = 0.0
+            return audio
+
+        with (
+            patch(
+                "openvoicy_sidecar.preprocess.preprocess_audio",
+                side_effect=_mutating_preprocess,
+            ),
+            patch("openvoicy_sidecar.notifications.emit_status_changed"),
+            patch("openvoicy_sidecar.notifications.transcribe_session_async"),
+        ):
+            _begin_transcription(recorder, "session-1", source_audio, 123)
+
+        np.testing.assert_array_equal(source_audio, original)
 
     def test_handle_recording_stop_reports_audio_io_from_callback(
         self, mock_sounddevice, reset_global_recorder

@@ -996,6 +996,7 @@ fn recording_start_params(session_id: &str, app_config: &config::AppConfig) -> V
     json!({
         "session_id": session_id,
         "device_uid": app_config.audio.device_uid,
+        "trim_silence": app_config.audio.trim_silence,
         "vad_enabled": app_config.audio.vad_enabled,
         "vad_silence_ms": app_config.audio.vad_silence_ms,
         "vad_min_speech_ms": app_config.audio.vad_min_speech_ms
@@ -5764,6 +5765,7 @@ mod tests {
     fn test_recording_start_params_include_vad_fields() {
         let mut app_config = config::AppConfig::default();
         app_config.audio.device_uid = Some("mic-1".to_string());
+        app_config.audio.trim_silence = false;
         app_config.audio.vad_enabled = true;
         app_config.audio.vad_silence_ms = 1500;
         app_config.audio.vad_min_speech_ms = 350;
@@ -5772,6 +5774,7 @@ mod tests {
 
         assert_eq!(params["session_id"], "session-1");
         assert_eq!(params["device_uid"], "mic-1");
+        assert_eq!(params["trim_silence"], false);
         assert_eq!(params["vad_enabled"], true);
         assert_eq!(params["vad_silence_ms"], 1500);
         assert_eq!(params["vad_min_speech_ms"], 350);

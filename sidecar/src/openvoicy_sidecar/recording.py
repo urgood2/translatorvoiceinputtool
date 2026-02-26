@@ -49,6 +49,83 @@ LEVEL_BUFFER_SIZE = 1600  # ~100ms of audio at 16kHz
 LEVEL_THREAD_JOIN_TIMEOUT_SEC = min(0.2, (LEVEL_EMISSION_INTERVAL_MS * 2) / 1000)
 
 
+def _coerce_bool(value: Any, default: bool) -> bool:
+    """Coerce bool-like values while preserving defaults for invalid input."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return default
+    return bool(value)
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    """Coerce integer-like values while preserving defaults for invalid input."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _extract_vad_params(params: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Resolve VAD params from nested or flat recording.start payloads."""
+    nested = params.get("vad")
+    if isinstance(nested, Mapping):
+        return dict(nested)
+
+    if not any(key in params for key in ("vad_enabled", "vad_silence_ms", "vad_min_speech_ms")):
+        return None
+
+    return {
+        "enabled": _coerce_bool(params.get("vad_enabled"), False),
+        "silence_ms": _coerce_int(params.get("vad_silence_ms"), 1200),
+        "min_speech_ms": _coerce_int(params.get("vad_min_speech_ms"), 250),
+    }
+
+
+def _resolve_preprocess_options(raw: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Resolve preprocessing options from nested or flat payloads."""
+    options = {
+        "normalize": False,
+        "audio": {"trim_silence": True},
+    }
+    if raw is None:
+        return options
+
+    nested = raw.get("preprocess")
+    if isinstance(nested, Mapping):
+        options["normalize"] = _coerce_bool(nested.get("normalize"), options["normalize"])
+        options["audio"]["trim_silence"] = _coerce_bool(
+            nested.get("trim_silence"),
+            options["audio"]["trim_silence"],
+        )
+        nested_audio = nested.get("audio")
+        if isinstance(nested_audio, Mapping):
+            options["audio"]["trim_silence"] = _coerce_bool(
+                nested_audio.get("trim_silence"),
+                options["audio"]["trim_silence"],
+            )
+
+    options["normalize"] = _coerce_bool(raw.get("normalize"), options["normalize"])
+    raw_audio = raw.get("audio")
+    if isinstance(raw_audio, Mapping):
+        options["audio"]["trim_silence"] = _coerce_bool(
+            raw_audio.get("trim_silence"),
+            options["audio"]["trim_silence"],
+        )
+    options["audio"]["trim_silence"] = _coerce_bool(
+        raw.get("trim_silence"),
+        options["audio"]["trim_silence"],
+    )
+    return options
+
+
 class RecordingState(Enum):
     """Recording session state."""
     IDLE = "idle"
@@ -147,6 +224,7 @@ class AudioRecorder:
         self._callback_error: str | None = None
         self._vad_detector: Any | None = None
         self._vad_auto_stop_triggered = False
+        self._preprocess_options: dict[str, Any] = _resolve_preprocess_options(None)
 
     @property
     def state(self) -> RecordingState:
@@ -163,11 +241,17 @@ class AudioRecorder:
         """Get active VAD detector for current session, if configured."""
         return self._vad_detector
 
+    @property
+    def preprocess_options(self) -> dict[str, Any]:
+        """Get active preprocessing options for current session."""
+        return _resolve_preprocess_options(self._preprocess_options)
+
     def start(
         self,
         device_uid: str | None = None,
         session_id: str | None = None,
         vad: Mapping[str, Any] | None = None,
+        preprocess: Mapping[str, Any] | None = None,
     ) -> str:
         """Start a new recording session.
 
@@ -222,6 +306,7 @@ class AudioRecorder:
                 self.max_samples = max_samples
                 self._vad_detector = self._build_vad_detector(vad, capture_sample_rate)
                 self._vad_auto_stop_triggered = False
+                self._preprocess_options = _resolve_preprocess_options(preprocess)
                 self._state = RecordingState.RECORDING
 
                 # Start level emission thread
@@ -619,14 +704,17 @@ def handle_recording_start(request: Request) -> dict[str, Any]:
     """
     device_uid = request.params.get("device_uid")
     session_id = request.params.get("session_id")
-    vad_params = request.params.get("vad")
-    if not isinstance(vad_params, dict):
-        vad_params = None
+    vad_params = _extract_vad_params(request.params)
 
     recorder = get_recorder()
 
     try:
-        started_session_id = recorder.start(device_uid, session_id=session_id, vad=vad_params)
+        started_session_id = recorder.start(
+            device_uid,
+            session_id=session_id,
+            vad=vad_params,
+            preprocess=request.params,
+        )
 
         # Emit status change once recording has started successfully.
         from .notifications import emit_status_changed
@@ -689,13 +777,14 @@ def _begin_transcription(
     """Run preprocess + async transcription pipeline after recording stop."""
     from .preprocess import TARGET_SAMPLE_RATE, preprocess_audio
 
+    preprocess_options = recorder.preprocess_options
     processed_audio = preprocess_audio(
-        audio_data,
+        audio_data.copy(),
         {
             "input_sample_rate": recorder.sample_rate,
             "target_sample_rate": TARGET_SAMPLE_RATE,
-            "normalize": False,
-            "audio": {"trim_silence": True},
+            "normalize": preprocess_options["normalize"],
+            "audio": {"trim_silence": preprocess_options["audio"]["trim_silence"]},
         },
     )
 
