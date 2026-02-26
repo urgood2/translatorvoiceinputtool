@@ -288,6 +288,7 @@ describe('useTauriEvents', () => {
     const currentState = useAppStore.getState();
     expect(currentState.appState).toBe('recording');
     expect(currentState.enabled).toBe(true);
+    expect(currentState.stateTimestamp).toBe('2026-01-01T00:00:00.000Z');
 
     unmount();
   });
@@ -768,6 +769,7 @@ describe('useTauriEvents', () => {
     expect(state.appState).toBe('error');
     expect(state.enabled).toBe(false);
     expect(state.errorDetail).toBe('Canonical detail wins');
+    expect(state.stateTimestamp).toBe('2026-01-01T00:11:00.000Z');
 
     unmount();
   });
@@ -801,6 +803,7 @@ describe('useTauriEvents', () => {
     logStoreStateAfter('no-seq compatibility');
     expect(state.appState).toBe('idle');
     expect(state.enabled).toBe(false);
+    expect(state.stateTimestamp).toBe('2026-01-01T00:12:01.000Z');
 
     unmount();
   });

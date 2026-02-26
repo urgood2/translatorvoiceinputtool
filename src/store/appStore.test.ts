@@ -15,6 +15,9 @@ import {
   selectHistory,
   selectConfig,
   selectReplacementBadgeCount,
+  selectStateTimestamp,
+  selectErrorRecoveryActions,
+  selectSidecarRecoveryNeeded,
 } from './appStore';
 import {
   setMockInvokeHandler,
@@ -34,6 +37,8 @@ const getInitialState = () => ({
   appState: 'idle' as const,
   enabled: true,
   errorDetail: undefined,
+  stateTimestamp: undefined,
+  errorRecoveryActions: [] as string[],
   modelStatus: null,
   downloadProgress: null,
   devices: [],
@@ -43,6 +48,7 @@ const getInitialState = () => ({
   history: [],
   recordingStatus: null,
   sidecarStatus: null,
+  sidecarRecoveryNeeded: false,
   lastTranscriptError: null,
   config: null,
   capabilities: null,
@@ -116,6 +122,27 @@ describe('Selectors', () => {
     const config = createMockConfig();
     useAppStore.setState({ config });
     expect(selectConfig(useAppStore.getState())).toEqual(config);
+  });
+
+  test('selectStateTimestamp returns stateTimestamp', () => {
+    expect(selectStateTimestamp(useAppStore.getState())).toBeUndefined();
+
+    useAppStore.setState({ stateTimestamp: '2026-01-15T12:00:00.000Z' });
+    expect(selectStateTimestamp(useAppStore.getState())).toBe('2026-01-15T12:00:00.000Z');
+  });
+
+  test('selectErrorRecoveryActions returns recovery actions', () => {
+    expect(selectErrorRecoveryActions(useAppStore.getState())).toEqual([]);
+
+    useAppStore.setState({ errorRecoveryActions: ['Retry the operation'] });
+    expect(selectErrorRecoveryActions(useAppStore.getState())).toEqual(['Retry the operation']);
+  });
+
+  test('selectSidecarRecoveryNeeded returns sidecar recovery flag', () => {
+    expect(selectSidecarRecoveryNeeded(useAppStore.getState())).toBe(false);
+
+    useAppStore.setState({ sidecarRecoveryNeeded: true });
+    expect(selectSidecarRecoveryNeeded(useAppStore.getState())).toBe(true);
   });
 
   test('selectReplacementBadgeCount counts enabled rules and enabled presets', () => {
@@ -776,10 +803,12 @@ describe('Internal Actions', () => {
       state: 'recording',
       enabled: true,
       detail: undefined,
+      timestamp: '2026-01-01T00:00:00.000Z',
     });
 
     expect(useAppStore.getState().appState).toBe('recording');
     expect(useAppStore.getState().enabled).toBe(true);
+    expect(useAppStore.getState().stateTimestamp).toBe('2026-01-01T00:00:00.000Z');
   });
 
   test('_setAppState sets error detail', () => {
@@ -791,6 +820,22 @@ describe('Internal Actions', () => {
 
     expect(useAppStore.getState().appState).toBe('error');
     expect(useAppStore.getState().errorDetail).toBe('Something went wrong');
+  });
+
+  test('_setAppState stores legacy timestamp and clears when omitted', () => {
+    useAppStore.getState()._setAppState({
+      state: 'recording',
+      enabled: true,
+      timestamp: '2026-01-01T00:01:00.000Z',
+    });
+    expect(useAppStore.getState().stateTimestamp).toBe('2026-01-01T00:01:00.000Z');
+
+    useAppStore.getState()._setAppState({
+      state: 'idle',
+      enabled: true,
+      error_detail: 'legacy shape without timestamp',
+    });
+    expect(useAppStore.getState().stateTimestamp).toBeUndefined();
   });
 
   test('_setModelStatus updates model status', () => {
@@ -1049,6 +1094,46 @@ describe('Internal Actions', () => {
     expect(useAppStore.getState().errorDetail).toBe('Structured app error');
   });
 
+  test('_setError derives recovery actions for recoverable errors', () => {
+    useAppStore.getState()._setError({
+      error: { code: 'E_MIC_PERMISSION', message: 'No mic access', recoverable: true },
+    });
+    expect(useAppStore.getState().errorRecoveryActions).toEqual([
+      'Check microphone permissions in system settings',
+    ]);
+
+    useAppStore.getState()._setError({
+      error: { code: 'E_DEVICE_NOT_FOUND', message: 'Device gone', recoverable: true },
+    });
+    expect(useAppStore.getState().errorRecoveryActions).toEqual([
+      'Reconnect the audio device or select a different one',
+    ]);
+
+    useAppStore.getState()._setError({
+      error: { code: 'E_NETWORK', message: 'Offline', recoverable: true },
+    });
+    expect(useAppStore.getState().errorRecoveryActions).toEqual([
+      'Check your internet connection and retry',
+    ]);
+
+    useAppStore.getState()._setError({
+      error: { code: 'E_UNKNOWN', message: 'Something', recoverable: true },
+    });
+    expect(useAppStore.getState().errorRecoveryActions).toEqual(['Retry the operation']);
+  });
+
+  test('_setError returns empty recovery actions for non-recoverable errors', () => {
+    useAppStore.getState()._setError({
+      error: { code: 'E_INTERNAL', message: 'Fatal', recoverable: false },
+    });
+    expect(useAppStore.getState().errorRecoveryActions).toEqual([]);
+  });
+
+  test('_setError returns empty recovery actions for string payloads', () => {
+    useAppStore.getState()._setError('simple error string');
+    expect(useAppStore.getState().errorRecoveryActions).toEqual([]);
+  });
+
   test('_setRecordingStatus updates recording state and app state', () => {
     useAppStore.getState()._setRecordingStatus({
       phase: 'recording',
@@ -1074,6 +1159,20 @@ describe('Internal Actions', () => {
     });
   });
 
+  test('_setSidecarStatus sets sidecarRecoveryNeeded for failed/restarting states', () => {
+    useAppStore.getState()._setSidecarStatus({ state: 'failed', restart_count: 3 });
+    expect(useAppStore.getState().sidecarRecoveryNeeded).toBe(true);
+
+    useAppStore.getState()._setSidecarStatus({ state: 'restarting', restart_count: 4 });
+    expect(useAppStore.getState().sidecarRecoveryNeeded).toBe(true);
+
+    useAppStore.getState()._setSidecarStatus({ state: 'ready', restart_count: 4 });
+    expect(useAppStore.getState().sidecarRecoveryNeeded).toBe(false);
+
+    useAppStore.getState()._setSidecarStatus({ state: 'stopped', restart_count: 0 });
+    expect(useAppStore.getState().sidecarRecoveryNeeded).toBe(false);
+  });
+
   test('_setTranscriptError stores payload and error detail', () => {
     useAppStore.getState()._setTranscriptError({
       session_id: 'session-1',
@@ -1093,6 +1192,40 @@ describe('Internal Actions', () => {
       },
     });
     expect(useAppStore.getState().errorDetail).toBe('Transcript failed');
+  });
+
+  test('_setTranscriptError derives recovery actions from recoverable transcript errors', () => {
+    useAppStore.getState()._setTranscriptError({
+      session_id: 'session-2',
+      error: {
+        code: 'E_NETWORK',
+        message: 'Connection lost during transcription',
+        recoverable: true,
+      },
+    });
+
+    expect(useAppStore.getState().errorRecoveryActions).toEqual([
+      'Check your internet connection and retry',
+    ]);
+  });
+
+  test('_setTranscriptError clears recovery actions for non-recoverable transcript errors', () => {
+    // First set some recovery actions
+    useAppStore.getState()._setError({
+      error: { code: 'E_NETWORK', message: 'Offline', recoverable: true },
+    });
+    expect(useAppStore.getState().errorRecoveryActions.length).toBeGreaterThan(0);
+
+    // Non-recoverable transcript error should clear them
+    useAppStore.getState()._setTranscriptError({
+      session_id: 'session-3',
+      error: {
+        code: 'E_TRANSCRIPTION_FAILED',
+        message: 'Fatal failure',
+        recoverable: false,
+      },
+    });
+    expect(useAppStore.getState().errorRecoveryActions).toEqual([]);
   });
 });
 

@@ -43,6 +43,8 @@ export interface AppStoreState {
   appState: AppState;
   enabled: boolean;
   errorDetail?: string;
+  stateTimestamp?: string;
+  errorRecoveryActions: string[];
 
   // Model state
   modelStatus: ModelStatus | null;
@@ -58,6 +60,7 @@ export interface AppStoreState {
   history: TranscriptEntry[];
   recordingStatus: RecordingStatusEvent | null;
   sidecarStatus: SidecarStatusEvent | null;
+  sidecarRecoveryNeeded: boolean;
   lastTranscriptError: TranscriptErrorEvent | null;
 
   // Configuration (mirrors Rust config)
@@ -165,6 +168,8 @@ const defaultState: AppStoreState = {
   appState: 'idle',
   enabled: true,
   errorDetail: undefined,
+  stateTimestamp: undefined,
+  errorRecoveryActions: [],
   modelStatus: null,
   downloadProgress: null,
   devices: [],
@@ -174,6 +179,7 @@ const defaultState: AppStoreState = {
   history: [],
   recordingStatus: null,
   sidecarStatus: null,
+  sidecarRecoveryNeeded: false,
   lastTranscriptError: null,
   config: null,
   capabilities: null,
@@ -309,6 +315,22 @@ function normalizeErrorMessage(payload: string | ErrorEvent | TranscriptErrorEve
     return messageFromAppError(payload.app_error);
   }
   return 'Unknown error';
+}
+
+function deriveRecoveryActions(
+  payload: string | ErrorEvent | TranscriptErrorEvent,
+): string[] {
+  if (typeof payload === 'string') return [];
+  const appError =
+    (payload.app_error && typeof payload.app_error === 'object' ? payload.app_error : null)
+    ?? (payload.error && typeof payload.error === 'object' ? payload.error : null);
+  const recoverable = appError?.recoverable ?? ('recoverable' in payload && payload.recoverable);
+  if (!recoverable) return [];
+  const code = appError?.code;
+  if (code === 'E_MIC_PERMISSION') return ['Check microphone permissions in system settings'];
+  if (code === 'E_DEVICE_NOT_FOUND') return ['Reconnect the audio device or select a different one'];
+  if (code === 'E_NETWORK') return ['Check your internet connection and retry'];
+  return ['Retry the operation'];
 }
 
 function appStateFromRecordingPhase(phase: string): AppState | null {
@@ -800,6 +822,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       appState: event.state,
       enabled: event.enabled,
       errorDetail: stateDetailFromPayload(event),
+      stateTimestamp: 'timestamp' in event ? event.timestamp : undefined,
     });
   },
 
@@ -883,18 +906,25 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   _setSidecarStatus: (status) => {
-    set({ sidecarStatus: status });
+    set({
+      sidecarStatus: status,
+      sidecarRecoveryNeeded: status.state === 'failed' || status.state === 'restarting',
+    });
   },
 
   _setTranscriptError: (payload) => {
     set({
       lastTranscriptError: payload,
       errorDetail: normalizeErrorMessage(payload),
+      errorRecoveryActions: deriveRecoveryActions(payload),
     });
   },
 
   _setError: (payload) => {
-    set({ errorDetail: normalizeErrorMessage(payload) });
+    set({
+      errorDetail: normalizeErrorMessage(payload),
+      errorRecoveryActions: deriveRecoveryActions(payload),
+    });
   },
 }));
 
@@ -909,6 +939,9 @@ export const selectIsIdle = (state: AppStore) => state.appState === 'idle';
 export const selectModelReady = (state: AppStore) => state.modelStatus?.status === 'ready';
 export const selectDevices = (state: AppStore) => state.devices;
 export const selectHistory = (state: AppStore) => state.history;
+export const selectStateTimestamp = (state: AppStore) => state.stateTimestamp;
+export const selectErrorRecoveryActions = (state: AppStore) => state.errorRecoveryActions;
+export const selectSidecarRecoveryNeeded = (state: AppStore) => state.sidecarRecoveryNeeded;
 export const selectConfig = (state: AppStore) => state.config;
 export const selectCapabilities = (state: AppStore) => state.capabilities;
 export const selectReplacementBadgeCount = (state: AppStore) => {
