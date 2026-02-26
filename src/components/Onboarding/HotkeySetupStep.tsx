@@ -27,6 +27,16 @@ export function HotkeySetupStep({ onReady: _onReady }: HotkeySetupStepProps) {
     async (e: React.KeyboardEvent) => {
       if (!isRecording) return;
 
+      if (e.key === 'Tab') {
+        setIsRecording(false);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setIsRecording(false);
+        return;
+      }
+
       e.preventDefault();
       const parts: string[] = [];
 
@@ -84,7 +94,6 @@ export function HotkeySetupStep({ onReady: _onReady }: HotkeySetupStepProps) {
           aria-describedby="onboarding-hotkey-description"
           onKeyDown={handleKeyDown}
           onClick={() => setIsRecording(true)}
-          onFocus={() => setIsRecording(true)}
           onBlur={() => setIsRecording(false)}
           className={`w-full px-4 py-3 border rounded-md text-sm text-center font-mono
                      ${

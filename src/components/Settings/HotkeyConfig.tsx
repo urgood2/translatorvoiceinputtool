@@ -48,6 +48,16 @@ function HotkeyInput({ label, description, value, onChange, disabled }: HotkeyIn
       return;
     }
 
+    if (e.key === 'Tab') {
+      setIsRecording(false);
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      setIsRecording(false);
+      return;
+    }
+
     e.preventDefault();
     const parts: string[] = [];
 
@@ -119,10 +129,6 @@ function HotkeyInput({ label, description, value, onChange, disabled }: HotkeyIn
           aria-labelledby={labelId}
           aria-describedby={error ? `${descriptionId} ${errorId}` : descriptionId}
           aria-disabled={disabled}
-          onFocus={() => {
-            if (disabled) return;
-            setIsRecording(true);
-          }}
           onBlur={() => setIsRecording(false)}
           className={`flex-1 px-3 py-2 border rounded-md text-sm
                      ${isRecording
