@@ -1203,6 +1203,7 @@ mod tests {
         assert_eq!(config.history.persistence_mode, "memory");
         assert_eq!(config.history.max_entries, 100);
         assert!(config.history.encrypt_at_rest);
+        assert_eq!(config.supervisor.captured_log_max_lines, 1000);
     }
 
     #[test]
@@ -2630,5 +2631,33 @@ mod tests {
         assert!(unknown.contains(&"integrations.slack.credentials.refreshSecret".to_string()));
         assert!(unknown.contains(&"integrations.accounts[0].session_key".to_string()));
         assert!(unknown.contains(&"integrations.accounts[1].profile.password_hint".to_string()));
+    }
+
+    #[test]
+    fn test_supervisor_captured_log_max_lines_loaded_from_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        let json = serde_json::json!({
+            "supervisor": {
+                "captured_log_max_lines": 500
+            }
+        });
+        fs::write(&config_path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+        let loaded = load_config_from_path(&config_path);
+        assert_eq!(loaded.supervisor.captured_log_max_lines, 500);
+    }
+
+    #[test]
+    fn test_supervisor_section_absent_defaults_to_1000() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        let json = serde_json::json!({});
+        fs::write(&config_path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+        let loaded = load_config_from_path(&config_path);
+        assert_eq!(loaded.supervisor.captured_log_max_lines, 1000);
     }
 }
