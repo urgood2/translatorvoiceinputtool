@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shlex
 import subprocess
 import sys
 import threading
@@ -45,6 +46,10 @@ def _format_tail(lines: list[str], max_lines: int = 12) -> str:
 def build_sidecar_command() -> tuple[list[str], dict[str, str]]:
     """Build the sidecar launch command for dev and packaged environments."""
     env = os.environ.copy()
+
+    override_cmd = env.get("OPENVOICY_SIDECAR_COMMAND", "").strip()
+    if override_cmd:
+        return shlex.split(override_cmd), env
 
     if getattr(sys, "frozen", False):
         return [sys.executable], env
@@ -396,7 +401,7 @@ def run_self_test() -> None:
 def main() -> int:
     try:
         run_self_test()
-        _log("All checks passed")
+        _log("PASS: All checks passed")
         return 0
     except SelfTestError as exc:
         _log(f"FAIL: {exc}")

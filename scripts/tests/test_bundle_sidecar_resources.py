@@ -28,6 +28,8 @@ class BundleSidecarResourceTests(unittest.TestCase):
             "cp \"$SIDECAR_SHARED_MANIFESTS\"/*.json \"$TAURI_SHARED_MANIFESTS/\"",
             content,
         )
+        self.assertIn("--smoke-test", content)
+        self.assertIn('scripts/e2e/test-packaged-app.sh', content)
 
 
 if __name__ == "__main__":

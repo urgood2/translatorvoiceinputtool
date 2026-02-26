@@ -6,7 +6,7 @@
 # with the correct target-triple naming for cross-platform bundling.
 #
 # Usage:
-#   ./scripts/bundle-sidecar.sh [--target TARGET_TRIPLE]
+#   ./scripts/bundle-sidecar.sh [--target TARGET_TRIPLE] [--smoke-test]
 #
 # Examples:
 #   ./scripts/bundle-sidecar.sh                                    # Auto-detect current platform
@@ -106,6 +106,7 @@ get_dest_binary() {
 # Main function
 main() {
     local target=""
+    local run_smoke_test=false
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -114,14 +115,20 @@ main() {
                 target="$2"
                 shift 2
                 ;;
+            --smoke-test)
+                run_smoke_test=true
+                shift
+                ;;
             -h|--help)
-                echo "Usage: $0 [--target TARGET_TRIPLE]"
+                echo "Usage: $0 [--target TARGET_TRIPLE] [--smoke-test]"
                 echo ""
                 echo "Bundles the sidecar binary for Tauri with proper naming."
                 echo ""
                 echo "Options:"
                 echo "  --target  Target triple (e.g., x86_64-unknown-linux-gnu)"
                 echo "            Auto-detected if not specified."
+                echo "  --smoke-test"
+                echo "            Run scripts/e2e/test-packaged-app.sh after bundling."
                 echo ""
                 echo "Supported targets:"
                 echo "  x86_64-unknown-linux-gnu    Linux x64"
@@ -264,6 +271,11 @@ main() {
     if [[ -d "$TAURI_BINARIES" ]]; then
         echo "Bundled sidecars:"
         ls -la "$TAURI_BINARIES"/ 2>/dev/null || true
+    fi
+
+    if [[ "$run_smoke_test" == true ]]; then
+        log_step "Running packaged app smoke test..."
+        "$PROJECT_ROOT/scripts/e2e/test-packaged-app.sh" --target "$target"
     fi
 }
 

@@ -11,6 +11,7 @@ from openvoicy_sidecar.self_test import (
     SelfTestError,
     SidecarRpcProcess,
     build_sidecar_command,
+    main,
     validate_replacements_get_rules_result,
     validate_status_get_result,
     validate_system_info_result,
@@ -115,6 +116,13 @@ class TestBuildCommand:
         command, _ = build_sidecar_command()
         assert command == ["/tmp/openvoicy-sidecar"]
 
+    def test_honors_openvoicy_sidecar_command_override(self, monkeypatch):
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        monkeypatch.setenv("OPENVOICY_SIDECAR_COMMAND", "/tmp/openvoicy-sidecar --mode smoke")
+
+        command, _ = build_sidecar_command()
+        assert command == ["/tmp/openvoicy-sidecar", "--mode", "smoke"]
+
 
 class TestShutdownExitCode:
     """Regression (29fu): shutdown must return exit code for clean-exit verification."""
@@ -173,3 +181,15 @@ class TestShutdownExitCode:
 
         exit_code = proc.shutdown()
         assert exit_code == 42
+
+
+class TestMainLogging:
+    def test_main_logs_explicit_pass_marker_on_success(self):
+        with (
+            patch("openvoicy_sidecar.self_test.run_self_test"),
+            patch("openvoicy_sidecar.self_test._log") as mock_log,
+        ):
+            exit_code = main()
+
+        assert exit_code == 0
+        mock_log.assert_any_call("PASS: All checks passed")
