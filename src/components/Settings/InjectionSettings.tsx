@@ -115,7 +115,7 @@ export function InjectionSettings({ config, onChange, isLoading }: InjectionSett
         </button>
       </div>
       {errors.restore_clipboard && (
-        <p className="text-xs text-red-600 dark:text-red-400">{errors.restore_clipboard}</p>
+        <p role="alert" className="text-xs text-red-600 dark:text-red-400">{errors.restore_clipboard}</p>
       )}
 
       {/* Suffix selector */}
@@ -180,7 +180,7 @@ export function InjectionSettings({ config, onChange, isLoading }: InjectionSett
         </button>
       </div>
       {errors.focus_guard_enabled && (
-        <p className="text-xs text-red-600 dark:text-red-400">{errors.focus_guard_enabled}</p>
+        <p role="alert" className="text-xs text-red-600 dark:text-red-400">{errors.focus_guard_enabled}</p>
       )}
 
       {/* Focus Guard explanation */}
