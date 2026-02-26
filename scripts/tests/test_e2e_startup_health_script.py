@@ -25,6 +25,11 @@ class StartupHealthScriptTests(unittest.TestCase):
         self.assertIn("steps_total", content)
         self.assertIn("total_ms", content)
 
+    def test_status_get_validation_accepts_loading_model_state(self) -> None:
+        """Regression: 18ci — loading_model is a valid startup state."""
+        content = STARTUP_HEALTH_SCRIPT.read_text()
+        self.assertIn("loading_model", content)
+
 
 if __name__ == "__main__":
     unittest.main()

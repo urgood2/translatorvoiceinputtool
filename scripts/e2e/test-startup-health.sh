@@ -262,7 +262,7 @@ main() {
 
     if ! echo "$status_result" | jq -e '
         .result.state as $state |
-        ($state | IN("idle","recording","transcribing","error")) and
+        ($state | IN("idle","recording","transcribing","error","loading_model")) and
         ((.result | has("detail") | not) or (.result.detail | type == "string")) and
         (if $state == "error" then ((.result | has("detail")) and (.result.detail | type == "string")) else true end) and
         ((.result | has("model") | not) or ((.result.model.model_id | type == "string") and (.result.model.status | type == "string")))
