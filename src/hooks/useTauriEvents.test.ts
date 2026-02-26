@@ -448,12 +448,6 @@ describe('useTauriEvents', () => {
         state: 'ready',
         restart_count: 0,
       });
-      emitMockEvent('status:changed', {
-        seq: 8,
-        state: 'restarting',
-        restart_count: 1,
-        message: 'legacy status event',
-      });
     });
 
     const state = useAppStore.getState();
@@ -461,6 +455,70 @@ describe('useTauriEvents', () => {
       seq: 7,
       state: 'ready',
       restart_count: 0,
+    });
+
+    unmount();
+  });
+
+  test('status:changed legacy alias is deduped when sharing same seq as canonical', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    // Canonical fires first (backend always emits canonical before legacy with same seq)
+    act(() => {
+      emitMockEvent('sidecar:status', {
+        seq: 7,
+        state: 'ready',
+        restart_count: 0,
+      });
+    });
+
+    expect(useAppStore.getState().sidecarStatus).toMatchObject({
+      state: 'ready',
+      restart_count: 0,
+    });
+
+    // Legacy fires with same seq — dedup tracker drops it (seq 7 <= 7)
+    act(() => {
+      emitMockEvent('status:changed', {
+        seq: 7,
+        state: 'ready',
+        restart_count: 0,
+      });
+    });
+
+    // State unchanged (deduped)
+    expect(useAppStore.getState().sidecarStatus).toMatchObject({
+      state: 'ready',
+      restart_count: 0,
+    });
+
+    unmount();
+  });
+
+  test('status:changed legacy alias updates store if it arrives with higher seq', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    // Only legacy event fires (e.g., canonical was lost or not yet received)
+    act(() => {
+      emitMockEvent('status:changed', {
+        seq: 10,
+        state: 'restarting',
+        restart_count: 1,
+      });
+    });
+
+    // Legacy handler now has parity: it updates the store
+    expect(useAppStore.getState().sidecarStatus).toMatchObject({
+      state: 'restarting',
+      restart_count: 1,
     });
 
     unmount();

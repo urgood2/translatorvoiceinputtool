@@ -307,10 +307,11 @@ export function useTauriEvents(): void {
         })
       );
       if (!sidecarRegistered) return;
-      const sidecarLegacyRegistered = await registerListener<Record<string, unknown>>(
+      const sidecarLegacyRegistered = await registerListener<SidecarStatusEvent>(
         EVENTS.SIDECAR_STATUS_LEGACY,
         dedupeHandler(STREAM_KEYS.SIDECAR, (payload) => {
           console.debug('Event: status:changed', payload);
+          store._setSidecarStatus(payload);
         })
       );
       if (!sidecarLegacyRegistered) return;
