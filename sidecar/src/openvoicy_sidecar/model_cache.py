@@ -784,7 +784,9 @@ class ModelCacheManager:
                     dest_path.parent.mkdir(parents=True, exist_ok=True)
 
                     # Reuse any staged file that already passed integrity checks.
-                    if verify_file(dest_path, file_info.sha256, file_info.size_bytes):
+                    if dest_path.exists() and verify_file(
+                        dest_path, file_info.sha256, file_info.size_bytes
+                    ):
                         completed_bytes = sum(fi.size_bytes for fi in manifest.files[: i + 1])
                         with self._state_lock:
                             self._progress.current_bytes = completed_bytes
