@@ -147,7 +147,7 @@ jobs:
         run: python -m unittest scripts/tests/test_e2e_common_timeout.py scripts/tests/test_e2e_run_all_parallel.py
 
       - name: Run CI workflow regression tests
-        run: python -m unittest scripts/tests/test_ci_integration_workflow.py scripts/tests/test_ci_test_workflow.py scripts/tests/test_e2e_full_flow_script.py scripts/tests/test_validate_config_schema_parity.py
+        run: python -m unittest scripts/tests/test_ci_integration_workflow.py scripts/tests/test_ci_test_workflow.py scripts/tests/test_e2e_full_flow_script.py scripts/tests/test_validate_config_schema_parity.py scripts/tests/test_cargo_target_dir_ci.py
 
   typescript-tests:
     name: TypeScript Tests
