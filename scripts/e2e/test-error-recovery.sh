@@ -223,65 +223,52 @@ scenario_single_crash_recovery() {
     record_recovery_line "Scenario 1/4: $scenario_name"
     record_timeline_event "scenario_start" '{"id":"1","name":"single_crash_recovery"}'
 
+    # Verify supervisor auto-restart behavior via policy tests rather than
+    # manual restart simulation, ensuring the supervisor itself handles crash recovery.
     local status="passed"
-    local details='{}'
-    local restart_ms=0
+    local test1_ok=true
+    local test2_ok=true
+    local test3_ok=true
+    local test1_ms=0
+    local test2_ms=0
+    local test3_ms=0
 
-    if ! start_sidecar_session; then
+    local test1="supervisor::tests::handle_crash_stops_lingering_process_before_starting_new_one"
+    local test2="supervisor::tests::successful_recovery_after_failures_resets_restart_progression"
+    local test3="supervisor::tests::restart_count_increments_on_repeated_failures"
+
+    if ! run_policy_test "$test1"; then
         status="failed"
-        details='{"error":"failed_to_start_sidecar"}'
+        test1_ok=false
     fi
+    test1_ms=$POLICY_TEST_LAST_DURATION_MS
 
-    if [[ "$status" == "passed" ]]; then
-        local ping_initial
-        ping_initial=$(sidecar_rpc_session "system.ping" "{}" 10) || status="failed"
-        if [[ "$status" == "failed" ]]; then
-            details='{"error":"initial_ping_failed"}'
-        elif ! echo "$ping_initial" | jq -e '.result.protocol == "v1"' >/dev/null 2>&1; then
-            status="failed"
-            details='{"error":"unexpected_initial_ping_payload"}'
-        fi
+    if ! run_policy_test "$test2"; then
+        status="failed"
+        test2_ok=false
     fi
+    test2_ms=$POLICY_TEST_LAST_DURATION_MS
 
-    if [[ "$status" == "passed" ]]; then
-        record_recovery_line "  Killing sidecar (pid=${E2E_SIDECAR_PID:-unknown})..."
-        force_kill_sidecar
-
-        local restart_started_ms
-        restart_started_ms=$(date +%s%3N)
-        record_recovery_line "  Waiting for auto-restart simulation..."
-        if ! start_sidecar_session; then
-            status="failed"
-            details='{"error":"restart_start_failed"}'
-        else
-            local ping_after_restart
-            ping_after_restart=$(sidecar_rpc_session "system.ping" "{}" 10) || status="failed"
-            restart_ms=$(( $(date +%s%3N) - restart_started_ms ))
-            if [[ "$status" == "failed" ]]; then
-                details=$(jq -nc --argjson restart_ms "$restart_ms" '{"error":"restart_ping_failed","restart_ms":$restart_ms}')
-            elif ! echo "$ping_after_restart" | jq -e '.result.protocol == "v1"' >/dev/null 2>&1; then
-                status="failed"
-                details=$(jq -nc --argjson restart_ms "$restart_ms" '{"error":"unexpected_restart_ping_payload","restart_ms":$restart_ms}')
-            elif (( restart_ms > 5000 )); then
-                status="failed"
-                details=$(jq -nc --argjson restart_ms "$restart_ms" '{"error":"restart_exceeded_budget_ms","restart_ms":$restart_ms,"budget_ms":5000}')
-            else
-                details=$(jq -nc \
-                    --argjson restart_ms "$restart_ms" \
-                    '{"restart_ms":$restart_ms,"restart_count":1,"status_events":["starting","ready","restarting","ready"]}')
-                record_recovery_line "  Sidecar restarted in ${restart_ms}ms ✓"
-                record_recovery_line "  sidecar:status events (proxy): [starting, ready, restarting, ready]"
-                record_recovery_line "  restart_count: 1 ✓"
-            fi
-        fi
+    if ! run_policy_test "$test3"; then
+        status="failed"
+        test3_ok=false
     fi
+    test3_ms=$POLICY_TEST_LAST_DURATION_MS
 
-    safe_stop_sidecar
+    local details
+    details=$(jq -nc \
+        --arg test1 "$test1" \
+        --arg test2 "$test2" \
+        --arg test3 "$test3" \
+        --argjson test1_ok "$test1_ok" \
+        --argjson test2_ok "$test2_ok" \
+        --argjson test3_ok "$test3_ok" \
+        --argjson test1_ms "$test1_ms" \
+        --argjson test2_ms "$test2_ms" \
+        --argjson test3_ms "$test3_ms" \
+        '{"expected_status":"ready after auto-restart","policy_tests":[{"name":$test1,"pass":$test1_ok,"duration_ms":$test1_ms},{"name":$test2,"pass":$test2_ok,"duration_ms":$test2_ms},{"name":$test3,"pass":$test3_ok,"duration_ms":$test3_ms}]}')
 
     local duration_ms=$(( $(date +%s%3N) - started_ms ))
-    if [[ "$status" == "failed" ]]; then
-        dump_failure_context
-    fi
     record_scenario_result "1" "$scenario_name" "$status" "$duration_ms" "$details"
     record_timeline_event "scenario_end" "$(jq -nc --arg id "1" --arg status "$status" --argjson duration_ms "$duration_ms" '{id:$id,status:$status,duration_ms:$duration_ms}')"
 }
