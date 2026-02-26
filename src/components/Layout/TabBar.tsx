@@ -59,7 +59,7 @@ export function TabBar({ tabs, activeTab, onTabChange }: TabBarProps) {
     <div
       role="tablist"
       aria-label="Primary navigation"
-      className="flex w-full items-stretch gap-1 rounded-lg border border-gray-700 bg-gray-900/80 p-1"
+      className="flex w-full items-stretch gap-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-900/80 p-1"
     >
       {tabs.map((tab, index) => {
         const isActive = tab.id === activeTab;
@@ -77,15 +77,15 @@ export function TabBar({ tabs, activeTab, onTabChange }: TabBarProps) {
             tabIndex={isActive ? 0 : -1}
             className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
               isActive
-                ? 'bg-gray-700 text-white shadow-sm'
-                : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                : 'text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white'
             }`}
             onClick={() => onTabChange(tab.id)}
             onKeyDown={(event) => handleKeyDown(event, index, tab.id)}
           >
             <span className="truncate">{tab.label}</span>
             {typeof tab.badge === 'number' && tab.badge > 0 ? (
-              <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-sky-500 px-1 text-[11px] font-semibold text-white">
+              <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-sky-500 dark:bg-sky-600 px-1 text-[11px] font-semibold text-white">
                 {tab.badge}
               </span>
             ) : null}

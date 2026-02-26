@@ -20,7 +20,7 @@ import { HotkeyConfig } from './HotkeyConfig';
 import { InjectionSettings } from './InjectionSettings';
 import { MicrophoneTest } from './MicrophoneTest';
 
-type SettingsTab = 'audio' | 'hotkeys' | 'injection';
+type SettingsTab = 'audio' | 'hotkeys' | 'injection' | 'appearance';
 
 interface SettingsPanelProps {
   config: AppConfig;
@@ -117,6 +117,12 @@ export function SettingsPanel({
         >
           Injection
         </TabButton>
+        <TabButton
+          active={activeTab === 'appearance'}
+          onClick={() => setActiveTab('appearance')}
+        >
+          Appearance
+        </TabButton>
       </div>
 
       {/* Tab content */}
@@ -176,6 +182,36 @@ export function SettingsPanel({
             onChange={handleInjectionChange}
             isLoading={isLoading}
           />
+        )}
+
+        {activeTab === 'appearance' && (
+          <div className="space-y-4">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-400">
+              Theme
+            </h3>
+            <div className="flex gap-2" role="radiogroup" aria-label="Theme">
+              {(['system', 'light', 'dark'] as const).map((option) => {
+                const active = config.ui.theme === option;
+                return (
+                  <button
+                    key={option}
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => onConfigChange(['ui', 'theme'], option)}
+                    className={`px-4 py-2 rounded text-sm font-medium capitalize transition-colors
+                      ${active
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
+                  >
+                    {option}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Choose &ldquo;System&rdquo; to follow your OS preference.
+            </p>
+          </div>
         )}
       </div>
     </div>

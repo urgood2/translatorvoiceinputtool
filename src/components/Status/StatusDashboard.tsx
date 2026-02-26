@@ -14,7 +14,7 @@ function stateBadgeConfig(appState: AppState, enabled: boolean): BadgeConfig {
   if (!enabled) {
     return {
       label: 'Paused',
-      dotClass: 'bg-slate-400',
+      dotClass: 'bg-slate-400 dark:bg-slate-500',
       animate: false,
     };
   }
@@ -80,8 +80,8 @@ function injectionStatusLabel(entry: TranscriptEntry): string {
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-lg border border-gray-700 bg-gray-800/80 p-4" aria-label={title}>
-      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-400">{title}</h3>
+    <section className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-800/80 p-4" aria-label={title}>
+      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-400">{title}</h3>
       {children}
     </section>
   );
@@ -139,8 +139,8 @@ export function StatusDashboard() {
     <div className="grid gap-3 sm:gap-4" data-testid="status-dashboard">
       <SectionCard title="App State">
         <div className="flex items-center justify-between gap-3">
-          <span className="text-sm text-gray-300">Current State</span>
-          <span className="inline-flex items-center gap-2 rounded-full bg-gray-700 px-3 py-1 text-xs font-semibold text-white">
+          <span className="text-sm text-gray-700 dark:text-gray-300">Current State</span>
+          <span className="inline-flex items-center gap-2 rounded-full bg-gray-100 dark:bg-gray-700 px-3 py-1 text-xs font-semibold text-gray-900 dark:text-white">
             <span
               className={`h-2.5 w-2.5 rounded-full ${badge.dotClass} ${badge.animate ? 'animate-pulse' : ''}`}
               aria-hidden="true"
@@ -163,7 +163,7 @@ export function StatusDashboard() {
               <button
                 type="button"
                 data-testid="recording-cancel-button"
-                className="rounded-md border border-gray-600 px-3 py-1.5 text-xs font-semibold text-gray-100 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-xs font-semibold text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-60"
                 disabled={!canCancel}
                 onClick={() => void runRecordingAction('cancel', cancelRecording)}
               >
@@ -183,32 +183,32 @@ export function StatusDashboard() {
           )}
         </div>
         {appState === 'error' && errorDetail ? (
-          <p className="mt-3 text-xs text-orange-200" data-testid="app-state-error-detail">
+          <p className="mt-3 text-xs text-orange-600 dark:text-orange-200" data-testid="app-state-error-detail">
             {errorDetail}
           </p>
         ) : null}
       </SectionCard>
 
       <SectionCard title="Hotkey">
-        <div className="space-y-1 text-sm text-gray-200">
+        <div className="space-y-1 text-sm text-gray-800 dark:text-gray-200">
           {hasHotkey ? (
             <p>
-              <span className="text-gray-400">Hotkey:</span>{' '}
-              <code className="rounded bg-gray-700 px-1.5 py-0.5 text-xs text-sky-300">{hotkey}</code>{' '}
-              <span className="text-gray-300">({mode})</span>
+              <span className="text-gray-600 dark:text-gray-400">Hotkey:</span>{' '}
+              <code className="rounded bg-gray-200 dark:bg-gray-700 px-1.5 py-0.5 text-xs text-sky-600 dark:text-sky-300">{hotkey}</code>{' '}
+              <span className="text-gray-700 dark:text-gray-300">({mode})</span>
             </p>
           ) : (
             <p>
-              <span className="text-gray-400">Hotkey:</span>{' '}
-              <span className="text-amber-300">No hotkey configured.</span>{' '}
-              <span className="text-gray-400">Configure it in Settings.</span>
+              <span className="text-gray-600 dark:text-gray-400">Hotkey:</span>{' '}
+              <span className="text-amber-600 dark:text-amber-300">No hotkey configured.</span>{' '}
+              <span className="text-gray-600 dark:text-gray-400">Configure it in Settings.</span>
             </p>
           )}
         </div>
       </SectionCard>
 
       <SectionCard title="Last Transcript">
-        <p className="text-sm leading-relaxed text-gray-100">{transcriptPreview}</p>
+        <p className="text-sm leading-relaxed text-gray-900 dark:text-gray-100">{transcriptPreview}</p>
         {latestTranscript ? (
           <p className="mt-2 text-xs text-gray-400">
             {transcriptTimestamp} · {transcriptAudio} · {transcriptInjection}
