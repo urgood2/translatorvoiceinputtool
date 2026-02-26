@@ -203,7 +203,6 @@ export function ModelSettings({
             type="button"
             onClick={handleDownload}
             disabled={isLoading || actionInProgress !== null}
-            aria-label={status.status === 'error' ? 'Retry model download' : 'Download speech recognition model'}
             className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-md text-sm font-medium
                        transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -228,7 +227,6 @@ export function ModelSettings({
             type="button"
             onClick={() => setShowPurgeConfirm(true)}
             disabled={isLoading || actionInProgress !== null}
-            aria-label="Purge cached speech recognition model"
             className="px-4 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20
                        rounded-md text-sm font-medium transition-colors
                        disabled:opacity-50 disabled:cursor-not-allowed"

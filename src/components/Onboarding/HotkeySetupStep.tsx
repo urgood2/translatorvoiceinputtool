@@ -80,6 +80,7 @@ export function HotkeySetupStep({ onReady: _onReady }: HotkeySetupStepProps) {
         <div
           tabIndex={0}
           role="button"
+          aria-label="Recording hotkey"
           aria-labelledby="onboarding-hotkey-label"
           aria-describedby="onboarding-hotkey-description"
           onKeyDown={handleKeyDown}
