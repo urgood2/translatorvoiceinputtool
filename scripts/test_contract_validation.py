@@ -9,6 +9,8 @@ drift-prevention checks.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -157,7 +159,19 @@ def validate_fixture_category(
                 if isinstance(payload, dict):
                     model_payloads.append(payload)
 
-    for required_name in ["transcript:complete", "transcription:complete", "state:changed", "model:status"]:
+    # Derive required fixture coverage from contract: all canonical events with
+    # deprecated aliases, plus the aliases themselves.
+    events_contract = contracts["tauri.events"]
+    required_fixture_names: set[str] = set()
+    for item in events_contract.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        aliases = item.get("deprecated_aliases")
+        if isinstance(aliases, list) and aliases:
+            required_fixture_names.add(item["name"])
+            required_fixture_names.update(aliases)
+
+    for required_name in sorted(required_fixture_names):
         if required_name not in mapped_event_names:
             errors.append(
                 "shared/ipc/examples/IPC_V1_EXAMPLES.jsonl: "
@@ -249,11 +263,16 @@ def validate_drift_prevention_category() -> tuple[list[str], list[str]]:
                 }
             ]
         }
-        derived_errors = vc.validate_sidecar_handler_dispatch(root, contract)
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            derived_errors = vc.validate_sidecar_handler_dispatch(root, contract)
         if derived_errors:
             errors.append(
                 "sidecar handler validation should be contract-driven; synthetic contract method failed validation"
             )
+            captured_text = captured.getvalue().strip()
+            if captured_text:
+                summaries.append(f"synthetic contract-driven validation output: {captured_text}")
 
     # Ensure adding a handler without contract declaration fails validation.
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -286,11 +305,16 @@ def validate_drift_prevention_category() -> tuple[list[str], list[str]]:
                 }
             ]
         }
-        unknown_errors = vc.validate_sidecar_handler_dispatch(root, contract)
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            unknown_errors = vc.validate_sidecar_handler_dispatch(root, contract)
         if not any("not declared in sidecar.rpc contract" in err for err in unknown_errors):
             errors.append(
                 "sidecar handler validation must fail when HANDLERS contains methods missing from contract"
             )
+            captured_text = captured.getvalue().strip()
+            if captured_text:
+                summaries.append(f"synthetic undeclared-method validation output: {captured_text}")
 
     summaries.append("allowlists derived from contract schemas")
     summaries.append("undeclared sidecar handlers fail validation")
