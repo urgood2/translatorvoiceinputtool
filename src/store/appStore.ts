@@ -805,6 +805,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   _setModelStatus: (status) => {
     set((state) => {
+      // Ignore model:status events for non-configured models (e.g. purge of model B
+      // should not overwrite UI status when configured model A is active).
+      const configuredModelId = state.config?.model?.model_id;
+      if (
+        configuredModelId
+        && 'model_id' in status
+        && typeof status.model_id === 'string'
+        && status.model_id.length > 0
+        && status.model_id !== configuredModelId
+      ) {
+        return state;
+      }
+
       const nextStatus = normalizeModelStatusPayload(status, state.modelStatus);
       const isInstalling =
         nextStatus.status === 'loading'

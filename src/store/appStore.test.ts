@@ -844,6 +844,42 @@ describe('Internal Actions', () => {
     expect(useAppStore.getState().downloadProgress).toBeNull();
   });
 
+  test('_setModelStatus ignores events for non-configured model', () => {
+    // Set up: configured model A is ready
+    useAppStore.setState({
+      config: createMockConfig() as any,
+      modelStatus: { status: 'ready', model_id: 'parakeet-rnnt-1.1b' },
+    });
+
+    // Emit model:status for a different model (simulates purge of model B)
+    useAppStore.getState()._setModelStatus({
+      status: 'missing',
+      model_id: 'openai/whisper-small',
+    });
+
+    // Configured model A should still be ready
+    const { modelStatus } = useAppStore.getState();
+    expect(modelStatus?.model_id).toBe('parakeet-rnnt-1.1b');
+    expect(modelStatus?.status).toBe('ready');
+  });
+
+  test('_setModelStatus applies events for configured model', () => {
+    useAppStore.setState({
+      config: createMockConfig() as any,
+      modelStatus: { status: 'ready', model_id: 'parakeet-rnnt-1.1b' },
+    });
+
+    // Emit model:status for the configured model
+    useAppStore.getState()._setModelStatus({
+      status: 'missing',
+      model_id: 'parakeet-rnnt-1.1b',
+    });
+
+    const { modelStatus } = useAppStore.getState();
+    expect(modelStatus?.model_id).toBe('parakeet-rnnt-1.1b');
+    expect(modelStatus?.status).toBe('missing');
+  });
+
   test('_setDownloadProgress updates progress', () => {
     useAppStore.getState()._setDownloadProgress({
       current: 50,
