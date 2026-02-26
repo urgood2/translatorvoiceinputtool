@@ -275,6 +275,109 @@ fn model_download_params(model_id: Option<String>, force: Option<bool>) -> Optio
     }
 }
 
+fn configured_model_language_hint(config: &config::AppConfig) -> Option<String> {
+    config
+        .model
+        .as_ref()
+        .and_then(|model| model.language.as_deref())
+        .and_then(|language| {
+            let trimmed = language.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+}
+
+fn asr_initialize_params(model_id: &str, device_pref: &str, language: Option<&str>) -> Value {
+    let mut params = serde_json::Map::new();
+    params.insert("model_id".to_string(), json!(model_id));
+    params.insert("device_pref".to_string(), json!(device_pref));
+
+    if let Some(language) = language.and_then(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    }) {
+        params.insert("language".to_string(), json!(language));
+    }
+
+    Value::Object(params)
+}
+
+fn asr_initialize_language_rejected(error: &RpcError) -> bool {
+    match error {
+        RpcError::Remote { kind, message, .. } => {
+            let kind_matches = kind.is_empty()
+                || kind.eq_ignore_ascii_case("E_INVALID_PARAMS")
+                || kind.eq_ignore_ascii_case("E_INVALID");
+            if !kind_matches {
+                return false;
+            }
+
+            let message = message.to_ascii_lowercase();
+            message.contains("language")
+                && [
+                    "invalid",
+                    "unknown",
+                    "unexpected",
+                    "not allowed",
+                    "additional",
+                    "property",
+                    "parameter",
+                    "params",
+                ]
+                .iter()
+                .any(|token| message.contains(token))
+        }
+        _ => false,
+    }
+}
+
+#[derive(Deserialize)]
+struct AsrInitializeResult {
+    status: String,
+}
+
+async fn call_asr_initialize_with_language_fallback(
+    client: &RpcClient,
+    model_id: &str,
+    device_pref: &str,
+    language: Option<String>,
+) -> Result<AsrInitializeResult, RpcError> {
+    let params = asr_initialize_params(model_id, device_pref, language.as_deref());
+
+    match client
+        .call::<AsrInitializeResult>("asr.initialize", Some(params))
+        .await
+    {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            let Some(requested_language) = language.as_deref() else {
+                return Err(error);
+            };
+
+            if !asr_initialize_language_rejected(&error) {
+                return Err(error);
+            }
+
+            log::info!(
+                "language not supported in this build; retrying asr.initialize without language override (requested='{}')",
+                requested_language
+            );
+
+            let fallback_params = asr_initialize_params(model_id, device_pref, None);
+            client
+                .call::<AsrInitializeResult>("asr.initialize", Some(fallback_params))
+                .await
+        }
+    }
+}
+
 fn map_download_response_status(status: &SidecarModelStatus) -> ModelStatus {
     match status.status.as_str() {
         "missing" => ModelStatus::Missing,
@@ -1518,23 +1621,14 @@ impl IntegrationManager {
         );
 
         log::info!(
-            "Initializing ASR model: model={}, device={}",
+            "Initializing ASR model: model={}, device={}, language={:?}",
             model_id,
-            device_pref
+            device_pref,
+            configured_model_language_hint(&config)
         );
+        let language = configured_model_language_hint(&config);
 
-        let params = json!({
-            "model_id": model_id,
-            "device_pref": device_pref
-        });
-
-        #[derive(Deserialize)]
-        struct InitResult {
-            status: String,
-        }
-
-        match client
-            .call::<InitResult>("asr.initialize", Some(params))
+        match call_asr_initialize_with_language_fallback(client, &model_id, &device_pref, language)
             .await
         {
             Ok(result) => {
@@ -2349,21 +2443,10 @@ impl IntegrationManager {
 
         // Transition to loading state
         let _ = self.state_manager.transition(AppState::LoadingModel);
+        let config = config::load_config();
+        let language = configured_model_language_hint(&config);
 
-        let params = json!({
-            "model_id": model_id,
-            "device_pref": device
-        });
-
-        #[derive(Deserialize)]
-        struct InitResult {
-            status: String,
-        }
-
-        match client
-            .call::<InitResult>("asr.initialize", Some(params))
-            .await
-        {
+        match call_asr_initialize_with_language_fallback(client, model_id, device, language).await {
             Ok(result) => {
                 log::info!("ASR initialized: status={}", result.status);
                 // Mark model ready
@@ -4235,6 +4318,85 @@ mod tests {
                 "force": true
             }))
         );
+    }
+
+    #[test]
+    fn test_configured_model_language_hint_trims_and_preserves_supported_values() {
+        let mut config = config::AppConfig::default();
+        config.model = Some(config::ModelConfig {
+            model_id: None,
+            device: None,
+            preferred_device: "auto".to_string(),
+            language: Some(" ja ".to_string()),
+        });
+
+        assert_eq!(
+            configured_model_language_hint(&config),
+            Some("ja".to_string())
+        );
+    }
+
+    #[test]
+    fn test_configured_model_language_hint_omits_blank_values() {
+        let mut config = config::AppConfig::default();
+        config.model = Some(config::ModelConfig {
+            model_id: None,
+            device: None,
+            preferred_device: "auto".to_string(),
+            language: Some("   ".to_string()),
+        });
+
+        assert_eq!(configured_model_language_hint(&config), None);
+    }
+
+    #[test]
+    fn test_asr_initialize_params_includes_optional_language_when_present() {
+        let params = asr_initialize_params("parakeet", "cuda", Some("en"));
+        assert_eq!(
+            params,
+            json!({
+                "model_id": "parakeet",
+                "device_pref": "cuda",
+                "language": "en"
+            })
+        );
+    }
+
+    #[test]
+    fn test_asr_initialize_params_omits_language_when_absent_or_blank() {
+        let no_language = asr_initialize_params("parakeet", "auto", None);
+        assert_eq!(
+            no_language,
+            json!({
+                "model_id": "parakeet",
+                "device_pref": "auto"
+            })
+        );
+
+        let blank_language = asr_initialize_params("parakeet", "auto", Some("   "));
+        assert_eq!(blank_language, no_language);
+    }
+
+    #[test]
+    fn test_asr_initialize_language_rejected_detects_invalid_language_param_errors() {
+        let error = RpcError::Remote {
+            code: -32602,
+            kind: "E_INVALID_PARAMS".to_string(),
+            message: "Invalid params: unknown field 'language'".to_string(),
+        };
+
+        assert!(asr_initialize_language_rejected(&error));
+    }
+
+    #[test]
+    fn test_asr_initialize_language_rejected_ignores_unrelated_errors() {
+        let error = RpcError::Remote {
+            code: -32001,
+            kind: "E_NOT_READY".to_string(),
+            message: "ASR backend not initialized".to_string(),
+        };
+
+        assert!(!asr_initialize_language_rejected(&error));
     }
 
     #[test]
