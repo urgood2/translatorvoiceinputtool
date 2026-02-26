@@ -81,7 +81,6 @@ export function HotkeySetupStep({ onReady: _onReady }: HotkeySetupStepProps) {
           tabIndex={0}
           role="button"
           aria-label="Recording hotkey"
-          aria-labelledby="onboarding-hotkey-label"
           aria-describedby="onboarding-hotkey-description"
           onKeyDown={handleKeyDown}
           onClick={() => setIsRecording(true)}
