@@ -89,10 +89,14 @@ jobs:
         run: |
           python -m pytest -v --tb=short --junitxml=test-results.xml
 
-      - name: Sidecar Self-Test
+      - name: Sidecar Self-Test (dev mode)
         working-directory: sidecar
         run: |
           python -m openvoicy_sidecar.self_test
+
+      - name: Sidecar Self-Test (packaged resource simulation)
+        run: |
+          bash scripts/e2e/test-packaged-resources.sh
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
@@ -147,7 +151,7 @@ jobs:
         run: python -m unittest scripts/tests/test_e2e_common_timeout.py scripts/tests/test_e2e_run_all_parallel.py
 
       - name: Run CI workflow regression tests
-        run: python -m unittest scripts/tests/test_ci_integration_workflow.py scripts/tests/test_ci_test_workflow.py scripts/tests/test_e2e_full_flow_script.py scripts/tests/test_validate_config_schema_parity.py scripts/tests/test_cargo_target_dir_ci.py scripts/tests/test_validate_contracts.py scripts/tests/test_test_contract_validation.py
+        run: python -m unittest scripts/tests/test_ci_integration_workflow.py scripts/tests/test_ci_test_workflow.py scripts/tests/test_e2e_full_flow_script.py scripts/tests/test_validate_config_schema_parity.py scripts/tests/test_cargo_target_dir_ci.py scripts/tests/test_validate_contracts.py scripts/tests/test_test_contract_validation.py scripts/tests/test_e2e_packaged_resources_script.py scripts/tests/test_tauri_resource_packaging.py
 
   typescript-tests:
     name: TypeScript Tests
