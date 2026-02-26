@@ -477,7 +477,10 @@ describe('useTauriEvents', () => {
       fireMockEventWithLog('transcript:error', {
         seq: 601,
         session_id: 'session-err-1',
-        error: {
+        error: 'Canonical transcript error',
+        message: 'Canonical transcript error',
+        recoverable: true,
+        app_error: {
           code: 'E_TRANSCRIPTION_FAILED',
           message: 'Canonical transcript error',
           recoverable: true,

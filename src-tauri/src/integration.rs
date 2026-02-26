@@ -511,12 +511,12 @@ fn sidecar_status_payload_from_status_event(
 fn transcription_error_event_payload(session_id: &str, app_error: &AppError) -> Value {
     json!({
         "session_id": session_id,
-        // Canonical structured payload consumed by transcript:error.
-        "error": app_error,
+        // Legacy error field: plain string for backward compatibility.
+        "error": app_error.message,
         // Compatibility fields retained for one release cycle.
         "message": app_error.message,
         "recoverable": app_error.recoverable,
-        // Legacy structured alias consumed by existing app:error handler.
+        // Canonical structured error for consumers that need code/recoverable.
         "app_error": app_error,
     })
 }
@@ -631,7 +631,7 @@ fn parse_sidecar_transcription_error(raw_error: &str) -> (String, String) {
 fn transcription_failure_app_error(session_id: &str, raw_error: &str) -> AppError {
     let (sidecar_error_kind, sidecar_message) = parse_sidecar_transcription_error(raw_error);
     AppError::new(
-        ErrorKind::TranscriptionFailed.to_sidecar(),
+        &sidecar_error_kind,
         "Transcription failed",
         Some(json!({
             "session_id": session_id,
@@ -2752,8 +2752,10 @@ impl IntegrationManager {
 
                         let mut injection_app_error: Option<AppError> = None;
                         if let InjectionResult::Failed { error, .. } = result.clone() {
+                            let text_with_suffix =
+                                format!("{}{}", final_text, injection_config.suffix);
                             let fallback_reason =
-                                match crate::injection::set_clipboard_public(&final_text) {
+                                match crate::injection::set_clipboard_public(&text_with_suffix) {
                                     Ok(()) => format!(
                                         "{}; transcript copied to clipboard for manual paste",
                                         error
@@ -2905,14 +2907,14 @@ impl IntegrationManager {
                         *recording_context.write().await = None;
                         *current_session_id.write().await = None;
                     }
-                    RecordingEvent::Cancelled { session_id, .. } => {
+                    RecordingEvent::Cancelled { .. } => {
                         if let Some(ref handle) = app_handle {
                             emit_with_shared_seq(
                                 handle,
                                 &[EVENT_RECORDING_STATUS],
                                 recording_status_event_payload(
                                     "idle",
-                                    Some(session_id.as_str()),
+                                    None,
                                     None,
                                     None,
                                 ),
@@ -4093,6 +4095,34 @@ mod tests {
         ));
     }
 
+    /// Regression test: purging an unrelated model must NOT trigger model status
+    /// event emission. This prevents the UI from briefly flashing "Not Installed"
+    /// for the configured model when a different model's cache is cleared.
+    #[test]
+    fn test_purge_unrelated_model_suppresses_status_event() {
+        // The guard condition in purge_model_cache checks purge_affects_configured_model
+        // and only emits model:status / sets ModelStatus::Missing when it returns true.
+        // For unrelated purges, the function returns false and no event is emitted.
+        let configured = "nvidia/parakeet-tdt-0.6b-v3";
+
+        // Purging a completely different model should not affect configured model status
+        assert!(!purge_affects_configured_model(
+            Some("openai/whisper-large"),
+            configured
+        ));
+        assert!(!purge_affects_configured_model(
+            Some("nvidia/parakeet-tdt-1.1b"),
+            configured
+        ));
+        // Exact match should affect status
+        assert!(purge_affects_configured_model(
+            Some("nvidia/parakeet-tdt-0.6b-v3"),
+            configured
+        ));
+        // None (purge all) should affect status
+        assert!(purge_affects_configured_model(None, configured));
+    }
+
     #[test]
     fn test_transcription_complete_duration_mapping_prefers_stop_audio_duration() {
         let (audio_duration_ms, processing_duration_ms) =
@@ -4245,9 +4275,10 @@ mod tests {
         );
 
         let payload = transcription_error_event_payload("session-1", &app_error);
+        // error field is now a plain string (legacy compatible)
         assert_eq!(
-            payload.pointer("/error/code").and_then(Value::as_str),
-            Some("E_TRANSCRIPTION_FAILED")
+            payload.get("error").and_then(Value::as_str),
+            Some("Transcription failed")
         );
         assert_eq!(
             payload.get("message").and_then(Value::as_str),
@@ -4257,6 +4288,7 @@ mod tests {
             payload.get("recoverable").and_then(Value::as_bool),
             Some(true)
         );
+        // Structured error is in app_error
         assert_eq!(
             payload.pointer("/app_error/code").and_then(Value::as_str),
             Some("E_TRANSCRIPTION_FAILED")
@@ -4287,30 +4319,38 @@ mod tests {
             Some(false)
         );
 
-        // Structured error shape for canonical consumers.
+        // error field is now a plain string (legacy compatible).
         assert_eq!(
-            payload.pointer("/error/code").and_then(Value::as_str),
+            payload.get("error").and_then(Value::as_str),
+            Some("Sidecar crashed")
+        );
+
+        // Structured error details available via app_error.
+        assert_eq!(
+            payload.pointer("/app_error/code").and_then(Value::as_str),
             Some("E_SIDECAR_CRASH")
         );
         assert_eq!(
-            payload.pointer("/error/message").and_then(Value::as_str),
+            payload
+                .pointer("/app_error/message")
+                .and_then(Value::as_str),
             Some("Sidecar crashed")
         );
         assert_eq!(
             payload
-                .pointer("/error/recoverable")
+                .pointer("/app_error/recoverable")
                 .and_then(Value::as_bool),
             Some(false)
         );
         assert_eq!(
             payload
-                .pointer("/error/details/restart_count")
+                .pointer("/app_error/details/restart_count")
                 .and_then(Value::as_u64),
             Some(2)
         );
         assert_eq!(
             payload
-                .pointer("/error/details/source")
+                .pointer("/app_error/details/source")
                 .and_then(Value::as_str),
             Some("watchdog")
         );
@@ -4520,7 +4560,8 @@ mod tests {
         let app_error =
             transcription_failure_app_error("session-1", "E_ASR_INIT: model initialization failed");
 
-        assert_eq!(app_error.code, "E_TRANSCRIPTION_FAILED");
+        // code should reflect the canonical mapping of the sidecar kind, not hardcode E_TRANSCRIPTION_FAILED
+        assert_eq!(app_error.code, "E_ASR_INIT");
         assert_eq!(
             app_error
                 .details
@@ -4559,6 +4600,23 @@ mod tests {
                 .and_then(|d| d.get("sidecar_message"))
                 .and_then(Value::as_str),
             Some("sidecar timeout")
+        );
+    }
+
+    #[test]
+    fn test_transcription_failure_app_error_uses_timeout_code_for_timeout_errors() {
+        let app_error =
+            transcription_failure_app_error("session-1", "asr_timeout: model timed out after 30s");
+
+        // code should reflect the canonical timeout mapping, not hardcode E_TRANSCRIPTION_FAILED
+        assert_eq!(app_error.code, "E_TRANSCRIPTION_TIMEOUT");
+        assert_eq!(
+            app_error
+                .details
+                .as_ref()
+                .and_then(|d| d.get("error_kind"))
+                .and_then(Value::as_str),
+            Some("E_TRANSCRIPTION_TIMEOUT")
         );
     }
 
