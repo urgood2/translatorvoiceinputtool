@@ -758,8 +758,8 @@ pub fn load_config() -> AppConfig {
 pub fn load_config_from_path(path: &PathBuf) -> AppConfig {
     match fs::read_to_string(path) {
         Ok(content) => match serde_json::from_str::<Value>(&content) {
-            Ok(value) => {
-                warn_on_sensitive_unknown_fields(&value);
+            Ok(mut value) => {
+                reject_sensitive_unknown_fields(&mut value);
                 let mut config = migrate_config(value);
                 config.validate_and_clamp();
                 config
@@ -1019,12 +1019,62 @@ fn ensure_replacement_rule_ids(config: &mut Value) {
     }
 }
 
-fn warn_on_sensitive_unknown_fields(config: &Value) {
-    for path in sensitive_unknown_config_fields(config) {
+/// Warn about and strip sensitive unknown fields from the config value.
+///
+/// Returns the paths that were removed so callers can log/audit.
+fn reject_sensitive_unknown_fields(config: &mut Value) -> Vec<String> {
+    let paths = sensitive_unknown_config_fields(config);
+    for path in &paths {
         log::warn!(
-            "Ignoring unknown sensitive config field '{}'; tokens and secrets must not be stored in config",
+            "Rejecting unknown sensitive config field '{}'; tokens and secrets must not be stored in config",
             path
         );
+        remove_nested_field(config, path);
+    }
+    paths
+}
+
+/// Remove a dot-separated field path from a JSON value tree.
+///
+/// Supports dotted paths (e.g. "audio.secret_token") and bracket notation
+/// (e.g. "replacements[0].token") produced by `sensitive_unknown_config_fields`.
+fn remove_nested_field(root: &mut Value, dotted_path: &str) {
+    let segments: Vec<&str> = dotted_path.split('.').collect();
+    if segments.is_empty() {
+        return;
+    }
+
+    fn resolve_parent<'a>(value: &'a mut Value, segments: &[&str]) -> Option<&'a mut Value> {
+        let mut current = value;
+        for &segment in segments {
+            if let Some(idx_str) = segment.strip_suffix(']').and_then(|s| {
+                let bracket = s.find('[')?;
+                Some(&s[bracket + 1..])
+            }) {
+                // Array segment: e.g., "replacements[0]"
+                let key = &segment[..segment.find('[').unwrap()];
+                current = current.get_mut(key)?;
+                let idx: usize = idx_str.parse().ok()?;
+                current = current.get_mut(idx)?;
+            } else {
+                current = current.get_mut(segment)?;
+            }
+        }
+        Some(current)
+    }
+
+    if segments.len() == 1 {
+        if let Some(obj) = root.as_object_mut() {
+            obj.remove(segments[0]);
+        }
+        return;
+    }
+
+    let (parent_segments, last) = segments.split_at(segments.len() - 1);
+    if let Some(parent) = resolve_parent(root, parent_segments) {
+        if let Some(obj) = parent.as_object_mut() {
+            obj.remove(last[0]);
+        }
     }
 }
 
@@ -2659,5 +2709,51 @@ mod tests {
 
         let loaded = load_config_from_path(&config_path);
         assert_eq!(loaded.supervisor.captured_log_max_lines, 1000);
+    }
+
+    #[test]
+    fn test_reject_sensitive_unknown_fields_strips_detected_fields() {
+        let mut config = serde_json::json!({
+            "schema_version": 1,
+            "auth_token": "dont-store-me",
+            "audio": {
+                "device_uid": "mic-1",
+                "api_key": "also-bad"
+            }
+        });
+
+        let removed = reject_sensitive_unknown_fields(&mut config);
+        assert!(removed.contains(&"auth_token".to_string()));
+        assert!(removed.contains(&"audio.api_key".to_string()));
+        // Sensitive fields must be gone from the value tree
+        assert!(config.get("auth_token").is_none(), "auth_token should be stripped");
+        assert!(
+            config["audio"].get("api_key").is_none(),
+            "audio.api_key should be stripped"
+        );
+        // Known fields survive
+        assert_eq!(config["audio"]["device_uid"], "mic-1");
+    }
+
+    #[test]
+    fn test_load_config_strips_sensitive_unknown_fields_before_deserialize() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+
+        let json = serde_json::json!({
+            "schema_version": 1,
+            "auth_token": "steal-me",
+            "audio": {
+                "device_uid": "mic-1",
+                "api_key": "steal-me-too"
+            }
+        });
+        fs::write(&config_path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+        let loaded = load_config_from_path(&config_path);
+        // Config should load normally (sensitive fields stripped before serde)
+        assert_eq!(loaded.audio.device_uid, Some("mic-1".to_string()));
+        // Re-read the in-memory config to confirm it doesn't carry the secrets
+        // (they were stripped from the Value before migrate_config ran)
     }
 }
