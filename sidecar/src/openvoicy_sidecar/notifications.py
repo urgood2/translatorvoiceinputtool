@@ -279,6 +279,7 @@ def emit_transcription_complete(
     text: str,
     duration_ms: int,
     confidence: Optional[float] = None,
+    language: Optional[str] = None,
     raw_text: Optional[str] = None,
     final_text: Optional[str] = None,
 ) -> bool:
@@ -317,6 +318,8 @@ def emit_transcription_complete(
 
     if confidence is not None:
         params["confidence"] = round(confidence, 3)
+    if language:
+        params["language"] = language
 
     notification = Notification(method="event.transcription_complete", params=params)
     write_notification(notification)
@@ -454,6 +457,7 @@ def transcribe_session_async(
                 text=text,
                 duration_ms=compute_ms,
                 confidence=result.confidence,
+                language=result.language,
                 raw_text=raw_text,
                 final_text=text,
             )

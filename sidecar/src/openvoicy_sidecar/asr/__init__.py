@@ -192,8 +192,10 @@ def create_backend(
     _ = config  # Reserved for future backend-specific options.
     normalized_family = family.strip().lower()
     if normalized_family == "parakeet":
+        log("Family=parakeet -> ParakeetBackend")
         return ParakeetBackend()
     if normalized_family == "whisper":
+        log("Family=whisper -> WhisperBackend")
         return WhisperBackend()
     return get_backend(normalized_family)
 

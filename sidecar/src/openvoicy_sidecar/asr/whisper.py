@@ -6,6 +6,7 @@ and auto-detection mode.
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -31,6 +32,11 @@ try:
     _FASTER_WHISPER_AVAILABLE = True
 except ImportError:
     _FASTER_WHISPER_AVAILABLE = False
+
+try:
+    import resource as _resource
+except ImportError:  # pragma: no cover - unavailable on some platforms (for example Windows)
+    _resource = None
 
 
 class WhisperBackend:
@@ -135,7 +141,19 @@ class WhisperBackend:
                 compute_type=compute_type,
             )
             elapsed = time.time() - start
-            log(f"Whisper model loaded in {elapsed:.2f}s on {device}")
+            if _resource is None:
+                log(f"Whisper model loaded in {elapsed:.2f}s on {device}")
+            else:
+                rss = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+                rss_mib = (
+                    rss / (1024 * 1024)
+                    if sys.platform == "darwin"
+                    else rss / 1024
+                )
+                log(
+                    f"Whisper model loaded in {elapsed:.2f}s on {device} "
+                    f"(rss={rss_mib:.1f} MiB)"
+                )
 
             self._device = device
             self._model_path = model_path
@@ -174,6 +192,10 @@ class WhisperBackend:
             )
             text = " ".join(seg.text.strip() for seg in segments)
             duration_ms = int((time.time() - start) * 1000)
+            log(
+                "Whisper transcription finished in "
+                f"{duration_ms}ms (chars={len(text)} language={info.language})"
+            )
 
             return TranscriptionResult(
                 text=text,

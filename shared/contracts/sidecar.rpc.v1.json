@@ -488,6 +488,12 @@
               "cuda",
               "cpu"
             ]
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "additionalProperties": false
