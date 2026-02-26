@@ -143,12 +143,14 @@ describe('MicSetupStep', () => {
   });
 
   test('continue calls onReady and stops running mic test', async () => {
-    useAppStore.setState({ isMeterRunning: true });
     const onReady = vi.fn();
     render(<MicSetupStep onReady={onReady} />);
 
     await act(async () => {
       fireEvent.click(screen.getByText('Start Test'));
+    });
+    act(() => {
+      useAppStore.setState({ isMeterRunning: true });
     });
     fireEvent.click(screen.getByRole('checkbox'));
 
