@@ -1,0 +1,23 @@
+{
+  "model_id": "nvidia/parakeet-tdt-0.6b-v3",
+  "version": "3.0",
+  "revision": "6d590f77001d318fb17a0b5bf7ee329a91b52598",
+  "files": [
+    {
+      "path": "parakeet-tdt-0.6b-v3.nemo",
+      "urls": [
+        "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/6d590f77001d318fb17a0b5bf7ee329a91b52598/parakeet-tdt-0.6b-v3.nemo"
+      ],
+      "size_bytes": 2509332480,
+      "sha256": "cf4679f1a52ce7400b7b394b2e008b95b7a9f6e209a02ecdde2b28ab9e1bb079"
+    },
+    {
+      "path": "README.md",
+      "urls": [
+        "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/6d590f77001d318fb17a0b5bf7ee329a91b52598/README.md"
+      ],
+      "size_bytes": 38564,
+      "sha256": "4a67584b0bd1d37fc9997128f8654569d74cf4f79bd8657a6c253eeac9717fa1"
+    }
+  ]
+}
