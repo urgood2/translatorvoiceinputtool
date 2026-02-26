@@ -941,6 +941,91 @@ mod tests {
     }
 
     #[test]
+    fn test_build_tray_menu_mode_label_reflects_current_mode() {
+        let mut state = sample_state();
+        state.mode = "toggle".to_string();
+
+        let menu = build_tray_menu(&state);
+        assert!(menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Action { id, text, enabled }
+                    if id == menu_ids::MODE_STATUS && text == "Mode: Toggle" && !enabled
+            )
+        }));
+    }
+
+    #[test]
+    fn test_build_tray_menu_recording_state_controls_start_stop_label() {
+        let mut state = sample_state();
+        state.recording = true;
+
+        let menu = build_tray_menu(&state);
+        assert!(menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Action { id, text, enabled }
+                    if id == menu_ids::TOGGLE_RECORDING && text == "Stop Recording" && !enabled
+            )
+        }));
+    }
+
+    #[test]
+    fn test_build_tray_menu_microphone_submenu_marks_selected_device() {
+        let menu = build_tray_menu(&sample_state());
+        let mic_items = menu
+            .iter()
+            .find_map(|entry| match entry {
+                TrayMenuEntry::Submenu { id, items, .. } if id == menu_ids::MIC_SUBMENU => {
+                    Some(items)
+                }
+                _ => None,
+            })
+            .expect("mic submenu should exist");
+
+        assert!(matches!(
+            mic_items.first(),
+            Some(TrayMenuEntry::Toggle {
+                id,
+                text,
+                checked: true,
+                ..
+            }) if id == "select_mic::Built-in Mic" && text == "Built-in Mic"
+        ));
+        assert!(matches!(
+            mic_items.get(1),
+            Some(TrayMenuEntry::Toggle {
+                id,
+                text,
+                checked: false,
+                ..
+            }) if id == "select_mic::USB Mic" && text == "USB Mic"
+        ));
+    }
+
+    #[test]
+    fn test_build_tray_menu_overlay_toggle_reflects_state() {
+        let mut state = sample_state();
+        state.overlay_enabled = false;
+
+        let menu = build_tray_menu(&state);
+        assert!(menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Toggle {
+                    id,
+                    text,
+                    checked,
+                    enabled,
+                } if id == menu_ids::TOGGLE_OVERLAY
+                    && text == "Show Overlay"
+                    && !checked
+                    && *enabled
+            )
+        }));
+    }
+
+    #[test]
     fn test_build_tray_menu_recent_is_limited_to_five_entries_regression() {
         let mut state = sample_state();
         state.recent_transcripts = (0..8)
@@ -959,6 +1044,31 @@ mod tests {
             .expect("recent submenu should exist");
 
         assert_eq!(recent.len(), 5);
+    }
+
+    #[test]
+    fn test_build_tray_menu_recent_entry_text_truncates_to_menu_limit() {
+        let mut state = sample_state();
+        state.recent_transcripts = vec![(
+            "id-very-long".to_string(),
+            "x".repeat(MAX_RECENT_TRANSCRIPT_CHARS + 25),
+        )];
+
+        let menu = build_tray_menu(&state);
+        let recent = menu
+            .iter()
+            .find_map(|entry| match entry {
+                TrayMenuEntry::Submenu { id, items, .. } if id == menu_ids::RECENT_SUBMENU => {
+                    Some(items)
+                }
+                _ => None,
+            })
+            .expect("recent submenu should exist");
+
+        assert!(matches!(
+            recent.first(),
+            Some(TrayMenuEntry::Action { text, .. }) if text.len() == MAX_RECENT_TRANSCRIPT_CHARS && text.ends_with("...")
+        ));
     }
 
     #[test]
@@ -1103,11 +1213,122 @@ mod tests {
     }
 
     #[test]
+    fn test_should_rebuild_menu_on_current_device_change() {
+        let previous = sample_state();
+        let mut current = previous.clone();
+        current.current_device = Some("USB Mic".to_string());
+        assert!(should_rebuild_menu(Some(&previous), &current));
+    }
+
+    #[test]
     fn test_should_rebuild_menu_on_recording_state_change() {
         let previous = sample_state();
         let mut current = previous.clone();
         current.recording = true;
         assert!(should_rebuild_menu(Some(&previous), &current));
+    }
+
+    #[test]
+    fn test_build_tray_menu_snapshot_sample_state_matches_golden() {
+        let state = sample_state();
+        let menu = build_tray_menu(&state);
+
+        let expected = vec![
+            TrayMenuEntry::Action {
+                id: menu_ids::HEADER.to_string(),
+                text: "OpenVoicy".to_string(),
+                enabled: false,
+            },
+            TrayMenuEntry::Separator,
+            TrayMenuEntry::Toggle {
+                id: menu_ids::TOGGLE_ENABLED.to_string(),
+                text: "Enabled".to_string(),
+                enabled: true,
+                checked: true,
+            },
+            TrayMenuEntry::Action {
+                id: menu_ids::TOGGLE_RECORDING.to_string(),
+                text: "Start Recording".to_string(),
+                enabled: false,
+            },
+            TrayMenuEntry::Separator,
+            TrayMenuEntry::Action {
+                id: menu_ids::MODE_STATUS.to_string(),
+                text: "Mode: Hold".to_string(),
+                enabled: false,
+            },
+            TrayMenuEntry::Action {
+                id: menu_ids::LANGUAGE_STATUS.to_string(),
+                text: "Language: Auto".to_string(),
+                enabled: false,
+            },
+            TrayMenuEntry::Separator,
+            TrayMenuEntry::Submenu {
+                id: menu_ids::MIC_SUBMENU.to_string(),
+                text: "Mic: Built-in Mic".to_string(),
+                enabled: true,
+                items: vec![
+                    TrayMenuEntry::Toggle {
+                        id: "select_mic::Built-in Mic".to_string(),
+                        text: "Built-in Mic".to_string(),
+                        enabled: true,
+                        checked: true,
+                    },
+                    TrayMenuEntry::Toggle {
+                        id: "select_mic::USB Mic".to_string(),
+                        text: "USB Mic".to_string(),
+                        enabled: true,
+                        checked: false,
+                    },
+                ],
+            },
+            TrayMenuEntry::Separator,
+            TrayMenuEntry::Submenu {
+                id: menu_ids::RECENT_SUBMENU.to_string(),
+                text: "Recent".to_string(),
+                enabled: true,
+                items: vec![
+                    TrayMenuEntry::Action {
+                        id: "copy_recent::id-1".to_string(),
+                        text: "first short transcript".to_string(),
+                        enabled: true,
+                    },
+                    TrayMenuEntry::Action {
+                        id: "copy_recent::id-2".to_string(),
+                        text: "second short transcript".to_string(),
+                        enabled: true,
+                    },
+                ],
+            },
+            TrayMenuEntry::Separator,
+            TrayMenuEntry::Toggle {
+                id: menu_ids::TOGGLE_OVERLAY.to_string(),
+                text: "Show Overlay".to_string(),
+                enabled: true,
+                checked: true,
+            },
+            TrayMenuEntry::Separator,
+            TrayMenuEntry::Action {
+                id: menu_ids::MODEL_STATUS.to_string(),
+                text: "Model: ready".to_string(),
+                enabled: false,
+            },
+            TrayMenuEntry::Action {
+                id: menu_ids::SIDECAR_STATUS.to_string(),
+                text: "Sidecar: ready".to_string(),
+                enabled: false,
+            },
+            TrayMenuEntry::Separator,
+            TrayMenuEntry::Action {
+                id: menu_ids::TOGGLE_WINDOW.to_string(),
+                text: "Show Window".to_string(),
+                enabled: true,
+            },
+            TrayMenuEntry::Quit,
+        ];
+
+        println!("tray menu snapshot: {menu:#?}");
+        assert_eq!(menu, expected);
     }
 
     #[test]

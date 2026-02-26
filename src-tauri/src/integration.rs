@@ -3954,6 +3954,9 @@ impl PingCallback for RpcPinger {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::fs;
+    use std::path::Path;
+    use std::process::{Child, Command, Stdio};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -4023,6 +4026,116 @@ mod tests {
                     .or_default()
                     .push((event.to_string(), payload.clone()));
             }
+        }
+    }
+
+    fn spawn_mock_sidecar_recording_process(call_log_path: &Path) -> Child {
+        let script = r#"
+import json
+import sys
+
+log_path = sys.argv[1]
+active_session = None
+
+def append_call(method, params):
+    with open(log_path, 'a', encoding='utf-8') as handle:
+        handle.write(json.dumps({"method": method, "params": params}) + "\n")
+        handle.flush()
+
+for raw in sys.stdin:
+    line = raw.strip()
+    if not line:
+        continue
+    request = json.loads(line)
+    method = request.get("method")
+    req_id = request.get("id")
+    params = request.get("params") or {}
+    append_call(method, params)
+
+    if method == "recording.start":
+        active_session = params.get("session_id")
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"session_id": active_session}
+        }
+        print(json.dumps(response), flush=True)
+    elif method == "recording.stop":
+        session_id = params.get("session_id") or active_session
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"audio_duration_ms": 4321}
+        }
+        print(json.dumps(response), flush=True)
+        notification = {
+            "jsonrpc": "2.0",
+            "method": "event.transcription_complete",
+            "params": {
+                "session_id": session_id,
+                "text": "mock final transcript",
+                "duration_ms": 987
+            }
+        }
+        print(json.dumps(notification), flush=True)
+    elif method == "recording.cancel":
+        session_id = params.get("session_id") or active_session
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"cancelled": True, "session_id": session_id}
+        }
+        print(json.dumps(response), flush=True)
+    elif method == "system.shutdown":
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"status": "shutting_down"}
+        }
+        print(json.dumps(response), flush=True)
+        break
+    else:
+        response = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {
+                "code": -32601,
+                "message": "Method not found",
+                "data": {"kind": "E_METHOD_NOT_FOUND"}
+            }
+        }
+        print(json.dumps(response), flush=True)
+"#;
+
+        Command::new("python3")
+            .arg("-u")
+            .arg("-c")
+            .arg(script)
+            .arg(call_log_path.as_os_str())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn mock recording sidecar")
+    }
+
+    fn read_mock_call_log(path: &Path) -> Vec<Value> {
+        let raw = fs::read_to_string(path).unwrap_or_default();
+        raw.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .collect()
+    }
+
+    async fn wait_until<F>(timeout: Duration, mut condition: F)
+    where
+        F: FnMut() -> bool,
+    {
+        let start = tokio::time::Instant::now();
+        while !condition() {
+            if start.elapsed() > timeout {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
 
@@ -5866,6 +5979,276 @@ mod tests {
             .current_session_id()
             .await
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_full_recording_flow_with_mock_sidecar_and_cancel_branch() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
+        let call_log_path = temp_dir.path().join("mock_sidecar_calls.jsonl");
+        fs::write(&call_log_path, "").expect("call log file should be initialized");
+
+        let mut mock_sidecar = spawn_mock_sidecar_recording_process(&call_log_path);
+        let stdin = mock_sidecar
+            .stdin
+            .take()
+            .expect("mock sidecar stdin should be piped");
+        let stdout = mock_sidecar
+            .stdout
+            .take()
+            .expect("mock sidecar stdout should be piped");
+
+        let app = tauri::test::mock_app();
+        assert!(
+            app.manage(TranscriptHistory::new()),
+            "history state should be managed"
+        );
+
+        let app_handle = app.handle().clone();
+        let state_manager = Arc::new(AppStateManager::new());
+        let mut manager = IntegrationManager::new(Arc::clone(&state_manager));
+        manager.set_app_handle(app_handle.clone());
+
+        let recording_status_events: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let transcript_complete_events: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let recording_status_events_clone = Arc::clone(&recording_status_events);
+        let recording_listener = app_handle.listen(EVENT_RECORDING_STATUS, move |event: tauri::Event| {
+            if let Ok(payload) = serde_json::from_str::<Value>(event.payload()) {
+                recording_status_events_clone
+                    .lock()
+                    .expect("recording events lock poisoned")
+                    .push(payload);
+            }
+        });
+        let transcript_complete_events_clone = Arc::clone(&transcript_complete_events);
+        let transcript_listener =
+            app_handle.listen(EVENT_TRANSCRIPT_COMPLETE, move |event: tauri::Event| {
+            if let Ok(payload) = serde_json::from_str::<Value>(event.payload()) {
+                transcript_complete_events_clone
+                    .lock()
+                    .expect("transcript events lock poisoned")
+                    .push(payload);
+            }
+        });
+
+        let rpc_client = RpcClient::new(stdin, stdout);
+        manager.start_notification_loop(rpc_client.subscribe());
+        manager.start_recording_event_loop();
+        *manager.rpc_client.write().await = Some(rpc_client);
+        manager.recording_controller.set_model_ready(true).await;
+
+        println!("[RECORDING_FLOW] Starting recording");
+        manager
+            .start_recording()
+            .await
+            .expect("start_recording should succeed");
+        let first_session_id = manager
+            .current_session_id
+            .read()
+            .await
+            .clone()
+            .expect("session id should be present after start");
+        assert!(
+            Uuid::parse_str(first_session_id.as_str()).is_ok(),
+            "session id should be UUID v4-like"
+        );
+        assert_eq!(state_manager.get(), AppState::Recording);
+
+        wait_until(Duration::from_secs(2), || {
+            recording_status_events
+                .lock()
+                .expect("recording events lock poisoned")
+                .iter()
+                .any(|payload| {
+                    payload.get("phase").and_then(Value::as_str) == Some("recording")
+                        && payload.get("session_id").and_then(Value::as_str)
+                            == Some(first_session_id.as_str())
+                })
+        })
+        .await;
+
+        wait_until(Duration::from_secs(2), || {
+            read_mock_call_log(&call_log_path)
+                .iter()
+                .any(|call| call.get("method").and_then(Value::as_str) == Some("recording.start"))
+        })
+        .await;
+
+        let first_calls = read_mock_call_log(&call_log_path);
+        let start_call = first_calls
+            .iter()
+            .find(|call| call.get("method").and_then(Value::as_str) == Some("recording.start"))
+            .expect("recording.start should be called");
+        let start_params = start_call
+            .get("params")
+            .and_then(Value::as_object)
+            .expect("recording.start params should be object");
+        assert_eq!(
+            start_params.get("session_id").and_then(Value::as_str),
+            Some(first_session_id.as_str())
+        );
+        assert!(
+            start_params.contains_key("device_uid"),
+            "recording.start should include device_uid field"
+        );
+        assert!(
+            start_params.contains_key("vad_enabled"),
+            "recording.start should include vad fields"
+        );
+
+        println!("[RECORDING_FLOW] Stopping recording");
+        manager
+            .stop_recording()
+            .await
+            .expect("stop_recording should succeed");
+        assert_eq!(state_manager.get(), AppState::Transcribing);
+
+        wait_until(Duration::from_secs(3), || {
+            state_manager.get() == AppState::Idle
+        })
+        .await;
+        assert_eq!(
+            state_manager.get(),
+            AppState::Idle,
+            "state should return to idle after transcription completes"
+        );
+
+        wait_until(Duration::from_secs(2), || {
+            let history = app_handle.state::<TranscriptHistory>();
+            history.len() == 1
+        })
+        .await;
+
+        let history = app_handle.state::<TranscriptHistory>();
+        let entries = history.all();
+        assert_eq!(entries.len(), 1, "one transcript entry should be stored");
+        let entry = &entries[0];
+        assert_eq!(entry.text, "mock final transcript");
+        assert_eq!(entry.final_text, "mock final transcript");
+        assert_eq!(entry.raw_text, "mock final transcript");
+        assert_eq!(
+            entry.session_id.map(|value: uuid::Uuid| value.to_string()),
+            Some(first_session_id.clone())
+        );
+
+        let stop_call = read_mock_call_log(&call_log_path)
+            .into_iter()
+            .find(|call| call.get("method").and_then(Value::as_str) == Some("recording.stop"))
+            .expect("recording.stop should be called");
+        assert_eq!(
+            stop_call
+                .get("params")
+                .and_then(|params| params.get("session_id"))
+                .and_then(Value::as_str),
+            Some(first_session_id.as_str())
+        );
+
+        let transcript_payloads = transcript_complete_events
+            .lock()
+            .expect("transcript events lock poisoned")
+            .clone();
+        assert_eq!(
+            transcript_payloads.len(),
+            1,
+            "transcript:complete should emit exactly once for stop flow"
+        );
+        let transcript_entry_payload = transcript_payloads[0]
+            .get("entry")
+            .expect("transcript complete payload should include entry");
+        assert_eq!(
+            transcript_entry_payload.get("text").and_then(Value::as_str),
+            Some("mock final transcript")
+        );
+        assert_eq!(
+            transcript_entry_payload
+                .get("session_id")
+                .and_then(Value::as_str),
+            Some(first_session_id.as_str())
+        );
+
+        println!("[RECORDING_FLOW] Starting second recording for cancel branch");
+        manager
+            .start_recording()
+            .await
+            .expect("second start_recording should succeed");
+        let cancel_session_id = manager
+            .current_session_id
+            .read()
+            .await
+            .clone()
+            .expect("session id should exist for cancel flow");
+
+        let transcript_count_before_cancel = transcript_complete_events
+            .lock()
+            .expect("transcript events lock poisoned")
+            .len();
+        manager
+            .cancel_recording()
+            .await
+            .expect("cancel_recording should succeed");
+
+        wait_until(Duration::from_secs(2), || {
+            state_manager.get() == AppState::Idle
+        })
+        .await;
+        assert_eq!(state_manager.get(), AppState::Idle);
+        assert!(manager.current_session_id.read().await.is_none());
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let history_after_cancel = app_handle.state::<TranscriptHistory>();
+        assert_eq!(
+            history_after_cancel.len(),
+            1,
+            "cancel flow should not add history entries"
+        );
+        let transcript_count_after_cancel = transcript_complete_events
+            .lock()
+            .expect("transcript events lock poisoned")
+            .len();
+        assert_eq!(
+            transcript_count_after_cancel, transcript_count_before_cancel,
+            "cancel flow must not emit transcript:complete"
+        );
+
+        let cancel_call = read_mock_call_log(&call_log_path)
+            .into_iter()
+            .find(|call| call.get("method").and_then(Value::as_str) == Some("recording.cancel"))
+            .expect("recording.cancel should be called");
+        assert_eq!(
+            cancel_call
+                .get("params")
+                .and_then(|params| params.get("session_id"))
+                .and_then(Value::as_str),
+            Some(cancel_session_id.as_str())
+        );
+
+        let status_payloads = recording_status_events
+            .lock()
+            .expect("recording events lock poisoned")
+            .clone();
+        assert!(
+            status_payloads
+                .iter()
+                .any(|payload| payload.get("phase").and_then(Value::as_str) == Some("transcribing")),
+            "recording status should include transcribing phase"
+        );
+        assert!(
+            status_payloads
+                .iter()
+                .filter(|payload| payload.get("phase").and_then(Value::as_str) == Some("idle"))
+                .count()
+                >= 2,
+            "recording status should include idle after complete and cancel"
+        );
+
+        app_handle.unlisten(recording_listener);
+        app_handle.unlisten(transcript_listener);
+
+        if let Some(client) = manager.rpc_client.write().await.take() {
+            client.shutdown().await;
+        }
+        let _ = mock_sidecar.kill();
+        let _ = mock_sidecar.wait();
     }
 
     #[tokio::test]
