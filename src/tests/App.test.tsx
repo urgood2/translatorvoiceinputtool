@@ -229,8 +229,8 @@ describe('App diagnostics panels', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: 'Settings' }));
     expect(screen.getByText('Settings')).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Hotkeys' })).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Injection' })).toBeDefined();
+    expect(screen.getByRole('tab', { name: 'Hotkeys' })).toBeDefined();
+    expect(screen.getByRole('tab', { name: 'Injection' })).toBeDefined();
     expect(screen.getByText('Microphone Test')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Start Test' })).toBeDefined();
     expect(screen.getByText('System Health Check')).toBeDefined();
