@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 from openvoicy_sidecar.asr import ASRError, handle_asr_initialize, handle_asr_status
@@ -87,21 +88,34 @@ class _RecorderStub:
     session_id: str | None = None
     sample_rate: int = 16000
     channels: int = 1
+    _preprocess_options: dict[str, Any] = field(
+        default_factory=lambda: {"normalize": False, "audio": {"trim_silence": True}}
+    )
 
-    def start(self, _device_uid: str | None = None) -> str:
+    @property
+    def preprocess_options(self) -> dict[str, Any]:
+        return self._preprocess_options.copy()
+
+    def start(
+        self,
+        _device_uid: str | None = None,
+        session_id: str | None = None,
+        vad: Any = None,
+        preprocess: Any = None,
+    ) -> str:
         if self.state.value == "recording":
             raise RuntimeError("already recording")
         self.state = _StateStub("recording")
-        self.session_id = "session-123"
+        self.session_id = session_id or "session-123"
         return self.session_id
 
-    def stop(self, session_id: str) -> tuple[list[float], int]:
+    def stop(self, session_id: str) -> tuple[np.ndarray, int]:
         if self.state.value != "recording":
             raise RuntimeError("Not recording")
         if session_id != self.session_id:
             raise RuntimeError("Invalid session ID")
         self.state = _StateStub("idle")
-        return [0.0, 0.0], 10
+        return np.zeros(160, dtype=np.float32), 10
 
     def cancel(self, session_id: str) -> None:
         if self.state.value != "recording":
@@ -150,7 +164,9 @@ class _TrackerStub:
 def run_sidecar() -> Any:
     src_path = Path(__file__).parent.parent / "src"
 
-    def _run(input_lines: list[str], timeout: float = 5.0) -> tuple[list[dict[str, Any]], list[str]]:
+    def _run(
+        input_lines: list[str], timeout: float = 5.0
+    ) -> tuple[list[dict[str, Any]], list[str], int]:
         input_text = "\n".join(input_lines) + "\n"
         proc = subprocess.run(
             [sys.executable, "-m", "openvoicy_sidecar"],
@@ -164,7 +180,7 @@ def run_sidecar() -> Any:
 
         responses = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
         stderr_lines = [line for line in proc.stderr.splitlines() if line.strip()]
-        return responses, stderr_lines
+        return responses, stderr_lines, proc.returncode
 
     return _run
 
@@ -228,6 +244,18 @@ def test_system_info_required_runtime_fields() -> None:
     assert isinstance(runtime["python_version"], str)
     assert isinstance(runtime["platform"], str)
     assert isinstance(runtime["cuda_available"], bool)
+    resource_paths = result["resource_paths"]
+    assert isinstance(resource_paths, dict)
+    assert set(resource_paths.keys()) >= {
+        "shared_root",
+        "presets",
+        "model_manifest",
+        "model_catalog",
+        "contracts_dir",
+    }
+    for key in ("presets", "model_manifest", "model_catalog", "contracts_dir"):
+        value = resource_paths.get(key)
+        assert value is None or isinstance(value, str)
     _log("Assertion: system.info runtime fields -> PASS")
 
 
@@ -280,7 +308,45 @@ def test_status_get_states_and_model_info(monkeypatch: pytest.MonkeyPatch) -> No
     idle = handle_status_get(_request("status.get", 11))
     _log(f"Response(idle)={idle}")
     assert idle["state"] == "idle"
-    _log("Assertion: status.get state transitions and model field -> PASS")
+    assert "model" not in idle, "model must be absent when engine is uninitialized with no model_id"
+
+    # loading_model state (downloading)
+    monkeypatch.setattr(
+        "openvoicy_sidecar.server.get_engine",
+        lambda: _EngineStub({"state": "downloading", "model_id": "dl-model", "ready": False}),
+    )
+    downloading = handle_status_get(_request("status.get", 12))
+    _log(f"Response(downloading)={downloading}")
+    assert downloading["state"] == "loading_model"
+    assert isinstance(downloading["detail"], str)
+    assert downloading["model"]["model_id"] == "dl-model"
+    assert downloading["model"]["status"] == "downloading"
+
+    # loading_model state (loading)
+    monkeypatch.setattr(
+        "openvoicy_sidecar.server.get_engine",
+        lambda: _EngineStub({"state": "loading", "model_id": "ld-model", "ready": False}),
+    )
+    loading = handle_status_get(_request("status.get", 13))
+    _log(f"Response(loading)={loading}")
+    assert loading["state"] == "loading_model"
+    assert isinstance(loading["detail"], str)
+    assert loading["model"]["model_id"] == "ld-model"
+    assert loading["model"]["status"] == "verifying"
+
+    # error state
+    monkeypatch.setattr(
+        "openvoicy_sidecar.server.get_engine",
+        lambda: _EngineStub({"state": "error", "model_id": "err-model", "ready": False}),
+    )
+    error_resp = handle_status_get(_request("status.get", 14))
+    _log(f"Response(error)={error_resp}")
+    assert error_resp["state"] == "error"
+    assert isinstance(error_resp["detail"], str)
+    assert error_resp["model"]["model_id"] == "err-model"
+    assert error_resp["model"]["status"] == "error"
+
+    _log("Assertion: status.get state transitions, model field, and absence -> PASS")
 
 
 def test_audio_list_devices_shape(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -352,6 +418,7 @@ def test_recording_start_stop_cancel_and_error_paths(monkeypatch: pytest.MonkeyP
     start = handle_recording_start(_request("recording.start", 40))
     _log(f"Response(start)={start}")
     assert isinstance(start["session_id"], str)
+    assert start["session_id"]
 
     with pytest.raises(AlreadyRecordingError):
         handle_recording_start(_request("recording.start", 41))
@@ -368,6 +435,72 @@ def test_recording_start_stop_cancel_and_error_paths(monkeypatch: pytest.MonkeyP
     _log(f"Response(cancel)={cancel}")
     assert cancel["cancelled"] is True
     _log("Assertion: recording method compliance and error cases -> PASS")
+
+
+def test_recording_start_accepts_caller_provided_session_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _log("Testing recording.start explicit caller-provided session_id path")
+    recorder = _RecorderStub()
+    monkeypatch.setattr("openvoicy_sidecar.recording.get_recorder", lambda: recorder)
+
+    provided_session_id = "ipc-compliance-session-001"
+    start = handle_recording_start(
+        _request(
+            "recording.start",
+            46,
+            {"session_id": provided_session_id},
+        )
+    )
+    _log(f"Response(start_with_session)={start}")
+
+    assert start["session_id"] == provided_session_id
+
+
+def test_recording_cancel_does_not_trigger_transcription(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _log("Testing recording.cancel does not start transcription")
+    recorder = _RecorderStub()
+    monkeypatch.setattr("openvoicy_sidecar.recording.get_recorder", lambda: recorder)
+
+    transcription_calls: list[tuple[str, int]] = []
+
+    def _spy_transcribe_session_async(session_id: str, audio: np.ndarray, sample_rate: int) -> None:
+        transcription_calls.append((session_id, sample_rate))
+
+    monkeypatch.setattr(
+        "openvoicy_sidecar.notifications.transcribe_session_async",
+        _spy_transcribe_session_async,
+    )
+
+    started = handle_recording_start(_request("recording.start", 47))
+    cancelled = handle_recording_cancel(
+        _request("recording.cancel", 48, {"session_id": started["session_id"]})
+    )
+
+    assert cancelled["cancelled"] is True
+    assert cancelled["session_id"] == started["session_id"]
+    assert transcription_calls == []
+
+
+def test_recording_cancel_does_not_start_transcription(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (3461): recording.cancel must not trigger transcription."""
+    _log("Testing recording.cancel does not invoke transcription")
+    recorder = _RecorderStub()
+    monkeypatch.setattr("openvoicy_sidecar.recording.get_recorder", lambda: recorder)
+
+    transcribe_calls: list[Any] = []
+    monkeypatch.setattr(
+        "openvoicy_sidecar.notifications.transcribe_session_async",
+        lambda *args, **kwargs: transcribe_calls.append((args, kwargs)),
+    )
+
+    start = handle_recording_start(_request("recording.start", 47))
+    cancel = handle_recording_cancel(_request("recording.cancel", 48, {"session_id": start["session_id"]}))
+    assert cancel["cancelled"] is True
+    assert len(transcribe_calls) == 0, "recording.cancel must not trigger transcription"
+    _log("Assertion: recording.cancel avoids transcription -> PASS")
 
 
 def test_replacements_rules_presets_preview_and_validation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -464,21 +597,25 @@ def test_asr_status_shape(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_unknown_method_returns_jsonrpc_method_not_found(run_sidecar: Any) -> None:
     _log("Testing unknown method JSON-RPC error")
     request = '{"jsonrpc":"2.0","id":70,"method":"unknown.method"}'
-    responses, _ = run_sidecar([request])
+    shutdown = '{"jsonrpc":"2.0","id":99,"method":"system.shutdown","params":{"reason":"compliance-test"}}'
+    responses, _, exit_code = run_sidecar([request, shutdown], timeout=10.0)
     _log(f"Response={responses[0]}")
     error = responses[0]["error"]
     assert error["code"] == ERROR_METHOD_NOT_FOUND
     assert error["data"]["kind"] == "E_METHOD_NOT_FOUND"
+    assert exit_code == 0, f"Sidecar should exit cleanly after shutdown, got {exit_code}"
     _log("Assertion: unknown method -> E_METHOD_NOT_FOUND -> PASS")
 
 
 def test_missing_required_params_returns_error_not_crash(run_sidecar: Any) -> None:
     _log("Testing missing required params for recording.stop")
     request = '{"jsonrpc":"2.0","id":71,"method":"recording.stop","params":{}}'
-    responses, _ = run_sidecar([request])
+    shutdown = '{"jsonrpc":"2.0","id":99,"method":"system.shutdown","params":{"reason":"compliance-test"}}'
+    responses, _, exit_code = run_sidecar([request, shutdown], timeout=10.0)
     _log(f"Response={responses[0]}")
     assert "error" in responses[0]
     assert responses[0]["error"]["data"]["kind"] == "E_INVALID_SESSION"
+    assert exit_code == 0, f"Sidecar should exit cleanly after shutdown, got {exit_code}"
     _log("Assertion: missing required params returns structured error -> PASS")
 
 
@@ -491,7 +628,7 @@ def test_invalid_params_type_returns_jsonrpc_error(run_sidecar: Any) -> None:
     ping_request = '{"jsonrpc":"2.0","id":73,"method":"system.ping"}'
     # Shutdown to ensure clean process exit
     shutdown_request = '{"jsonrpc":"2.0","id":74,"method":"system.shutdown","params":{"reason":"compliance-test"}}'
-    responses, _ = run_sidecar([bad_request, ping_request, shutdown_request], timeout=10.0)
+    responses, _, exit_code = run_sidecar([bad_request, ping_request, shutdown_request], timeout=10.0)
     assert len(responses) >= 2, "Server must survive bad params and respond to subsequent requests"
 
     _log(f"Response(bad)={responses[0]}")
@@ -511,6 +648,9 @@ def test_invalid_params_type_returns_jsonrpc_error(run_sidecar: Any) -> None:
     # The ping must succeed — proving the server didn't crash
     assert "result" in responses[1], "Ping must succeed after error"
     assert responses[1]["result"]["protocol"] == "v1"
+
+    # Clean exit after explicit shutdown
+    assert exit_code == 0, f"Sidecar should exit cleanly after shutdown, got {exit_code}"
     _log("Assertion: invalid params type returns structured error, server survives -> PASS")
 
 

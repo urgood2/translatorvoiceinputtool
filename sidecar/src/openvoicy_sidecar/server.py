@@ -9,7 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .resources import PRESETS_REL, list_shared_candidates, resolve_shared_path_optional
+from .resources import (
+    CONTRACTS_DIR_REL,
+    MODEL_CATALOG_REL,
+    MODEL_MANIFEST_REL,
+    PRESETS_REL,
+    list_shared_candidates,
+    resolve_shared_path_optional,
+)
 from .asr import (
     ASRError,
     DeviceUnavailableError,
@@ -172,6 +179,21 @@ def handle_system_info(request: Request) -> dict[str, Any]:
     if whisper_available:
         capabilities.append("whisper")
 
+    presets_path = resolve_shared_path_optional(PRESETS_REL)
+    model_manifest_path = resolve_shared_path_optional(MODEL_MANIFEST_REL)
+    model_catalog_path = resolve_shared_path_optional(MODEL_CATALOG_REL)
+    contracts_dir_path = resolve_shared_path_optional(CONTRACTS_DIR_REL)
+    shared_root = None
+    for candidate in (
+        presets_path,
+        model_manifest_path,
+        model_catalog_path,
+        contracts_dir_path,
+    ):
+        if candidate is not None:
+            shared_root = str(candidate.parent.parent if candidate.is_file() else candidate.parent)
+            break
+
     return {
         "version": __version__,
         "protocol": PROTOCOL_VERSION,
@@ -188,6 +210,13 @@ def handle_system_info(request: Request) -> dict[str, Any]:
             "python_version": platform.python_version(),
             "platform": sys.platform,
             "cuda_available": cuda_available,
+        },
+        "resource_paths": {
+            "shared_root": shared_root,
+            "presets": str(presets_path) if presets_path else None,
+            "model_manifest": str(model_manifest_path) if model_manifest_path else None,
+            "model_catalog": str(model_catalog_path) if model_catalog_path else None,
+            "contracts_dir": str(contracts_dir_path) if contracts_dir_path else None,
         },
     }
 
