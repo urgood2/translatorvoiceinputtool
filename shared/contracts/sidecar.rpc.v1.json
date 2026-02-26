@@ -780,7 +780,7 @@
     {
       "type": "method",
       "name": "replacements.get_rules",
-      "required": false,
+      "required": true,
       "params_schema": {
         "type": "object",
         "properties": {},
@@ -805,7 +805,7 @@
     {
       "type": "method",
       "name": "replacements.get_presets",
-      "required": false,
+      "required": true,
       "params_schema": {
         "type": "object",
         "properties": {},

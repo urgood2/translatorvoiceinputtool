@@ -710,6 +710,8 @@ pub const SIDECAR_RPC_REQUIRED_METHOD_NAMES: &[&str] = &[
     "recording.cancel",
     "recording.start",
     "recording.stop",
+    "replacements.get_presets",
+    "replacements.get_rules",
     "replacements.set_rules",
     "status.get",
     "system.info",
@@ -725,8 +727,6 @@ pub const SIDECAR_RPC_OPTIONAL_METHOD_NAMES: &[&str] = &[
     "model.install",
     "recording.status",
     "replacements.get_preset_rules",
-    "replacements.get_presets",
-    "replacements.get_rules",
     "replacements.preview",
 ];
 
