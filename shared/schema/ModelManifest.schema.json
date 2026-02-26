@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://openvoicy.app/schema/ModelManifest.schema.json",
+  "title": "ModelManifest",
+  "description": "Per-model manifest with download URLs, file sizes, and integrity checksums.",
+  "type": "object",
+  "required": ["model_id", "version", "files"],
+  "additionalProperties": false,
+  "properties": {
+    "model_id": {
+      "type": "string",
+      "description": "Unique model identifier matching the catalog entry.",
+      "minLength": 1,
+      "pattern": "^[a-z0-9_-]+/[a-z0-9._-]+$",
+      "examples": ["nvidia/parakeet-tdt-0.6b-v3"]
+    },
+    "version": {
+      "type": "string",
+      "description": "Manifest version string.",
+      "minLength": 1,
+      "examples": ["3.0", "1.0"]
+    },
+    "revision": {
+      "type": "string",
+      "description": "Source revision hash (e.g., git commit SHA) for reproducibility.",
+      "pattern": "^[a-f0-9]{7,64}$"
+    },
+    "files": {
+      "type": "array",
+      "description": "List of files to download for this model.",
+      "items": {
+        "$ref": "#/definitions/ModelFile"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    }
+  },
+  "definitions": {
+    "ModelFile": {
+      "type": "object",
+      "description": "A single file in the model distribution.",
+      "required": ["path", "urls", "size_bytes", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Relative file path within the model directory.",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._/-]+$"
+        },
+        "urls": {
+          "type": "array",
+          "description": "Ordered list of download mirror URLs. Tried in order with fallback on failure.",
+          "items": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "minItems": 1
+        },
+        "size_bytes": {
+          "type": "integer",
+          "description": "Expected file size in bytes, verified after download.",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "description": "Hex-encoded SHA-256 hash of the file content, verified after download.",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    }
+  }
+}

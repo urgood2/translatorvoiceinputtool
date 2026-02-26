@@ -1,0 +1,99 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://openvoicy.app/schema/ModelCatalog.schema.json",
+  "title": "ModelCatalog",
+  "description": "Catalog of available ASR models with metadata for the model selection UI.",
+  "type": "object",
+  "required": ["schema_version", "models"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "description": "Schema version for forward compatibility.",
+      "minimum": 1
+    },
+    "models": {
+      "type": "array",
+      "description": "List of available model entries.",
+      "items": {
+        "$ref": "#/definitions/ModelCatalogEntry"
+      },
+      "uniqueItems": true
+    }
+  },
+  "definitions": {
+    "ModelCatalogEntry": {
+      "type": "object",
+      "description": "A single model entry in the catalog.",
+      "required": [
+        "model_id",
+        "family",
+        "display_name",
+        "description",
+        "supported_languages",
+        "default_language",
+        "size_bytes",
+        "manifest_path"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "model_id": {
+          "type": "string",
+          "description": "Unique model identifier in namespace/name format.",
+          "minLength": 1,
+          "pattern": "^[a-z0-9_-]+/[a-z0-9._-]+$",
+          "examples": ["nvidia/parakeet-tdt-0.6b-v3"]
+        },
+        "family": {
+          "type": "string",
+          "description": "Model family for grouping in the UI.",
+          "minLength": 1,
+          "examples": ["parakeet", "whisper", "canary"]
+        },
+        "display_name": {
+          "type": "string",
+          "description": "Human-readable model name shown in the UI.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "description": {
+          "type": "string",
+          "description": "Brief description of the model's capabilities.",
+          "maxLength": 512
+        },
+        "supported_languages": {
+          "type": "array",
+          "description": "ISO 639-1 language codes supported by this model.",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z]{2}(-[A-Z]{2})?$",
+            "minLength": 2,
+            "maxLength": 5
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "default_language": {
+          "type": "string",
+          "description": "Default language code, must be one of supported_languages.",
+          "pattern": "^[a-z]{2}(-[A-Z]{2})?$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "description": "Total download size in bytes.",
+          "minimum": 0
+        },
+        "license_spdx": {
+          "type": "string",
+          "description": "SPDX license identifier.",
+          "examples": ["CC-BY-4.0", "Apache-2.0", "MIT"]
+        },
+        "manifest_path": {
+          "type": "string",
+          "description": "Path to the per-model manifest file, relative to MODEL_CATALOG.json.",
+          "pattern": "^manifests/[a-z0-9._-]+\\.json$"
+        }
+      }
+    }
+  }
+}
