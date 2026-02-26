@@ -63,7 +63,8 @@ pub struct TrayMenuState {
     pub language: Option<String>,
     pub current_device: Option<String>,
     pub devices: Vec<TrayAudioDevice>,
-    pub recent_transcripts: Vec<String>,
+    /// Recent transcripts as `(entry_id, text)` pairs for stable menu item identity.
+    pub recent_transcripts: Vec<(String, String)>,
     pub overlay_enabled: bool,
     pub model_status: String,
     pub sidecar_state: String,
@@ -172,14 +173,13 @@ fn truncate_for_menu(text: &str, max_chars: usize) -> String {
 /// Pure menu builder: deterministic for a given input state.
 pub fn build_tray_menu(state: &TrayMenuState) -> Vec<TrayMenuEntry> {
     let mut recent_items = Vec::new();
-    for (idx, transcript) in state
+    for (entry_id, transcript) in state
         .recent_transcripts
         .iter()
         .take(MAX_RECENT_TRANSCRIPTS)
-        .enumerate()
     {
         recent_items.push(TrayMenuEntry::Action {
-            id: format!("{}{}", menu_ids::COPY_RECENT_PREFIX, idx),
+            id: format!("{}{}", menu_ids::COPY_RECENT_PREFIX, entry_id),
             text: truncate_for_menu(transcript, MAX_RECENT_TRANSCRIPT_CHARS),
             enabled: true,
         });
@@ -408,7 +408,7 @@ fn load_runtime_tray_menu_state(app: &AppHandle, state: AppState, enabled: bool)
     let recent_transcripts = history
         .all()
         .into_iter()
-        .map(|entry| entry.text)
+        .map(|entry| (entry.id.to_string(), entry.text))
         .take(MAX_RECENT_TRANSCRIPTS)
         .collect::<Vec<_>>();
 
@@ -570,12 +570,14 @@ fn select_microphone(device_uid: &str) -> Result<(), String> {
 fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
     let id = event.id().as_ref();
 
-    if let Some(index_str) = id.strip_prefix(menu_ids::COPY_RECENT_PREFIX) {
-        if let Ok(index) = index_str.parse::<usize>() {
+    if let Some(id_str) = id.strip_prefix(menu_ids::COPY_RECENT_PREFIX) {
+        if let Ok(entry_id) = id_str.parse::<uuid::Uuid>() {
             let history = app.state::<TranscriptHistory>();
-            if let Some(entry) = history.all().get(index) {
+            if let Some(entry) = history.get(entry_id) {
                 let _ = crate::injection::set_clipboard_public(&entry.text);
-                log::info!("Copied recent transcript index {} to clipboard", index);
+                log::info!("Copied recent transcript {} to clipboard", entry_id);
+            } else {
+                log::warn!("Recent transcript {} no longer in history", entry_id);
             }
         }
         return;
@@ -729,8 +731,8 @@ mod tests {
                 },
             ],
             recent_transcripts: vec![
-                "first short transcript".to_string(),
-                "second short transcript".to_string(),
+                ("id-1".to_string(), "first short transcript".to_string()),
+                ("id-2".to_string(), "second short transcript".to_string()),
             ],
             overlay_enabled: true,
             model_status: "ready".to_string(),
@@ -860,7 +862,7 @@ mod tests {
     fn test_build_tray_menu_recent_is_limited_to_five_entries_regression() {
         let mut state = sample_state();
         state.recent_transcripts = (0..8)
-            .map(|idx| format!("transcript number {}", idx))
+            .map(|idx| (format!("id-{}", idx), format!("transcript number {}", idx)))
             .collect();
 
         let menu = build_tray_menu(&state);
@@ -875,6 +877,40 @@ mod tests {
             .expect("recent submenu should exist");
 
         assert_eq!(recent.len(), 5);
+    }
+
+    #[test]
+    fn test_recent_menu_items_use_stable_entry_ids_not_indices() {
+        let mut state = sample_state();
+        state.recent_transcripts = vec![
+            ("abc-uuid-1".to_string(), "first transcript".to_string()),
+            ("def-uuid-2".to_string(), "second transcript".to_string()),
+        ];
+
+        let menu = build_tray_menu(&state);
+        let recent = menu
+            .iter()
+            .find_map(|entry| match entry {
+                TrayMenuEntry::Submenu { id, items, .. } if id == menu_ids::RECENT_SUBMENU => {
+                    Some(items)
+                }
+                _ => None,
+            })
+            .expect("recent submenu should exist");
+
+        let ids: Vec<&str> = recent
+            .iter()
+            .filter_map(|entry| match entry {
+                TrayMenuEntry::Action { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        // IDs must embed the entry UUID, not a volatile index
+        assert_eq!(ids, vec![
+            "copy_recent::abc-uuid-1",
+            "copy_recent::def-uuid-2",
+        ]);
     }
 
     #[test]
