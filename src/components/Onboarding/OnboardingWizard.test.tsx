@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import { OnboardingWizard } from './OnboardingWizard';
 import { useAppStore } from '../../store/appStore';
 import type { AppConfig } from '../../types';
@@ -69,8 +69,14 @@ beforeEach(() => {
     isMeterRunning: false,
     refreshDevices: vi.fn(),
     selectDevice: vi.fn(),
-    startMicTest: vi.fn(),
-    stopMicTest: vi.fn(),
+    startMicTest: vi.fn().mockResolvedValue(undefined),
+    stopMicTest: vi.fn().mockResolvedValue(undefined),
+    // HotkeySetupStep dependencies
+    updateHotkeyConfig: vi.fn(),
+    // ModelReadinessStep dependencies
+    modelStatus: { status: 'ready', model_id: 'parakeet-tdt-0.6b-v3' },
+    refreshModelStatus: vi.fn(),
+    downloadModel: vi.fn(),
   });
 });
 
@@ -83,29 +89,45 @@ describe('OnboardingWizard', () => {
     expect(screen.getByText('Welcome to Voice Input Tool')).toBeDefined();
   });
 
-  test('navigates forward through all 5 steps', () => {
+  test('navigates forward through all 5 steps', async () => {
     const onComplete = vi.fn();
+    useAppStore.setState({
+      devices: [{ uid: 'mic-1', name: 'Built-in Mic', is_default: true, sample_rate: 48000, channels: 1 }],
+      selectedDeviceUid: 'mic-1',
+    });
     render(<OnboardingWizard onComplete={onComplete} />);
 
     // Step 1: Welcome
     expect(screen.getByText('Welcome to Voice Input Tool')).toBeDefined();
-    fireEvent.click(screen.getByText('Next'));
+    await act(async () => {
+      fireEvent.click(screen.getByText('Next'));
+    });
 
     // Step 2: Microphone
     expect(screen.getByText('Microphone Setup')).toBeDefined();
-    fireEvent.click(screen.getByText('Next'));
+    await act(async () => {
+      fireEvent.click(screen.getByText('Start Test'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('checkbox'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    });
 
     // Step 3: Hotkey
-    expect(screen.getByText('Hotkey Configuration')).toBeDefined();
-    fireEvent.click(screen.getByText('Next'));
+    await waitFor(() => {
+      expect(screen.getByText('Hotkey Configuration')).toBeDefined();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Next'));
+    });
 
-    // Step 4: Model (ModelReadinessStep renders with status check)
-    expect(screen.getByText('Speech Recognition Model')).toBeDefined();
-    fireEvent.click(screen.getByText('Next'));
-
-    // Step 5: Complete
-    expect(screen.getByText('All Set!')).toBeDefined();
-    expect(screen.getByText('Get Started')).toBeDefined();
+    // Step 4: Model auto-advances when ready, then Step 5 appears.
+    await waitFor(() => {
+      expect(screen.getByText('All Set!')).toBeDefined();
+      expect(screen.getByText('Get Started')).toBeDefined();
+    });
   });
 
   test('Back button navigates to previous step', () => {
@@ -143,13 +165,35 @@ describe('OnboardingWizard', () => {
 
   test('Get Started button on last step calls onComplete', async () => {
     const onComplete = vi.fn();
+    useAppStore.setState({
+      devices: [{ uid: 'mic-1', name: 'Built-in Mic', is_default: true, sample_rate: 48000, channels: 1 }],
+      selectedDeviceUid: 'mic-1',
+    });
     render(<OnboardingWizard onComplete={onComplete} />);
 
     // Navigate to last step
-    fireEvent.click(screen.getByText('Next'));
-    fireEvent.click(screen.getByText('Next'));
-    fireEvent.click(screen.getByText('Next'));
-    fireEvent.click(screen.getByText('Next'));
+    await act(async () => {
+      fireEvent.click(screen.getByText('Next'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Start Test'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('checkbox'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Hotkey Configuration')).toBeDefined();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Next'));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Get Started')).toBeDefined();
+    });
 
     await act(async () => {
       fireEvent.click(screen.getByText('Get Started'));
@@ -165,6 +209,10 @@ describe('OnboardingWizard', () => {
 
   test('step indicator shows correct progress', () => {
     const onComplete = vi.fn();
+    useAppStore.setState({
+      devices: [{ uid: 'mic-1', name: 'Built-in Mic', is_default: true, sample_rate: 48000, channels: 1 }],
+      selectedDeviceUid: 'mic-1',
+    });
     render(<OnboardingWizard onComplete={onComplete} />);
 
     const progressbar = screen.getByRole('progressbar');
@@ -176,16 +224,79 @@ describe('OnboardingWizard', () => {
     expect(progressbar.getAttribute('aria-valuenow')).toBe('2');
   });
 
-  test('Skip is available on every step', () => {
+  test('Skip is available on every step', async () => {
     const onComplete = vi.fn();
+    useAppStore.setState({
+      devices: [{ uid: 'mic-1', name: 'Built-in Mic', is_default: true, sample_rate: 48000, channels: 1 }],
+      selectedDeviceUid: 'mic-1',
+      modelStatus: { status: 'missing', model_id: 'parakeet-tdt-0.6b-v3' },
+    });
     render(<OnboardingWizard onComplete={onComplete} />);
 
-    for (let i = 0; i < 4; i++) {
-      expect(screen.getByText('Skip')).toBeDefined();
-      fireEvent.click(screen.getByText('Next'));
-    }
-    // Last step also has Skip
+    // Welcome
     expect(screen.getByText('Skip')).toBeDefined();
+    await act(async () => {
+      fireEvent.click(screen.getByText('Next'));
+    });
+
+    // Microphone
+    expect(screen.getByText('Skip')).toBeDefined();
+    await act(async () => {
+      fireEvent.click(screen.getByText('Start Test'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('checkbox'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    });
+
+    // Hotkey
+    expect(screen.getByText('Skip')).toBeDefined();
+    await act(async () => {
+      fireEvent.click(screen.getByText('Next'));
+    });
+
+    // Model
+    await waitFor(() => {
+      expect(screen.getByText('Skip')).toBeDefined();
+      expect(screen.getByText('Speech Recognition Model')).toBeDefined();
+    });
+  });
+
+  test('does not show global next button on microphone and model steps', async () => {
+    const onComplete = vi.fn();
+    useAppStore.setState({
+      devices: [{ uid: 'mic-1', name: 'Built-in Mic', is_default: true, sample_rate: 48000, channels: 1 }],
+      selectedDeviceUid: 'mic-1',
+      modelStatus: { status: 'missing', model_id: 'parakeet-tdt-0.6b-v3' },
+    });
+    render(<OnboardingWizard onComplete={onComplete} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Next'));
+    });
+    expect(screen.getByText('Microphone Setup')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Start Test'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('checkbox'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Hotkey Configuration')).toBeDefined();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Next'));
+    });
+
+    expect(screen.getByText('Speech Recognition Model')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
   });
 });
 
