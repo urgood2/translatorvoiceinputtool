@@ -212,101 +212,110 @@ function App() {
   ];
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-8">
-      <h1 className="text-4xl font-bold mb-8">Voice Input Tool</h1>
+    <div className="min-h-screen">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-white focus:px-3 focus:py-2 focus:text-sm focus:font-semibold focus:text-blue-700"
+      >
+        Skip to main content
+      </a>
 
-      <div className="w-full max-w-4xl mb-6">
-        <StatusIndicator
-          state={appState}
-          enabled={enabled}
-          detail={errorDetail}
-          progress={downloadProgress ?? undefined}
-        />
-      </div>
+      <main id="main-content" role="main" className="flex flex-col items-center justify-center p-8">
+        <h1 className="text-4xl font-bold mb-8">Voice Input Tool</h1>
 
-      <div className="w-full max-w-4xl space-y-4">
-        <TabBar tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} />
-
-        <div className="h-[65vh] min-h-[480px]">
-          <TabPanel id="status" activeTab={activeTab}>
-            <StatusDashboard onNavigateSettings={() => setActiveTab('settings')} />
-          </TabPanel>
-
-          <TabPanel id="history" activeTab={activeTab}>
-            <HistoryPanel
-              entries={history.slice(0, 25)}
-              onCopy={copyTranscript}
-              onClearAll={clearHistory}
-            />
-          </TabPanel>
-
-          <TabPanel id="replacements" activeTab={activeTab}>
-            {config ? (
-              <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto pr-1">
-                <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
-                  <PresetsPanel
-                    presets={presets}
-                    enabledPresets={enabledPresetIds}
-                    onTogglePreset={handleTogglePreset}
-                    presetRules={presetRulesById}
-                  />
-                </div>
-                <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
-                  <ReplacementList
-                    rules={config.replacements}
-                    onChange={handleReplacementRulesChange}
-                    isLoading={isLoading}
-                  />
-                </div>
-              </div>
-            ) : (
-              <p className="text-sm text-gray-300">Loading replacement rules...</p>
-            )}
-          </TabPanel>
-
-          <TabPanel id="settings" activeTab={activeTab}>
-            <div className="space-y-4">
-              {config && (
-                <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
-                  <SettingsPanel
-                    config={config}
-                    devices={devices}
-                    audioLevel={audioLevel}
-                    isMeterRunning={isMeterRunning}
-                    effectiveHotkeyMode={capabilities?.hotkey_mode}
-                    onStartMicTest={startMicTest}
-                    onStopMicTest={stopMicTest}
-                    onRefreshDevices={refreshDevices}
-                    onConfigChange={handleSettingsChange}
-                    isLoading={isLoading}
-                  />
-                </div>
-              )}
-
-              <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
-                <SelfCheck
-                  result={selfCheckResult}
-                  onRefresh={refreshSelfCheck}
-                  isLoading={isSelfCheckLoading}
-                />
-              </div>
-
-              <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
-                <Diagnostics
-                  report={diagnosticsReport}
-                  onRefresh={refreshDiagnostics}
-                  isLoading={isDiagnosticsLoading}
-                />
-              </div>
-            </div>
-          </TabPanel>
+        <div className="w-full max-w-4xl mb-6">
+          <StatusIndicator
+            state={appState}
+            enabled={enabled}
+            detail={errorDetail}
+            progress={downloadProgress ?? undefined}
+          />
         </div>
 
-        <p className="text-center text-gray-500 text-sm">
-          Press <code className="text-blue-400">Ctrl+Shift+Space</code> to
-          record
-        </p>
-      </div>
+        <div className="w-full max-w-4xl space-y-4">
+          <TabBar tabs={tabs} activeTab={activeTab} onTabChange={handleTabChange} />
+
+          <div className="h-[65vh] min-h-[480px]">
+            <TabPanel id="status" activeTab={activeTab}>
+              <StatusDashboard onNavigateSettings={() => setActiveTab('settings')} />
+            </TabPanel>
+
+            <TabPanel id="history" activeTab={activeTab}>
+              <HistoryPanel
+                entries={history.slice(0, 25)}
+                onCopy={copyTranscript}
+                onClearAll={clearHistory}
+              />
+            </TabPanel>
+
+            <TabPanel id="replacements" activeTab={activeTab}>
+              {config ? (
+                <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto pr-1">
+                  <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
+                    <PresetsPanel
+                      presets={presets}
+                      enabledPresets={enabledPresetIds}
+                      onTogglePreset={handleTogglePreset}
+                      presetRules={presetRulesById}
+                    />
+                  </div>
+                  <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
+                    <ReplacementList
+                      rules={config.replacements}
+                      onChange={handleReplacementRulesChange}
+                      isLoading={isLoading}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-gray-300">Loading replacement rules...</p>
+              )}
+            </TabPanel>
+
+            <TabPanel id="settings" activeTab={activeTab}>
+              <div className="space-y-4">
+                {config && (
+                  <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
+                    <SettingsPanel
+                      config={config}
+                      devices={devices}
+                      audioLevel={audioLevel}
+                      isMeterRunning={isMeterRunning}
+                      effectiveHotkeyMode={capabilities?.hotkey_mode}
+                      onStartMicTest={startMicTest}
+                      onStopMicTest={stopMicTest}
+                      onRefreshDevices={refreshDevices}
+                      onConfigChange={handleSettingsChange}
+                      isLoading={isLoading}
+                    />
+                  </div>
+                )}
+
+                <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
+                  <SelfCheck
+                    result={selfCheckResult}
+                    onRefresh={refreshSelfCheck}
+                    isLoading={isSelfCheckLoading}
+                  />
+                </div>
+
+                <div className="rounded-lg border border-gray-700 bg-gray-800/70 p-4">
+                  <Diagnostics
+                    report={diagnosticsReport}
+                    onRefresh={refreshDiagnostics}
+                    isLoading={isDiagnosticsLoading}
+                  />
+                </div>
+              </div>
+            </TabPanel>
+          </div>
+
+          <p className="text-center text-gray-500 text-sm">
+            Press <code className="text-blue-400">Ctrl+Shift+Space</code> to
+            record
+          </p>
+        </div>
+      </main>
     </div>
   );
 }
