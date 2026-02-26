@@ -576,6 +576,19 @@ def handle_recording_stop(request: Request) -> dict[str, Any]:
     try:
         audio_data, duration_ms = recorder.stop(session_id)
 
+        # Preprocess before transcription so ASR always receives normalized pipeline output.
+        from .preprocess import TARGET_SAMPLE_RATE, preprocess_audio
+
+        processed_audio = preprocess_audio(
+            audio_data,
+            {
+                "input_sample_rate": recorder.sample_rate,
+                "target_sample_rate": TARGET_SAMPLE_RATE,
+                "normalize": False,
+                "audio": {"trim_silence": True},
+            },
+        )
+
         # Emit status change
         from .notifications import emit_status_changed
 
@@ -584,7 +597,7 @@ def handle_recording_stop(request: Request) -> dict[str, Any]:
         # Start async transcription (this returns immediately)
         from .notifications import transcribe_session_async
 
-        transcribe_session_async(session_id, audio_data, recorder.sample_rate)
+        transcribe_session_async(session_id, processed_audio, TARGET_SAMPLE_RATE)
 
         return {
             "audio_duration_ms": duration_ms,

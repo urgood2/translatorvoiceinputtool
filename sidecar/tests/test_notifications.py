@@ -422,8 +422,7 @@ class TestAsyncTranscriptionPipeline:
 
         with (
             patch("openvoicy_sidecar.notifications.threading.Thread", ImmediateThread),
-            patch("openvoicy_sidecar.preprocess.preprocess", return_value=audio),
-            patch("openvoicy_sidecar.asr.get_engine", return_value=fake_engine),
+            patch("openvoicy_sidecar.asr.get_engine", return_value=fake_engine, create=True),
             patch("openvoicy_sidecar.replacements.get_current_rules", return_value=active_rules),
             patch(
                 "openvoicy_sidecar.replacements.process_text_with_full_stats",
@@ -434,6 +433,7 @@ class TestAsyncTranscriptionPipeline:
         ):
             transcribe_session_async("session-1", audio, 16000)
 
+        fake_engine.transcribe.assert_called_once_with(audio)
         mock_process_text_with_full_stats.assert_called_once_with("raw text", rules=active_rules)
         mock_error.assert_not_called()
         complete_calls = [

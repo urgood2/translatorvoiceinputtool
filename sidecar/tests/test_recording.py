@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from openvoicy_sidecar.preprocess import TARGET_SAMPLE_RATE
 from openvoicy_sidecar.protocol import Request
 from openvoicy_sidecar.recording import (
     AlreadyRecordingError,
@@ -500,6 +501,46 @@ class TestRecordingHandlers:
             assert "audio_duration_ms" in result
             assert "sample_rate" in result
             assert result["session_id"] == session_id
+
+    def test_handle_recording_stop_preprocesses_before_transcribe(
+        self, mock_sounddevice, reset_global_recorder
+    ):
+        """Stop should preprocess audio and pass processed audio to transcription."""
+        processed_audio = np.array([0.42, -0.42], dtype=np.float32)
+        with patch.dict("sys.modules", {"sounddevice": mock_sounddevice}):
+            start_request = Request(method="recording.start", id=1)
+            start_result = handle_recording_start(start_request)
+            session_id = start_result["session_id"]
+
+            with (
+                patch(
+                    "openvoicy_sidecar.preprocess.preprocess_audio",
+                    return_value=processed_audio,
+                ) as mock_preprocess,
+                patch("openvoicy_sidecar.notifications.emit_status_changed"),
+                patch("openvoicy_sidecar.notifications.transcribe_session_async") as mock_transcribe,
+            ):
+                handle_recording_stop(
+                    Request(
+                        method="recording.stop",
+                        id=2,
+                        params={"session_id": session_id},
+                    )
+                )
+
+        preprocess_args, preprocess_kwargs = mock_preprocess.call_args
+        assert preprocess_args[0].dtype == np.float32
+        assert preprocess_kwargs == {}
+        assert preprocess_args[1]["input_sample_rate"] == 48000
+        assert preprocess_args[1]["target_sample_rate"] == TARGET_SAMPLE_RATE
+        assert preprocess_args[1]["normalize"] is False
+        assert preprocess_args[1]["audio"]["trim_silence"] is True
+
+        mock_transcribe.assert_called_once_with(
+            session_id,
+            processed_audio,
+            TARGET_SAMPLE_RATE,
+        )
 
     def test_handle_recording_stop_reports_audio_io_from_callback(
         self, mock_sounddevice, reset_global_recorder

@@ -367,8 +367,8 @@ def transcribe_session_async(
 
     Args:
         session_id: Session to transcribe
-        audio: Audio data as float32
-        sample_rate: Sample rate of audio
+        audio: Preprocessed audio data as float32
+        sample_rate: Sample rate of audio (kept for compatibility/telemetry)
     """
     tracker = get_session_tracker()
     tracker.register(session_id)
@@ -378,12 +378,10 @@ def transcribe_session_async(
             emit_status_changed("transcribing", "Processing audio...")
 
             # Import here to avoid circular imports
-            from .preprocess import preprocess
             from .asr import get_engine, NotInitializedError
             from .replacements import get_current_rules, process_text_with_full_stats
 
-            # Preprocess audio
-            processed_audio = preprocess(audio, sample_rate)
+            processed_audio = audio
 
             if len(processed_audio) == 0:
                 # Empty audio after processing (all silence)

@@ -11,6 +11,7 @@ from openvoicy_sidecar.preprocess import (
     DEFAULT_SILENCE_THRESHOLD_DB,
     TARGET_DTYPE,
     TARGET_SAMPLE_RATE,
+    PreprocessAudioConfig,
     PreprocessConfig,
     compute_rms_energy,
     convert_to_float32,
@@ -19,6 +20,7 @@ from openvoicy_sidecar.preprocess import (
     get_audio_info,
     peak_clamp,
     peak_normalize,
+    preprocess_audio,
     preprocess,
     remove_dc_offset,
     resample,
@@ -437,6 +439,83 @@ class TestHelperFunctions:
         assert info["duration_sec"] == pytest.approx(1.0)
         assert info["peak_amplitude"] == pytest.approx(1.0, abs=0.01)
         assert info["rms"] > 0.5  # Sine wave RMS
+
+
+# === Skeleton pipeline tests ===
+
+
+class TestPreprocessAudioSkeleton:
+    """Tests for config-gated preprocess_audio behavior."""
+
+    def test_normalize_step_gated_by_config(self):
+        audio = np.array([0.1, -0.2, 0.15], dtype=np.float32)
+        no_normalize = preprocess_audio(
+            audio,
+            PreprocessAudioConfig(
+                input_sample_rate=16000,
+                target_sample_rate=16000,
+                normalize=False,
+                trim_silence=False,
+            ),
+        )
+        normalized = preprocess_audio(
+            audio,
+            PreprocessAudioConfig(
+                input_sample_rate=16000,
+                target_sample_rate=16000,
+                normalize=True,
+                trim_silence=False,
+            ),
+        )
+
+        assert np.abs(no_normalize).max() < 0.3
+        assert np.abs(normalized).max() == pytest.approx(1.0, abs=1e-4)
+
+    def test_trim_silence_step_uses_audio_trim_silence_config(self, audio_with_silence):
+        not_trimmed = preprocess_audio(
+            audio_with_silence,
+            {
+                "input_sample_rate": 16000,
+                "target_sample_rate": 16000,
+                "normalize": False,
+                "audio": {"trim_silence": False},
+            },
+        )
+        trimmed = preprocess_audio(
+            audio_with_silence,
+            {
+                "input_sample_rate": 16000,
+                "target_sample_rate": 16000,
+                "normalize": False,
+                "audio": {"trim_silence": True},
+            },
+        )
+
+        assert len(not_trimmed) == len(audio_with_silence)
+        assert len(trimmed) < len(audio_with_silence)
+
+    def test_resample_step_gated_by_target_sample_rate(self, sine_wave_44k):
+        resampled = preprocess_audio(
+            sine_wave_44k,
+            {
+                "input_sample_rate": 44100,
+                "target_sample_rate": 16000,
+                "normalize": False,
+                "audio": {"trim_silence": False},
+            },
+        )
+        not_resampled = preprocess_audio(
+            sine_wave_44k,
+            {
+                "input_sample_rate": 44100,
+                "target_sample_rate": 44100,
+                "normalize": False,
+                "audio": {"trim_silence": False},
+            },
+        )
+
+        assert len(resampled) < len(sine_wave_44k)
+        assert len(not_resampled) == len(sine_wave_44k)
 
 
 # === Performance tests ===

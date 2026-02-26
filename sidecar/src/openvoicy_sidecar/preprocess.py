@@ -22,7 +22,7 @@ Output Specification:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 import numpy as np
 
@@ -46,6 +46,67 @@ class PreprocessConfig:
     silence_trim_enabled: bool = True
     silence_threshold_db: float = DEFAULT_SILENCE_THRESHOLD_DB
     normalize_enabled: bool = False
+
+
+@dataclass
+class PreprocessAudioConfig:
+    """Configuration used by preprocess_audio skeleton pipeline."""
+
+    input_sample_rate: int = TARGET_SAMPLE_RATE
+    target_sample_rate: int = TARGET_SAMPLE_RATE
+    normalize: bool = False
+    trim_silence: bool = True
+    silence_threshold_db: float = DEFAULT_SILENCE_THRESHOLD_DB
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    """Parse bool-like config values with sane defaults."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
+def _resolve_preprocess_audio_config(
+    config: Mapping[str, Any] | PreprocessAudioConfig | None,
+) -> PreprocessAudioConfig:
+    """Normalize mapping/dataclass config into PreprocessAudioConfig."""
+    if config is None:
+        return PreprocessAudioConfig()
+    if isinstance(config, PreprocessAudioConfig):
+        return config
+    if isinstance(config, Mapping):
+        audio_config = config.get("audio")
+        audio_map: Mapping[str, Any] = audio_config if isinstance(audio_config, Mapping) else {}
+
+        input_sample_rate = int(config.get("input_sample_rate", config.get("sample_rate", TARGET_SAMPLE_RATE)))
+        target_sample_rate = int(config.get("target_sample_rate", TARGET_SAMPLE_RATE))
+        normalize_enabled = _coerce_bool(
+            config.get("normalize", config.get("normalize_enabled")),
+            False,
+        )
+        trim_enabled = _coerce_bool(
+            audio_map.get("trim_silence", config.get("trim_silence")),
+            True,
+        )
+        threshold_db = float(config.get("silence_threshold_db", DEFAULT_SILENCE_THRESHOLD_DB))
+
+        return PreprocessAudioConfig(
+            input_sample_rate=max(input_sample_rate, 1),
+            target_sample_rate=max(target_sample_rate, 1),
+            normalize=normalize_enabled,
+            trim_silence=trim_enabled,
+            silence_threshold_db=threshold_db,
+        )
+
+    raise TypeError("config must be a mapping, PreprocessAudioConfig, or None")
 
 
 def convert_to_float32(audio: np.ndarray) -> np.ndarray:
@@ -150,6 +211,8 @@ def remove_dc_offset(audio: np.ndarray) -> np.ndarray:
     Returns:
         Audio with DC offset removed.
     """
+    if len(audio) == 0:
+        return audio.astype(TARGET_DTYPE)
     return (audio - np.mean(audio)).astype(TARGET_DTYPE)
 
 
@@ -299,32 +362,49 @@ def preprocess(
         Preprocessed audio (16kHz mono float32 in [-1, 1]).
     """
     config = config or PreprocessConfig()
+    return preprocess_audio(
+        audio,
+        PreprocessAudioConfig(
+            input_sample_rate=sample_rate,
+            target_sample_rate=TARGET_SAMPLE_RATE,
+            normalize=config.normalize_enabled,
+            trim_silence=config.silence_trim_enabled,
+            silence_threshold_db=config.silence_threshold_db,
+        ),
+    )
 
-    # 1. Convert to float32
-    audio = convert_to_float32(audio)
 
-    # 2. Downmix to mono
+def preprocess_audio(
+    audio_data: np.ndarray,
+    config: Mapping[str, Any] | PreprocessAudioConfig | None,
+) -> np.ndarray:
+    """Preprocessing pipeline skeleton used by recording before ASR.
+
+    Pipeline steps are gated by config:
+    1) resample (when input and target sample rates differ)
+    2) normalize (when normalize=true)
+    3) trim silence (when audio.trim_silence=true or trim_silence=true)
+    """
+    resolved = _resolve_preprocess_audio_config(config)
+
+    audio = convert_to_float32(audio_data)
     audio = downmix_to_mono(audio)
 
-    # 3. Resample to 16kHz
-    audio = resample(audio, sample_rate, TARGET_SAMPLE_RATE)
+    if resolved.input_sample_rate != resolved.target_sample_rate:
+        audio = resample(audio, resolved.input_sample_rate, resolved.target_sample_rate)
 
-    # 4. DC offset removal
+    # Keep baseline cleanup consistent with legacy preprocess().
     audio = remove_dc_offset(audio)
-
-    # 5. Peak clamp
     audio = peak_clamp(audio)
 
-    # 6. Optional: peak normalization
-    if config.normalize_enabled:
+    if resolved.normalize:
         audio = peak_normalize(audio)
 
-    # 7. Optional: silence trim
-    if config.silence_trim_enabled:
+    if resolved.trim_silence:
         audio = trim_silence(
             audio,
-            TARGET_SAMPLE_RATE,
-            threshold_db=config.silence_threshold_db,
+            resolved.target_sample_rate,
+            threshold_db=resolved.silence_threshold_db,
         )
 
     return audio.astype(TARGET_DTYPE)
