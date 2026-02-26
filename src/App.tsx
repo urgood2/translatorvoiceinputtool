@@ -223,7 +223,7 @@ function App() {
 
         <div className="h-[65vh] min-h-[480px]">
           <TabPanel id="status" activeTab={activeTab}>
-            <StatusDashboard />
+            <StatusDashboard onNavigateSettings={() => setActiveTab('settings')} />
           </TabPanel>
 
           <TabPanel id="history" activeTab={activeTab}>

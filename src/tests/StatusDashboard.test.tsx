@@ -146,7 +146,7 @@ describe('StatusDashboard', () => {
     expect(screen.getByText('Alt+Space')).toBeDefined();
     expect(screen.getByText('(Toggle)')).toBeDefined();
     expect(screen.getByText('hello from status dashboard test')).toBeDefined();
-    expect(screen.getByText('Injected')).toBeDefined();
+    expect(screen.getByText(/Injected/)).toBeDefined();
     expect(screen.getByTestId('model-badge-name').textContent).toBe('parakeet-next');
     expect(screen.getByTestId('model-badge-status').textContent).toContain('Loading');
     expect(screen.getByTestId('model-badge-progress').textContent).toContain('Progress: 20%');
@@ -223,6 +223,31 @@ describe('StatusDashboard', () => {
       expect(screen.getByText('No hotkey configured.')).toBeDefined();
     });
     expect(screen.getByText('Configure it in Settings.')).toBeDefined();
+  });
+
+  it('renders settings link button when onNavigateSettings is provided and hotkey is empty', async () => {
+    const onNavigateSettings = vi.fn();
+    render(<StatusDashboard onNavigateSettings={onNavigateSettings} />);
+
+    act(() => {
+      useAppStore.setState({
+        config: {
+          ...buildConfig(),
+          hotkeys: {
+            primary: '',
+            copy_last: 'Ctrl+Shift+V',
+            mode: 'hold',
+          },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('hotkey-settings-link')).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByTestId('hotkey-settings-link'));
+    expect(onNavigateSettings).toHaveBeenCalledTimes(1);
   });
 
   it('truncates long transcript preview to around 100 characters', async () => {

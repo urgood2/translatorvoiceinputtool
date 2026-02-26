@@ -87,7 +87,11 @@ function SectionCard({ title, children }: { title: string; children: React.React
   );
 }
 
-export function StatusDashboard() {
+type StatusDashboardProps = {
+  onNavigateSettings?: () => void;
+};
+
+export function StatusDashboard({ onNavigateSettings }: StatusDashboardProps = {}) {
   const appState = useAppStore((state) => state.appState);
   const enabled = useAppStore((state) => state.enabled);
   const errorDetail = useAppStore((state) => state.errorDetail);
@@ -201,7 +205,18 @@ export function StatusDashboard() {
             <p>
               <span className="text-gray-600 dark:text-gray-400">Hotkey:</span>{' '}
               <span className="text-amber-600 dark:text-amber-300">No hotkey configured.</span>{' '}
-              <span className="text-gray-600 dark:text-gray-400">Configure it in Settings.</span>
+              {onNavigateSettings ? (
+                <button
+                  type="button"
+                  data-testid="hotkey-settings-link"
+                  className="text-sky-600 dark:text-sky-400 underline hover:text-sky-500 dark:hover:text-sky-300"
+                  onClick={onNavigateSettings}
+                >
+                  Configure it in Settings.
+                </button>
+              ) : (
+                <span className="text-gray-600 dark:text-gray-400">Configure it in Settings.</span>
+              )}
             </p>
           )}
         </div>
