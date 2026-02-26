@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::RwLock;
 
+mod audio_cue;
 mod capabilities;
 mod commands;
 mod config;

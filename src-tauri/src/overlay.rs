@@ -9,8 +9,8 @@
 
 use std::time::{Duration, Instant};
 
-use tauri::{PhysicalPosition, Position};
 use tauri::{AppHandle, Manager};
+use tauri::{PhysicalPosition, Position};
 use thiserror::Error;
 
 use crate::config;
