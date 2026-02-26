@@ -211,7 +211,7 @@
     "model_progress_payload": {
       "$id": "./tauri.events.v1.json#/$defs/model_progress_payload",
       "type": "object",
-      "required": ["seq", "current"],
+      "required": ["seq", "current", "unit"],
       "properties": {
         "seq": { "type": "integer", "minimum": 0 },
         "model_id": { "type": "string" },

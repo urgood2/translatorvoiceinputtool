@@ -135,7 +135,7 @@ export type TauriEventDefModelProgressPayload = {
   seq: number;
   stage?: string;
   total?: number | null;
-  unit?: string;
+  unit: string;
 };
 
 export type TauriEventDefModelStatusPayload = {
@@ -507,6 +507,7 @@ export interface TauriEventPayloadMap {
 // Sidecar RPC method params/results
 export type SidecarRpcMethodAsrInitializeParams = {
   device_pref?: "auto" | "cuda" | "cpu";
+  language?: string | null;
   model_id?: string;
 };
 export type SidecarRpcMethodAsrInitializeResult = {
