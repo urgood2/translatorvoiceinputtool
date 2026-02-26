@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "model_id": "nvidia/parakeet-tdt-0.6b-v3",
+      "family": "parakeet",
+      "display_name": "NVIDIA Parakeet TDT 0.6B v3",
+      "description": "600M parameter multilingual ASR model supporting 25 European languages with automatic language detection, punctuation, and timestamps.",
+      "supported_languages": [
+        "bg",
+        "hr",
+        "cs",
+        "da",
+        "nl",
+        "en",
+        "et",
+        "fi",
+        "fr",
+        "de",
+        "el",
+        "hu",
+        "it",
+        "lv",
+        "lt",
+        "mt",
+        "pl",
+        "pt",
+        "ro",
+        "sk",
+        "sl",
+        "es",
+        "sv",
+        "ru",
+        "uk"
+      ],
+      "default_language": "en",
+      "size_bytes": 2509371044,
+      "license_spdx": "CC-BY-4.0",
+      "manifest_path": "manifests/parakeet-tdt-0.6b-v3.json"
+    }
+  ]
+}
