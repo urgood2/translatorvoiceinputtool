@@ -19,6 +19,22 @@
         "fullscreen": false,
         "decorations": true,
         "transparent": false
+      },
+      {
+        "label": "overlay",
+        "title": "Voice Input Overlay",
+        "width": 300,
+        "height": 80,
+        "x": 860,
+        "y": 920,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "url": "overlay.html"
       }
     ],
     "security": {

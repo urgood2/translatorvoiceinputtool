@@ -22,6 +22,7 @@ mod integration;
 pub mod ipc;
 mod log_buffer;
 mod model_defaults;
+mod overlay;
 mod recording;
 mod sidecar;
 mod state;
