@@ -62,7 +62,7 @@ jobs:
 
       - name: Build Rust backend
         working-directory: src-tauri
-        run: cargo build --release
+        run: cargo build --locked --release
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
 

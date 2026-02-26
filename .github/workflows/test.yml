@@ -53,7 +53,7 @@ jobs:
 
       - name: Run Rust tests
         working-directory: src-tauri
-        run: cargo test --all-features
+        run: cargo test --locked --all-features
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
 
