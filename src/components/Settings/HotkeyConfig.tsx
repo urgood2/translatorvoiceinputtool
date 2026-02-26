@@ -8,7 +8,7 @@
  * - Shows effective mode with reason if different
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import type { HotkeyMode, EffectiveMode, ActivationMode } from '../../types';
 
 interface HotkeyConfigProps {
@@ -34,10 +34,19 @@ function HotkeyInput({ label, description, value, onChange, disabled }: HotkeyIn
   const [isRecording, setIsRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingValue, setPendingValue] = useState<string | null>(null);
+  const labelId = useId();
+  const descriptionId = useId();
+  const errorId = useId();
 
   const handleKeyDown = async (e: React.KeyboardEvent) => {
     if (disabled) return;
-    if (!isRecording) return;
+    if (!isRecording) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        setIsRecording(true);
+      }
+      return;
+    }
 
     e.preventDefault();
     const parts: string[] = [];
@@ -94,7 +103,7 @@ function HotkeyInput({ label, description, value, onChange, disabled }: HotkeyIn
 
   return (
     <div>
-      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+      <label id={labelId} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
         {label}
       </label>
       <div className="flex gap-2">
@@ -102,6 +111,13 @@ function HotkeyInput({ label, description, value, onChange, disabled }: HotkeyIn
           tabIndex={disabled ? -1 : 0}
           role="button"
           onKeyDown={handleKeyDown}
+          onClick={() => {
+            if (!disabled) {
+              setIsRecording(true);
+            }
+          }}
+          aria-labelledby={labelId}
+          aria-describedby={error ? `${descriptionId} ${errorId}` : descriptionId}
           aria-disabled={disabled}
           onFocus={() => {
             if (disabled) return;
@@ -119,7 +135,9 @@ function HotkeyInput({ label, description, value, onChange, disabled }: HotkeyIn
         </div>
         {value && (
           <button
+            type="button"
             onClick={() => void handleClear()}
+            aria-label={`Clear ${label}`}
             disabled={disabled}
             className="px-3 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md
                        disabled:opacity-50 disabled:cursor-not-allowed"
@@ -128,9 +146,9 @@ function HotkeyInput({ label, description, value, onChange, disabled }: HotkeyIn
           </button>
         )}
       </div>
-      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{description}</p>
+      <p id={descriptionId} className="mt-1 text-xs text-gray-500 dark:text-gray-400">{description}</p>
       {error && (
-        <p className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>
+        <p id={errorId} role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>
       )}
     </div>
   );
@@ -185,10 +203,10 @@ export function HotkeyConfig({
 
       {/* Mode selector */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+        <p id="hotkey-mode-label" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
           Activation Mode
-        </label>
-        <div className="flex gap-4">
+        </p>
+        <div className="flex gap-4" role="radiogroup" aria-labelledby="hotkey-mode-label">
           <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="radio"
@@ -237,7 +255,7 @@ export function HotkeyConfig({
 
       {/* Error display */}
       {error && (
-        <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
+        <div role="alert" className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
           <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
         </div>
       )}

@@ -36,6 +36,24 @@ export function HistoryPanel({ entries, onCopy, onClearAll }: HistoryPanelProps)
     };
   }, [searchInput]);
 
+  useEffect(() => {
+    if (!showClearConfirm) {
+      return;
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || isClearing) {
+        return;
+      }
+      event.preventDefault();
+      setShowClearConfirm(false);
+      setClearError(null);
+    };
+
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [showClearConfirm, isClearing]);
+
   const filteredEntries = useMemo(() => {
     if (debouncedQuery.length === 0) {
       return entries;
@@ -86,7 +104,12 @@ export function HistoryPanel({ entries, onCopy, onClearAll }: HistoryPanelProps)
           Recent Transcripts
         </h3>
         <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-500 dark:text-gray-400">
+          <span
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            className="text-sm text-gray-500 dark:text-gray-400"
+          >
             {summaryLabel}
           </span>
           <button
@@ -94,6 +117,7 @@ export function HistoryPanel({ entries, onCopy, onClearAll }: HistoryPanelProps)
             data-testid="history-clear-all-button"
             disabled={clearDisabled}
             onClick={() => setShowClearConfirm(true)}
+            aria-label="Clear all transcript history"
             className="rounded-md border border-gray-300 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
           >
             Clear All
@@ -106,6 +130,7 @@ export function HistoryPanel({ entries, onCopy, onClearAll }: HistoryPanelProps)
           type="search"
           value={searchInput}
           data-testid="history-search-input"
+          aria-label="Search transcript history"
           placeholder="Search transcripts or language…"
           onChange={(event) => setSearchInput(event.target.value)}
           className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500 dark:focus:border-blue-500 dark:focus:ring-blue-900/50"
@@ -115,6 +140,7 @@ export function HistoryPanel({ entries, onCopy, onClearAll }: HistoryPanelProps)
             type="button"
             data-testid="history-search-clear"
             onClick={() => setSearchInput('')}
+            aria-label="Clear history search query"
             className="rounded-md border border-gray-300 px-2.5 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
           >
             Clear
@@ -155,17 +181,18 @@ export function HistoryPanel({ entries, onCopy, onClearAll }: HistoryPanelProps)
             role="dialog"
             aria-modal="true"
             aria-labelledby="history-clear-title"
+            aria-describedby="history-clear-description"
             className="w-full max-w-md rounded-lg border border-gray-600 bg-gray-800 p-4 shadow-xl"
           >
             <h4 id="history-clear-title" className="text-base font-semibold text-gray-100">
               Clear all transcript history?
             </h4>
-            <p className="mt-2 text-sm text-gray-300">
+            <p id="history-clear-description" className="mt-2 text-sm text-gray-300">
               This action cannot be undone.
             </p>
 
             {clearError ? (
-              <p className="mt-2 text-xs text-rose-300">{clearError}</p>
+              <p role="alert" className="mt-2 text-xs text-rose-300">{clearError}</p>
             ) : null}
 
             <div className="mt-4 flex justify-end gap-2">

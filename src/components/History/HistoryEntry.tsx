@@ -132,6 +132,8 @@ export function HistoryEntry({ entry, onCopy }: HistoryEntryProps) {
           type="button"
           data-testid={`history-entry-toggle-${entry.id}`}
           onClick={() => setShowRawText((value) => !value)}
+          aria-pressed={showRawText}
+          aria-label={`${showRawText ? 'Show final text' : 'Show raw text'} for transcript`}
           className="mb-2 rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
         >
           {showRawText ? 'Show final text' : 'Show raw text'}
@@ -172,6 +174,7 @@ export function HistoryEntry({ entry, onCopy }: HistoryEntryProps) {
         <button
           type="button"
           onClick={() => void handleCopy()}
+          aria-label={copied ? 'Transcript copied' : 'Copy transcript'}
           className="rounded px-3 py-1 text-sm text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
         >
           {copied ? '✓ Copied' : 'Copy'}
@@ -179,7 +182,7 @@ export function HistoryEntry({ entry, onCopy }: HistoryEntryProps) {
       </div>
 
       {copyError ? (
-        <p className="mt-2 text-sm text-red-600 dark:text-red-400">{copyError}</p>
+        <p role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">{copyError}</p>
       ) : null}
     </div>
   );

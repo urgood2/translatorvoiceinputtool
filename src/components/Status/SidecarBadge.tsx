@@ -58,7 +58,7 @@ export function SidecarBadge() {
 
   if (!sidecarStatus) {
     return (
-      <div className="space-y-1 text-sm">
+      <div className="space-y-1 text-sm" role="status" aria-live="polite" aria-atomic="true">
         <p className="text-gray-100" data-testid="sidecar-badge-empty">No sidecar status</p>
         <p className="text-xs text-gray-400">Start recording once to initialize sidecar telemetry.</p>
       </div>
@@ -80,17 +80,19 @@ export function SidecarBadge() {
   };
 
   return (
-    <div className="space-y-2 text-sm">
+    <div className="space-y-2 text-sm" role="status" aria-live="polite" aria-atomic="true">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span
           className="text-gray-100"
           data-testid="sidecar-badge-restarts"
+          aria-label={`Sidecar restart count: ${sidecarStatus.restart_count}`}
         >
           Restarts: {sidecarStatus.restart_count}
         </span>
         <span
           className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${appearance.badgeClass}`}
           data-testid="sidecar-badge-state"
+          aria-label={`Sidecar status: ${appearance.label}`}
         >
           {appearance.showSpinner ? (
             <span
@@ -103,7 +105,7 @@ export function SidecarBadge() {
       </div>
 
       {sidecarStatus.message ? (
-        <p className="text-xs text-gray-300" data-testid="sidecar-badge-message">
+        <p className="text-xs text-gray-300" data-testid="sidecar-badge-message" aria-live="polite">
           {sidecarStatus.message}
         </p>
       ) : null}
@@ -115,13 +117,14 @@ export function SidecarBadge() {
           className="rounded-md border border-slate-500/60 px-2.5 py-1 text-xs font-semibold text-slate-100 hover:bg-slate-700/60 disabled:cursor-not-allowed disabled:opacity-60"
           onClick={() => void onRestart()}
           disabled={isRestarting}
+          aria-label={isRestarting ? 'Restarting sidecar' : 'Restart sidecar'}
         >
           {isRestarting ? 'Restarting...' : 'Restart'}
         </button>
       ) : null}
 
       {restartError ? (
-        <p className="text-xs text-rose-200">{restartError}</p>
+        <p role="alert" className="text-xs text-rose-200">{restartError}</p>
       ) : null}
     </div>
   );

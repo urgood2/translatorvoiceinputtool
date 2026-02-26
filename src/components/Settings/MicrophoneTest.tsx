@@ -165,8 +165,10 @@ export function MicrophoneTest({
           Microphone Test
         </h4>
         <button
+          type="button"
           onClick={isRunning ? handleStop : handleStart}
           disabled={isStarting}
+          aria-label={isRunning ? 'Stop microphone test' : 'Start microphone test'}
           className={`px-4 py-2 rounded-md text-sm font-medium transition-colors
                      ${isRunning
                        ? 'bg-red-500 hover:bg-red-600 text-white'
@@ -179,7 +181,14 @@ export function MicrophoneTest({
 
       {/* Level meter */}
       <div className="space-y-2">
-        <div className="relative h-6 bg-gray-200 dark:bg-gray-700 rounded overflow-hidden">
+        <div
+          role="progressbar"
+          aria-label="Microphone input level"
+          aria-valuenow={rmsPercent}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          className="relative h-6 bg-gray-200 dark:bg-gray-700 rounded overflow-hidden"
+        >
           {/* RMS level bar */}
           <div
             className={`absolute inset-y-0 left-0 transition-all duration-75 ${getLevelColor(displayLevel.rms)}`}
@@ -208,7 +217,7 @@ export function MicrophoneTest({
 
           {/* Level readout */}
           <div className="absolute inset-0 flex items-center justify-end pr-2">
-            <span className="text-xs font-mono text-gray-600 dark:text-gray-300 bg-white/50 dark:bg-black/30 px-1 rounded">
+            <span className="text-xs font-mono text-gray-600 dark:text-gray-300 bg-white/50 dark:bg-black/30 px-1 rounded" aria-live="polite">
               {rmsPercent}%
             </span>
           </div>
@@ -225,7 +234,7 @@ export function MicrophoneTest({
 
       {/* No signal warning */}
       {isRunning && noSignal && (
-        <div className="p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-md">
+        <div role="alert" className="p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-md">
           <div className="flex items-start gap-2">
             <span className="text-yellow-500">⚠️</span>
             <div>
@@ -249,7 +258,7 @@ export function MicrophoneTest({
 
       {/* Error display */}
       {error && (
-        <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
+        <div role="alert" className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
           <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
         </div>
       )}

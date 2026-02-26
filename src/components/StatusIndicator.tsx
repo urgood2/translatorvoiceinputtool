@@ -37,7 +37,12 @@ export function StatusIndicator({ state, enabled, detail, progress }: StatusIndi
   const shouldAnimate = !isDisabled && config.animate;
 
   return (
-    <div className="flex items-center gap-3 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+    <div
+      role="status"
+      aria-live={state === 'error' && !isDisabled ? 'assertive' : 'polite'}
+      aria-atomic="true"
+      className="flex items-center gap-3 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg"
+    >
       {/* Status dot/indicator */}
       <div className="relative">
         <div
@@ -55,7 +60,7 @@ export function StatusIndicator({ state, enabled, detail, progress }: StatusIndi
 
       {/* Status text and details */}
       <div className="flex-1 min-w-0">
-        <div className="font-medium text-gray-900 dark:text-gray-100">
+        <div className="font-medium text-gray-900 dark:text-gray-100" aria-label="Application status">
           {displayLabel}
         </div>
 
@@ -63,7 +68,7 @@ export function StatusIndicator({ state, enabled, detail, progress }: StatusIndi
         {detail && (
           <div className={`text-sm truncate ${
             state === 'error' ? 'text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-gray-400'
-          }`}>
+          }`} aria-label="Status detail">
             {detail}
           </div>
         )}

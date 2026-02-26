@@ -31,6 +31,8 @@ function PresetCard({
   rules?: ReplacementRule[];
 }) {
   const [expanded, setExpanded] = useState(false);
+  const rulesPanelId = `preset-rules-${preset.id}`;
+  const toggleLabel = `${enabled ? 'Disable' : 'Enable'} preset ${preset.name}`;
 
   return (
     <div
@@ -60,6 +62,7 @@ function PresetCard({
               checked={enabled}
               onChange={(e) => onToggle(e.target.checked)}
               className="sr-only peer"
+              aria-label={toggleLabel}
             />
             <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2
                            peer-focus:ring-blue-500 dark:peer-focus:ring-blue-600
@@ -75,8 +78,11 @@ function PresetCard({
         {/* Expand/collapse rules */}
         {rules && rules.length > 0 && (
           <button
+            type="button"
             onClick={() => setExpanded(!expanded)}
             className="mt-3 text-sm text-blue-600 dark:text-blue-400 hover:underline"
+            aria-expanded={expanded}
+            aria-controls={rulesPanelId}
           >
             {expanded ? 'Hide rules' : 'View rules'}
           </button>
@@ -85,7 +91,10 @@ function PresetCard({
 
       {/* Expanded rules list */}
       {expanded && rules && (
-        <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 px-4 py-3">
+        <div
+          id={rulesPanelId}
+          className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 px-4 py-3"
+        >
           <div className="max-h-48 overflow-y-auto space-y-2">
             {rules.map((rule) => (
               <div

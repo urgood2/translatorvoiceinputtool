@@ -356,6 +356,16 @@ describe('Adding/removing rules updates list reactively', () => {
     );
   });
 
+  it('pressing Escape closes replacement editor dialog', () => {
+    render(<ReplacementList rules={allRules} onChange={vi.fn()} />);
+
+    fireEvent.click(screen.getByText('Add Rule'));
+    expect(screen.getByRole('dialog')).toBeDefined();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it('removing a rule calls onChange without the deleted rule', () => {
     const onChange = vi.fn();
     render(<ReplacementList rules={allRules} onChange={onChange} />);

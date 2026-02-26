@@ -103,17 +103,20 @@ export function MicrophoneSelect({
       {/* Audio cues toggle */}
       <div className="flex items-center justify-between">
         <div>
-          <label htmlFor="audio-cues" className="font-medium text-gray-900 dark:text-gray-100">
+          <label id="audio-cues-label" htmlFor="audio-cues" className="font-medium text-gray-900 dark:text-gray-100">
             Audio Cues
           </label>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
+          <p id="audio-cues-description" className="text-sm text-gray-500 dark:text-gray-400">
             Play sounds when recording starts/stops
           </p>
         </div>
         <button
+          type="button"
           id="audio-cues"
           role="switch"
           aria-checked={audioCuesEnabled}
+          aria-labelledby="audio-cues-label"
+          aria-describedby="audio-cues-description"
           onClick={handleAudioCuesToggle}
           disabled={isLoading}
           className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors
@@ -129,7 +132,10 @@ export function MicrophoneSelect({
 
       {/* Error display */}
       {error && (
-        <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
+        <div
+          role="alert"
+          className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md"
+        >
           <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
         </div>
       )}

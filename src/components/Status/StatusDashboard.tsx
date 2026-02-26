@@ -79,9 +79,13 @@ function injectionStatusLabel(entry: TranscriptEntry): string {
 }
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
+  const headingId = `${title.toLowerCase().replace(/\s+/g, '-')}-section-title`;
   return (
-    <section className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-800/80 p-4" aria-label={title}>
-      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-400">{title}</h3>
+    <section
+      className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-800/80 p-4"
+      aria-labelledby={headingId}
+    >
+      <h3 id={headingId} className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-400">{title}</h3>
       {children}
     </section>
   );
@@ -144,7 +148,12 @@ export function StatusDashboard({ onNavigateSettings }: StatusDashboardProps = {
       <SectionCard title="App State">
         <div className="flex items-center justify-between gap-3">
           <span className="text-sm text-gray-700 dark:text-gray-300">Current State</span>
-          <span className="inline-flex items-center gap-2 rounded-full bg-gray-100 dark:bg-gray-700 px-3 py-1 text-xs font-semibold text-gray-900 dark:text-white">
+          <span
+            role="status"
+            aria-live={appState === 'error' ? 'assertive' : 'polite'}
+            aria-atomic="true"
+            className="inline-flex items-center gap-2 rounded-full bg-gray-100 dark:bg-gray-700 px-3 py-1 text-xs font-semibold text-gray-900 dark:text-white"
+          >
             <span
               className={`h-2.5 w-2.5 rounded-full ${badge.dotClass} ${badge.animate ? 'animate-pulse' : ''}`}
               aria-hidden="true"
@@ -187,7 +196,11 @@ export function StatusDashboard({ onNavigateSettings }: StatusDashboardProps = {
           )}
         </div>
         {appState === 'error' && errorDetail ? (
-          <p className="mt-3 text-xs text-orange-600 dark:text-orange-200" data-testid="app-state-error-detail">
+          <p
+            role="alert"
+            className="mt-3 text-xs text-orange-600 dark:text-orange-200"
+            data-testid="app-state-error-detail"
+          >
             {errorDetail}
           </p>
         ) : null}
@@ -223,7 +236,9 @@ export function StatusDashboard({ onNavigateSettings }: StatusDashboardProps = {
       </SectionCard>
 
       <SectionCard title="Last Transcript">
-        <p className="text-sm leading-relaxed text-gray-900 dark:text-gray-100">{transcriptPreview}</p>
+        <p className="text-sm leading-relaxed text-gray-900 dark:text-gray-100" aria-live="polite">
+          {transcriptPreview}
+        </p>
         {latestTranscript ? (
           <p className="mt-2 text-xs text-gray-400">
             {transcriptTimestamp} · {transcriptAudio} · {transcriptInjection}

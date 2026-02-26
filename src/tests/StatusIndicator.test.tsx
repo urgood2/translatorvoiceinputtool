@@ -11,6 +11,8 @@ describe('StatusIndicator', () => {
   it('renders idle state correctly', () => {
     render(<StatusIndicator state="idle" enabled={true} />);
     expect(screen.getByText('Ready')).toBeDefined();
+    const status = screen.getByRole('status');
+    expect(status).toHaveAttribute('aria-live', 'polite');
   });
 
   it('renders recording state with animation', () => {
@@ -44,6 +46,8 @@ describe('StatusIndicator', () => {
     );
     expect(screen.getByText('Error')).toBeDefined();
     expect(screen.getByText('Model failed to load')).toBeDefined();
+    const status = screen.getByRole('status');
+    expect(status).toHaveAttribute('aria-live', 'assertive');
   });
 
   it('renders paused state when disabled', () => {

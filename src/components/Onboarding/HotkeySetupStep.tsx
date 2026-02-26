@@ -74,14 +74,16 @@ export function HotkeySetupStep({ onReady: _onReady }: HotkeySetupStepProps) {
 
       {/* Primary hotkey recorder */}
       <div className="mb-6 text-left">
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+        <label id="onboarding-hotkey-label" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
           Recording Hotkey
         </label>
         <div
           tabIndex={0}
           role="button"
-          aria-label="Recording hotkey"
+          aria-labelledby="onboarding-hotkey-label"
+          aria-describedby="onboarding-hotkey-description"
           onKeyDown={handleKeyDown}
+          onClick={() => setIsRecording(true)}
           onFocus={() => setIsRecording(true)}
           onBlur={() => setIsRecording(false)}
           className={`w-full px-4 py-3 border rounded-md text-sm text-center font-mono
@@ -94,7 +96,7 @@ export function HotkeySetupStep({ onReady: _onReady }: HotkeySetupStepProps) {
         >
           {isRecording ? 'Press keys...' : primaryHotkey || 'Click to set'}
         </div>
-        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+        <p id="onboarding-hotkey-description" className="mt-1 text-xs text-gray-500 dark:text-gray-400">
           Click the box above and press your preferred key combination.
         </p>
       </div>
@@ -146,7 +148,7 @@ export function HotkeySetupStep({ onReady: _onReady }: HotkeySetupStepProps) {
 
       {/* Error display */}
       {error && (
-        <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
+        <div role="alert" className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
           <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
         </div>
       )}

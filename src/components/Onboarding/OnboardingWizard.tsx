@@ -56,7 +56,14 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-8">
       {/* Step indicator */}
-      <div className="flex gap-2 mb-8" role="progressbar" aria-valuenow={currentStep + 1} aria-valuemin={1} aria-valuemax={STEPS.length}>
+      <div
+        className="flex gap-2 mb-8"
+        role="progressbar"
+        aria-valuenow={currentStep + 1}
+        aria-valuemin={1}
+        aria-valuemax={STEPS.length}
+        aria-valuetext={`Step ${currentStep + 1} of ${STEPS.length}: ${step}`}
+      >
         {STEPS.map((_, i) => (
           <div
             key={i}
@@ -64,6 +71,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
               i <= currentStep ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'
             }`}
             aria-label={`Step ${i + 1}${i === currentStep ? ' (current)' : i < currentStep ? ' (completed)' : ''}`}
+            aria-current={i === currentStep ? 'step' : undefined}
           />
         ))}
       </div>

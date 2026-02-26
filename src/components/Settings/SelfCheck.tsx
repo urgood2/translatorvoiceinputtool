@@ -28,12 +28,16 @@ const STATUS_ICONS: Record<CheckStatus, { icon: string; color: string }> = {
 function CheckRow({ label, item }: { label: string; item: CheckItem }) {
   const [expanded, setExpanded] = useState(false);
   const statusConfig = STATUS_ICONS[item.status];
+  const detailId = `self-check-detail-${label.toLowerCase().replace(/\s+/g, '-')}`;
 
   return (
     <div className="border-b border-gray-100 dark:border-gray-700 last:border-0">
       <button
+        type="button"
         onClick={() => item.detail && setExpanded(!expanded)}
         disabled={!item.detail}
+        aria-expanded={item.detail ? expanded : undefined}
+        aria-controls={item.detail ? detailId : undefined}
         className={`w-full flex items-center gap-3 py-3 px-1 text-left
                    ${item.detail ? 'hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer' : 'cursor-default'}`}
       >
@@ -62,7 +66,7 @@ function CheckRow({ label, item }: { label: string; item: CheckItem }) {
 
       {/* Expanded detail */}
       {expanded && item.detail && (
-        <div className="px-10 pb-3 text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
+        <div id={detailId} className="px-10 pb-3 text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
           {item.detail}
         </div>
       )}
@@ -78,7 +82,7 @@ function StatusSummary({ result }: { result: SelfCheckResult }) {
 
   if (errorCount > 0) {
     return (
-      <span className="px-3 py-1 rounded-full text-sm font-medium bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300">
+      <span role="status" aria-live="polite" className="px-3 py-1 rounded-full text-sm font-medium bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300">
         {errorCount} {errorCount === 1 ? 'issue' : 'issues'} found
       </span>
     );
@@ -86,14 +90,14 @@ function StatusSummary({ result }: { result: SelfCheckResult }) {
 
   if (warningCount > 0) {
     return (
-      <span className="px-3 py-1 rounded-full text-sm font-medium bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300">
+      <span role="status" aria-live="polite" className="px-3 py-1 rounded-full text-sm font-medium bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300">
         {warningCount} {warningCount === 1 ? 'warning' : 'warnings'}
       </span>
     );
   }
 
   return (
-    <span className="px-3 py-1 rounded-full text-sm font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300">
+    <span role="status" aria-live="polite" className="px-3 py-1 rounded-full text-sm font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300">
       All systems operational
     </span>
   );
@@ -118,8 +122,8 @@ export function SelfCheck({ result, onRefresh, isLoading }: SelfCheckProps) {
         <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100">
           System Health Check
         </h3>
-        <div className="flex items-center gap-3 py-8 justify-center">
-          <div className="animate-spin h-5 w-5 border-2 border-gray-300 border-t-blue-500 rounded-full" />
+        <div className="flex items-center gap-3 py-8 justify-center" role="status" aria-live="polite">
+          <div className="animate-spin h-5 w-5 border-2 border-gray-300 border-t-blue-500 rounded-full" aria-hidden="true" />
           <span className="text-gray-500 dark:text-gray-400">Running checks...</span>
         </div>
       </div>
@@ -136,8 +140,10 @@ export function SelfCheck({ result, onRefresh, isLoading }: SelfCheckProps) {
         <div className="flex items-center gap-3">
           <StatusSummary result={result} />
           <button
+            type="button"
             onClick={handleRefresh}
             disabled={refreshing}
+            aria-label={refreshing ? 'Refreshing system checks' : 'Refresh system checks'}
             className="p-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300
                        hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors
                        disabled:opacity-50"

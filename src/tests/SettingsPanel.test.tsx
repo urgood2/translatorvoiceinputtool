@@ -411,6 +411,23 @@ describe('SettingsPanel', () => {
     expect(screen.getByText('Recording Hotkey')).toBeDefined();
   });
 
+  it('supports arrow key navigation between settings tabs', () => {
+    render(
+      <SettingsPanel
+        config={mockConfig}
+        devices={mockDevices}
+        onConfigChange={vi.fn()}
+      />
+    );
+
+    const audioTab = screen.getByRole('tab', { name: 'Audio' });
+    fireEvent.keyDown(audioTab, { key: 'ArrowRight' });
+
+    const hotkeysTab = screen.getByRole('tab', { name: 'Hotkeys' });
+    expect(hotkeysTab).toHaveFocus();
+    expect(screen.getByText('Recording Hotkey')).toBeDefined();
+  });
+
   it('switches to injection tab', () => {
     render(
       <SettingsPanel
@@ -455,5 +472,24 @@ describe('SettingsPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(onRefreshDevices).toHaveBeenCalledTimes(1);
+  });
+
+  it('supports arrow key navigation for appearance theme radios', () => {
+    const onConfigChange = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SettingsPanel
+        config={mockConfig}
+        devices={mockDevices}
+        onConfigChange={onConfigChange}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Appearance' }));
+
+    const systemRadio = screen.getByRole('radio', { name: 'system' });
+    fireEvent.keyDown(systemRadio, { key: 'ArrowRight' });
+
+    expect(onConfigChange).toHaveBeenCalledWith(['ui', 'theme'], 'light');
+    expect(screen.getByRole('radio', { name: 'light' })).toHaveFocus();
   });
 });

@@ -87,18 +87,21 @@ export function InjectionSettings({ config, onChange, isLoading }: InjectionSett
       {/* Restore clipboard toggle */}
       <div className="flex items-center justify-between">
         <div>
-          <label htmlFor="restore-clipboard" className="font-medium text-gray-900 dark:text-gray-100">
+          <label id="restore-clipboard-label" htmlFor="restore-clipboard" className="font-medium text-gray-900 dark:text-gray-100">
             Restore Clipboard
           </label>
           <Tooltip text="Restore original clipboard contents after pasting transcript" />
-          <p className="text-sm text-gray-500 dark:text-gray-400">
+          <p id="restore-clipboard-description" className="text-sm text-gray-500 dark:text-gray-400">
             Keep your previous clipboard after injection
           </p>
         </div>
         <button
+          type="button"
           id="restore-clipboard"
           role="switch"
           aria-checked={config.restore_clipboard}
+          aria-labelledby="restore-clipboard-label"
+          aria-describedby="restore-clipboard-description"
           onClick={() => handleChange('restore_clipboard', !config.restore_clipboard)}
           disabled={isLoading}
           className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors
@@ -121,10 +124,13 @@ export function InjectionSettings({ config, onChange, isLoading }: InjectionSett
           Text Suffix
           <Tooltip text="Character to add after the injected text" />
         </label>
-        <div className="flex gap-2">
+        <div className="flex gap-2" role="radiogroup" aria-label="Text suffix">
           {SUFFIX_OPTIONS.map((option) => (
             <button
+              type="button"
               key={option.label}
+              role="radio"
+              aria-checked={config.suffix === option.value}
               onClick={() => handleChange('suffix', option.value)}
               disabled={isLoading}
               className={`px-4 py-2 text-sm rounded-md transition-colors
@@ -139,25 +145,28 @@ export function InjectionSettings({ config, onChange, isLoading }: InjectionSett
           ))}
         </div>
         {errors.suffix && (
-          <p className="mt-1 text-xs text-red-600 dark:text-red-400">{errors.suffix}</p>
+          <p role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">{errors.suffix}</p>
         )}
       </div>
 
       {/* Focus Guard toggle */}
       <div className="flex items-center justify-between">
         <div>
-          <label htmlFor="focus-guard" className="font-medium text-gray-900 dark:text-gray-100">
+          <label id="focus-guard-label" htmlFor="focus-guard" className="font-medium text-gray-900 dark:text-gray-100">
             Focus Guard
           </label>
           <Tooltip text="Prevents text from being injected into the wrong window if focus changes during recording" />
-          <p className="text-sm text-gray-500 dark:text-gray-400">
+          <p id="focus-guard-description" className="text-sm text-gray-500 dark:text-gray-400">
             Skip injection if window focus changed
           </p>
         </div>
         <button
+          type="button"
           id="focus-guard"
           role="switch"
           aria-checked={config.focus_guard_enabled}
+          aria-labelledby="focus-guard-label"
+          aria-describedby="focus-guard-description"
           onClick={() => handleChange('focus_guard_enabled', !config.focus_guard_enabled)}
           disabled={isLoading}
           className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors
@@ -176,7 +185,10 @@ export function InjectionSettings({ config, onChange, isLoading }: InjectionSett
 
       {/* Focus Guard explanation */}
       {config.focus_guard_enabled && (
-        <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md">
+        <div
+          className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md"
+          aria-live="polite"
+        >
           <p className="text-sm text-blue-700 dark:text-blue-300">
             When enabled, text will only be copied to clipboard (not injected) if you switch windows during recording.
             This prevents accidentally typing text into the wrong application.

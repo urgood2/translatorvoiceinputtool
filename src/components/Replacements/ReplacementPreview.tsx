@@ -8,7 +8,7 @@
  * - Support for testing individual rules or entire ruleset
  */
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useId } from 'react';
 import type { ReplacementRule } from '../../types';
 
 interface ReplacementPreviewProps {
@@ -171,6 +171,9 @@ function HighlightDiff({ original, result }: { original: string; result: string 
 export function ReplacementPreview({ rules }: ReplacementPreviewProps) {
   const [input, setInput] = useState('');
   const [expandMacrosEnabled, setExpandMacrosEnabled] = useState(true);
+  const inputId = useId();
+  const outputLabelId = useId();
+  const changesLabelId = useId();
 
   const enabledRules = useMemo(() => rules.filter((r) => r.enabled), [rules]);
 
@@ -200,10 +203,11 @@ export function ReplacementPreview({ rules }: ReplacementPreviewProps) {
 
       {/* Input */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+        <label htmlFor={inputId} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
           Input Text
         </label>
         <textarea
+          id={inputId}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Type or paste text to test replacement rules..."
@@ -219,10 +223,14 @@ export function ReplacementPreview({ rules }: ReplacementPreviewProps) {
 
       {/* Output */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+        <p id={outputLabelId} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
           Output
-        </label>
+        </p>
         <div
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          aria-labelledby={outputLabelId}
           className={`w-full px-3 py-2 border rounded-md text-sm min-h-[4rem]
                      ${hasChanges
                        ? 'border-green-300 dark:border-green-600 bg-green-50 dark:bg-green-900/20'
@@ -243,11 +251,15 @@ export function ReplacementPreview({ rules }: ReplacementPreviewProps) {
       {/* Diff view */}
       {input && (
         <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+          <p id={changesLabelId} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             Changes
-          </label>
-          <div className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm
-                         bg-gray-50 dark:bg-gray-800">
+          </p>
+          <div
+            role="region"
+            aria-labelledby={changesLabelId}
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm
+                         bg-gray-50 dark:bg-gray-800"
+          >
             <HighlightDiff original={input} result={result} />
           </div>
         </div>
@@ -276,6 +288,7 @@ export function ReplacementPreview({ rules }: ReplacementPreviewProps) {
             {['{{date}}', '{{time}}', '{{datetime}}'].map((macro) => (
               <button
                 key={macro}
+                type="button"
                 onClick={() => setInput((prev) => prev + macro)}
                 className="px-2 py-1 text-xs font-mono bg-white dark:bg-gray-700
                            border border-gray-200 dark:border-gray-600 rounded

@@ -216,8 +216,8 @@ export function Diagnostics({ report, onRefresh, isLoading }: DiagnosticsProps) 
         <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100">
           Diagnostics
         </h3>
-        <div className="flex items-center gap-3 py-8 justify-center">
-          <div className="animate-spin h-5 w-5 border-2 border-gray-300 border-t-blue-500 rounded-full" />
+        <div className="flex items-center gap-3 py-8 justify-center" role="status" aria-live="polite">
+          <div className="animate-spin h-5 w-5 border-2 border-gray-300 border-t-blue-500 rounded-full" aria-hidden="true" />
           <span className="text-gray-500 dark:text-gray-400">Gathering diagnostics...</span>
         </div>
       </div>
@@ -236,8 +236,10 @@ export function Diagnostics({ report, onRefresh, isLoading }: DiagnosticsProps) 
         </h3>
         <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={handleRefresh}
             disabled={refreshing}
+            aria-label={refreshing ? 'Refreshing diagnostics report' : 'Refresh diagnostics report'}
             className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400
                        hover:bg-gray-100 dark:hover:bg-gray-700 rounded-md transition-colors
                        disabled:opacity-50"
@@ -245,7 +247,9 @@ export function Diagnostics({ report, onRefresh, isLoading }: DiagnosticsProps) 
             {refreshing ? 'Refreshing...' : 'Refresh'}
           </button>
           <button
+            type="button"
             onClick={handleCopy}
+            aria-label="Copy diagnostics report to clipboard"
             className={`px-3 py-1.5 text-sm rounded-md transition-colors
                        ${copied
                          ? 'bg-green-500 text-white'
@@ -267,6 +271,7 @@ export function Diagnostics({ report, onRefresh, isLoading }: DiagnosticsProps) 
       {/* Diagnostics output */}
       <div className="relative">
         <pre
+          aria-label="Diagnostics report output"
           className="p-4 bg-gray-900 dark:bg-black text-green-400 text-xs font-mono
                      rounded-lg overflow-auto max-h-96 whitespace-pre-wrap break-words"
         >

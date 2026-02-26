@@ -334,6 +334,22 @@ describe('HistoryPanel', () => {
     expect(onClearAll).not.toHaveBeenCalled();
   });
 
+  it('closes clear-all dialog on Escape key', () => {
+    render(
+      <HistoryPanel
+        entries={mockEntries}
+        onCopy={vi.fn().mockResolvedValue(undefined)}
+        onClearAll={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('history-clear-all-button'));
+    expect(screen.getByRole('dialog')).toBeDefined();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it('confirms clear-all and calls handler', async () => {
     const onClearAll = vi.fn().mockResolvedValue(undefined);
     render(

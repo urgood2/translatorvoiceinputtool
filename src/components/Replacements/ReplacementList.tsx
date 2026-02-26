@@ -134,6 +134,7 @@ function RuleRow({
         onChange={onToggle}
         className="rounded text-blue-500 flex-shrink-0"
         title={rule.enabled ? 'Disable rule' : 'Enable rule'}
+        aria-label={`${rule.enabled ? 'Disable' : 'Enable'} replacement rule ${index + 1}: ${rule.pattern}`}
       />
 
       {/* Rule number */}
@@ -180,20 +181,24 @@ function RuleRow({
       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
         {/* Move buttons */}
         <button
+          type="button"
           onClick={onMoveUp}
           disabled={isFirst}
           className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-30"
           title="Move up"
+          aria-label={`Move rule ${index + 1} up`}
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
           </svg>
         </button>
         <button
+          type="button"
           onClick={onMoveDown}
           disabled={isLast}
           className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-30"
           title="Move down"
+          aria-label={`Move rule ${index + 1} down`}
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -203,9 +208,11 @@ function RuleRow({
         {/* Edit */}
         {!isPreset && (
           <button
+            type="button"
             onClick={onEdit}
             className="p-1 text-gray-400 hover:text-blue-500"
             title="Edit rule"
+            aria-label={`Edit rule ${index + 1}: ${rule.pattern}`}
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -217,9 +224,11 @@ function RuleRow({
         {/* Delete */}
         {!isPreset && (
           <button
+            type="button"
             onClick={onDelete}
             className="p-1 text-gray-400 hover:text-red-500"
             title="Delete rule"
+            aria-label={`Delete rule ${index + 1}: ${rule.pattern}`}
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -352,6 +361,7 @@ export function ReplacementList({
         </h3>
         <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={handleImport}
             disabled={isLoading}
             className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400
@@ -360,6 +370,7 @@ export function ReplacementList({
             Import
           </button>
           <button
+            type="button"
             onClick={handleExport}
             disabled={isLoading || userRules.length === 0}
             className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400
@@ -369,6 +380,7 @@ export function ReplacementList({
             Export
           </button>
           <button
+            type="button"
             onClick={() => setIsAdding(true)}
             disabled={isLoading}
             className="px-3 py-1.5 text-sm bg-blue-500 hover:bg-blue-600 text-white
@@ -391,6 +403,7 @@ export function ReplacementList({
             No custom replacement rules yet
           </p>
           <button
+            type="button"
             onClick={() => setIsAdding(true)}
             className="text-blue-500 hover:text-blue-600 text-sm font-medium"
           >

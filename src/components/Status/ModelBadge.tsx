@@ -138,7 +138,7 @@ export function ModelBadge() {
 
   if (!hasModelInfo) {
     return (
-      <div className="space-y-1 text-sm">
+      <div className="space-y-1 text-sm" role="status" aria-live="polite" aria-atomic="true">
         <p className="text-gray-100" data-testid="model-badge-empty">No model</p>
         <p className="text-xs text-gray-400">Select or download a model in Settings.</p>
       </div>
@@ -164,12 +164,13 @@ export function ModelBadge() {
   };
 
   return (
-    <div className="space-y-2 text-sm">
+    <div className="space-y-2 text-sm" role="status" aria-live="polite" aria-atomic="true">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-gray-100" data-testid="model-badge-name">{displayName}</span>
         <span
           className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${appearance.badgeClass}`}
           data-testid="model-badge-status"
+          aria-label={`Model status: ${appearance.label}`}
         >
           {appearance.showSpinner ? (
             <span
@@ -182,13 +183,13 @@ export function ModelBadge() {
       </div>
 
       {appearance.showProgress && progressLabel ? (
-        <p className="text-xs text-amber-200" data-testid="model-badge-progress">
+        <p className="text-xs text-amber-200" data-testid="model-badge-progress" aria-live="polite">
           Progress: {progressLabel}
         </p>
       ) : null}
 
       {appearance.showError && modelStatus?.error ? (
-        <p className="text-xs text-rose-200" data-testid="model-badge-error">
+        <p className="text-xs text-rose-200" data-testid="model-badge-error" aria-live="assertive">
           {modelStatus.error}
         </p>
       ) : null}
@@ -200,13 +201,14 @@ export function ModelBadge() {
           className="rounded-md border border-slate-500/60 px-2.5 py-1 text-xs font-semibold text-slate-100 hover:bg-slate-700/60 disabled:cursor-not-allowed disabled:opacity-60"
           onClick={() => void onDownload()}
           disabled={isDownloading}
+          aria-label={isDownloading ? 'Starting model download' : 'Download model'}
         >
           {isDownloading ? 'Starting...' : 'Download'}
         </button>
       ) : null}
 
       {downloadError ? (
-        <p className="text-xs text-rose-200">{downloadError}</p>
+        <p role="alert" className="text-xs text-rose-200">{downloadError}</p>
       ) : null}
     </div>
   );
