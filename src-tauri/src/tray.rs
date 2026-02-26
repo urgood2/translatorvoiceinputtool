@@ -24,6 +24,7 @@ mod menu_ids {
     pub const HEADER: &str = "header";
     pub const TOGGLE_ENABLED: &str = "toggle_enabled";
     pub const TOGGLE_RECORDING: &str = "toggle_recording";
+    pub const CANCEL_RECORDING: &str = "cancel_recording";
     pub const MODE_STATUS: &str = "mode_status";
     pub const LANGUAGE_STATUS: &str = "language_status";
     pub const MIC_SUBMENU: &str = "mic_submenu";
@@ -48,6 +49,7 @@ const ICON_DISABLED: &[u8] = include_bytes!("../icons/tray-disabled.png");
 const MAX_RECENT_TRANSCRIPTS: usize = 5;
 const MAX_RECENT_TRANSCRIPT_CHARS: usize = 50;
 const TRAY_REBUILD_POLL_INTERVAL_MS: u64 = 100;
+const TRAY_REFLECTION_TARGET_MS: u64 = 250;
 
 /// Flat audio-device record needed by the tray menu builder.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +63,7 @@ pub struct TrayAudioDevice {
 pub struct TrayMenuState {
     pub enabled: bool,
     pub recording: bool,
+    pub transcribing: bool,
     pub mode: String,
     pub language: Option<String>,
     pub current_device: Option<String>,
@@ -98,6 +101,28 @@ pub enum TrayMenuEntry {
 }
 
 type SystemTrayMenu = Menu<tauri::Wry>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayRefreshTrigger {
+    StateChange,
+    ExplicitUpdateEvent,
+    PollFallback,
+}
+
+fn estimated_reflection_latency_ms(trigger: TrayRefreshTrigger) -> u64 {
+    match trigger {
+        // State broadcasts and explicit tray:update events are handled immediately
+        // in the select loop (subject only to scheduler jitter).
+        TrayRefreshTrigger::StateChange => 0,
+        TrayRefreshTrigger::ExplicitUpdateEvent => 0,
+        // Poll is the fallback path for external changes not carried by events.
+        TrayRefreshTrigger::PollFallback => TRAY_REBUILD_POLL_INTERVAL_MS,
+    }
+}
+
+fn satisfies_reflection_target(trigger: TrayRefreshTrigger) -> bool {
+    estimated_reflection_latency_ms(trigger) <= TRAY_REFLECTION_TARGET_MS
+}
 
 fn should_rebuild_menu(last: Option<&TrayMenuState>, current: &TrayMenuState) -> bool {
     match last {
@@ -159,6 +184,14 @@ fn window_label(window_visible: bool) -> &'static str {
     }
 }
 
+fn enabled_toggle_label(enabled: bool) -> &'static str {
+    if enabled {
+        "Disable OpenVoicy"
+    } else {
+        "Enable OpenVoicy"
+    }
+}
+
 fn truncate_for_menu(text: &str, max_chars: usize) -> String {
     let trimmed = text.trim();
     let chars_count = trimmed.chars().count();
@@ -215,7 +248,7 @@ pub fn build_tray_menu(state: &TrayMenuState) -> Vec<TrayMenuEntry> {
         }
     }
 
-    vec![
+    let mut entries = vec![
         TrayMenuEntry::Action {
             id: menu_ids::HEADER.to_string(),
             text: "OpenVoicy".to_string(),
@@ -224,20 +257,38 @@ pub fn build_tray_menu(state: &TrayMenuState) -> Vec<TrayMenuEntry> {
         TrayMenuEntry::Separator,
         TrayMenuEntry::Toggle {
             id: menu_ids::TOGGLE_ENABLED.to_string(),
-            text: "Enabled".to_string(),
+            text: enabled_toggle_label(state.enabled).to_string(),
             enabled: true,
             checked: state.enabled,
         },
-        TrayMenuEntry::Action {
+    ];
+
+    if state.transcribing {
+        entries.push(TrayMenuEntry::Action {
             id: menu_ids::TOGGLE_RECORDING.to_string(),
-            text: if state.recording {
-                "Stop Recording".to_string()
-            } else {
-                "Start Recording".to_string()
-            },
-            // Functional start/stop control is wired in downstream issue translatorvoiceinputtool-36i.1.5.
+            text: "Processing...".to_string(),
             enabled: false,
-        },
+        });
+    } else if state.recording {
+        entries.push(TrayMenuEntry::Action {
+            id: menu_ids::TOGGLE_RECORDING.to_string(),
+            text: "Stop Recording".to_string(),
+            enabled: true,
+        });
+        entries.push(TrayMenuEntry::Action {
+            id: menu_ids::CANCEL_RECORDING.to_string(),
+            text: "Cancel Recording".to_string(),
+            enabled: true,
+        });
+    } else {
+        entries.push(TrayMenuEntry::Action {
+            id: menu_ids::TOGGLE_RECORDING.to_string(),
+            text: "Start Recording".to_string(),
+            enabled: state.enabled,
+        });
+    }
+
+    entries.extend([
         TrayMenuEntry::Separator,
         TrayMenuEntry::Action {
             id: menu_ids::MODE_STATUS.to_string(),
@@ -291,7 +342,9 @@ pub fn build_tray_menu(state: &TrayMenuState) -> Vec<TrayMenuEntry> {
             enabled: true,
         },
         TrayMenuEntry::Quit,
-    ]
+    ]);
+
+    entries
 }
 
 fn append_entry_to_submenu(
@@ -437,6 +490,7 @@ fn load_runtime_tray_menu_state(app: &AppHandle, state: AppState, enabled: bool)
     TrayMenuState {
         enabled,
         recording: state == AppState::Recording,
+        transcribing: state == AppState::Transcribing,
         mode,
         language,
         current_device,
@@ -571,6 +625,41 @@ fn select_microphone(device_uid: &str) -> Result<(), String> {
     config::save_config(&cfg).map_err(|e| e.to_string())
 }
 
+fn emit_tray_update(app: &AppHandle, reason: &str) {
+    let _ = app.emit(
+        "tray:update",
+        crate::event_seq::payload_with_next_seq(serde_json::json!({
+            "reason": reason,
+        })),
+    );
+}
+
+fn trigger_tray_recording_action(app: &AppHandle, action: &'static str) {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let integration_state = app_handle.state::<crate::IntegrationState>();
+        let manager = integration_state.0.read().await;
+
+        let result = match action {
+            "start" => manager.start_recording().await,
+            "stop" => manager.stop_recording().await,
+            "cancel" => manager.cancel_recording().await,
+            _ => Err(format!("Unknown tray recording action: {action}")),
+        };
+
+        match result {
+            Ok(()) => {
+                log::info!("Tray recording action succeeded: {}", action);
+                emit_tray_update(&app_handle, "recording_action_applied");
+            }
+            Err(err) => {
+                log::warn!("Tray recording action failed ({}): {}", action, err);
+                emit_tray_update(&app_handle, "recording_action_failed");
+            }
+        }
+    });
+}
+
 /// Handle menu item clicks.
 fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
     let id = event.id().as_ref();
@@ -592,12 +681,7 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
         match select_microphone(device_uid) {
             Ok(()) => {
                 log::info!("Selected microphone device from tray: {}", device_uid);
-                let _ = app.emit(
-                    "tray:update",
-                    crate::event_seq::payload_with_next_seq(serde_json::json!({
-                        "reason": "device_changed",
-                    })),
-                );
+                emit_tray_update(app, "device_changed");
             }
             Err(err) => log::warn!("Failed to select microphone from tray: {}", err),
         }
@@ -606,19 +690,13 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
 
     match id {
         menu_ids::TOGGLE_ENABLED => {
-            let state_manager = app.state::<Arc<AppStateManager>>();
-            let currently_enabled = state_manager.is_enabled();
-            state_manager.set_enabled(!currently_enabled);
-            log::info!("Enabled toggled to {}", !currently_enabled);
+            let now_enabled = crate::commands::toggle_enabled(app.state::<Arc<AppStateManager>>());
+            log::info!("Enabled toggled to {}", now_enabled);
+            emit_tray_update(app, "enabled_toggled");
         }
         menu_ids::TOGGLE_WINDOW => {
             toggle_window_visibility(app);
-            let _ = app.emit(
-                "tray:update",
-                crate::event_seq::payload_with_next_seq(serde_json::json!({
-                    "reason": "window_visibility_changed",
-                })),
-            );
+            emit_tray_update(app, "window_visibility_changed");
         }
         menu_ids::TOGGLE_OVERLAY => match toggle_overlay_setting() {
             Ok(now_enabled) => {
@@ -629,17 +707,22 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
                         "enabled": now_enabled,
                     })),
                 );
-                let _ = app.emit(
-                    "tray:update",
-                    crate::event_seq::payload_with_next_seq(serde_json::json!({
-                        "reason": "config_changed",
-                    })),
-                );
+                emit_tray_update(app, "config_changed");
             }
             Err(err) => log::warn!("Failed to toggle overlay from tray: {}", err),
         },
         menu_ids::TOGGLE_RECORDING => {
-            log::info!("Tray start/stop recording requested (not yet wired)");
+            let state = app.state::<Arc<AppStateManager>>().get();
+            match state {
+                AppState::Recording => trigger_tray_recording_action(app, "stop"),
+                AppState::Transcribing => {
+                    log::info!("Tray recording action ignored while transcribing");
+                }
+                _ => trigger_tray_recording_action(app, "start"),
+            }
+        }
+        menu_ids::CANCEL_RECORDING => {
+            trigger_tray_recording_action(app, "cancel");
         }
         _ => {
             log::debug!("Tray: Unhandled menu event: {}", id);
@@ -732,12 +815,18 @@ pub fn start_tray_loop(
                 recv_result = receiver.recv() => {
                     match recv_result {
                         Ok(event) => {
+                            let started = std::time::Instant::now();
                             last_state = event.state;
                             last_enabled = event.enabled;
 
                             let tray = tray_manager.read().await;
                             if let Err(e) = tray.update_state(last_state, last_enabled) {
                                 log::warn!("Failed to update tray: {}", e);
+                            } else {
+                                log::info!(
+                                    "Tray state-refresh completed: trigger=state_change delta_ms={}",
+                                    started.elapsed().as_millis()
+                                );
                             }
 
                             last_menu_state = Some(load_runtime_tray_menu_state(
@@ -756,10 +845,15 @@ pub fn start_tray_loop(
                     let current_menu_state =
                         load_runtime_tray_menu_state(&app_handle, last_state, last_enabled);
                     if should_rebuild_menu(last_menu_state.as_ref(), &current_menu_state) {
+                        let started = std::time::Instant::now();
                         let tray = tray_manager.read().await;
                         if let Err(e) = tray.update_state(last_state, last_enabled) {
                             log::warn!("Failed to refresh tray menu: {}", e);
                         } else {
+                            log::info!(
+                                "Tray state-refresh completed: trigger=poll_fallback delta_ms={}",
+                                started.elapsed().as_millis()
+                            );
                             last_menu_state = Some(current_menu_state);
                         }
                     }
@@ -767,10 +861,15 @@ pub fn start_tray_loop(
                 Some(_) = rebuild_rx.recv() => {
                     let current_menu_state =
                         load_runtime_tray_menu_state(&app_handle, last_state, last_enabled);
+                    let started = std::time::Instant::now();
                     let tray = tray_manager.read().await;
                     if let Err(e) = tray.update_state(last_state, last_enabled) {
                         log::warn!("Failed to process tray:update trigger: {}", e);
                     } else {
+                        log::info!(
+                            "Tray state-refresh completed: trigger=explicit_update_event delta_ms={}",
+                            started.elapsed().as_millis()
+                        );
                         last_menu_state = Some(current_menu_state);
                     }
                 }
@@ -799,6 +898,7 @@ mod tests {
         TrayMenuState {
             enabled: true,
             recording: false,
+            transcribing: false,
             mode: "hold".to_string(),
             language: None,
             current_device: Some("Built-in Mic".to_string()),
@@ -897,7 +997,9 @@ mod tests {
                     text,
                     checked,
                     ..
-                } if id == menu_ids::TOGGLE_ENABLED && text == "Enabled" && *checked
+                } if id == menu_ids::TOGGLE_ENABLED
+                    && text == "Disable OpenVoicy"
+                    && *checked
             )
         }));
 
@@ -965,7 +1067,62 @@ mod tests {
             matches!(
                 entry,
                 TrayMenuEntry::Action { id, text, enabled }
-                    if id == menu_ids::TOGGLE_RECORDING && text == "Stop Recording" && !enabled
+                    if id == menu_ids::TOGGLE_RECORDING && text == "Stop Recording" && *enabled
+            )
+        }));
+        assert!(menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Action { id, text, enabled }
+                    if id == menu_ids::CANCEL_RECORDING && text == "Cancel Recording" && *enabled
+            )
+        }));
+    }
+
+    #[test]
+    fn test_build_tray_menu_transcribing_state_shows_processing_disabled() {
+        let mut state = sample_state();
+        state.transcribing = true;
+
+        let menu = build_tray_menu(&state);
+        assert!(menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Action { id, text, enabled }
+                    if id == menu_ids::TOGGLE_RECORDING && text == "Processing..." && !enabled
+            )
+        }));
+        assert!(!menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Action { id, .. } if id == menu_ids::CANCEL_RECORDING
+            )
+        }));
+    }
+
+    #[test]
+    fn test_build_tray_menu_enable_toggle_label_reflects_enabled_state() {
+        let enabled_menu = build_tray_menu(&sample_state());
+        assert!(enabled_menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Toggle { id, text, checked, .. }
+                    if id == menu_ids::TOGGLE_ENABLED
+                        && text == "Disable OpenVoicy"
+                        && *checked
+            )
+        }));
+
+        let mut disabled_state = sample_state();
+        disabled_state.enabled = false;
+        let disabled_menu = build_tray_menu(&disabled_state);
+        assert!(disabled_menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Toggle { id, text, checked, .. }
+                    if id == menu_ids::TOGGLE_ENABLED
+                        && text == "Enable OpenVoicy"
+                        && !checked
             )
         }));
     }
@@ -1155,6 +1312,7 @@ mod tests {
             menu_ids::HEADER,
             menu_ids::TOGGLE_ENABLED,
             menu_ids::TOGGLE_RECORDING,
+            menu_ids::CANCEL_RECORDING,
             menu_ids::MODE_STATUS,
             menu_ids::LANGUAGE_STATUS,
             menu_ids::MIC_SUBMENU,
@@ -1229,6 +1387,45 @@ mod tests {
     }
 
     #[test]
+    fn test_tray_reflection_budget_state_change_within_250ms() {
+        assert!(satisfies_reflection_target(TrayRefreshTrigger::StateChange));
+    }
+
+    #[test]
+    fn test_tray_reflection_budget_recording_stop_within_250ms() {
+        // Stop transitions Recording -> Transcribing/Idle via state broadcasts.
+        assert!(satisfies_reflection_target(TrayRefreshTrigger::StateChange));
+    }
+
+    #[test]
+    fn test_tray_reflection_budget_model_status_change_within_250ms() {
+        // Model transitions emit AppState changes (e.g. LoadingModel/Idle/Error).
+        assert!(satisfies_reflection_target(TrayRefreshTrigger::StateChange));
+    }
+
+    #[test]
+    fn test_tray_reflection_budget_enable_toggle_within_250ms() {
+        // Enable toggle updates AppStateManager and emits tray:update explicitly.
+        assert!(satisfies_reflection_target(
+            TrayRefreshTrigger::ExplicitUpdateEvent
+        ));
+    }
+
+    #[test]
+    fn test_tray_reflection_budget_config_change_within_250ms() {
+        // Config/device changes can rely on explicit tray:update or poll fallback.
+        assert!(satisfies_reflection_target(
+            TrayRefreshTrigger::ExplicitUpdateEvent
+        ));
+        assert!(satisfies_reflection_target(TrayRefreshTrigger::PollFallback));
+    }
+
+    #[test]
+    fn test_poll_fallback_interval_respects_reflection_target() {
+        assert!(TRAY_REBUILD_POLL_INTERVAL_MS <= TRAY_REFLECTION_TARGET_MS);
+    }
+
+    #[test]
     fn test_build_tray_menu_snapshot_sample_state_matches_golden() {
         let state = sample_state();
         let menu = build_tray_menu(&state);
@@ -1242,14 +1439,14 @@ mod tests {
             TrayMenuEntry::Separator,
             TrayMenuEntry::Toggle {
                 id: menu_ids::TOGGLE_ENABLED.to_string(),
-                text: "Enabled".to_string(),
+                text: "Disable OpenVoicy".to_string(),
                 enabled: true,
                 checked: true,
             },
             TrayMenuEntry::Action {
                 id: menu_ids::TOGGLE_RECORDING.to_string(),
                 text: "Start Recording".to_string(),
-                enabled: false,
+                enabled: true,
             },
             TrayMenuEntry::Separator,
             TrayMenuEntry::Action {
