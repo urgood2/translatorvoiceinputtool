@@ -26,7 +26,7 @@ const CONFIG_DIR_NAME: &str = "OpenVoicy";
 const CONFIG_FILE_NAME: &str = "config.json";
 const SENSITIVE_FIELD_KEYWORDS: [&str; 4] = ["token", "key", "secret", "password"];
 
-const ROOT_CONFIG_FIELDS: [&str; 9] = [
+const ROOT_CONFIG_FIELDS: [&str; 10] = [
     "schema_version",
     "audio",
     "hotkeys",
@@ -36,6 +36,7 @@ const ROOT_CONFIG_FIELDS: [&str; 9] = [
     "ui",
     "history",
     "presets",
+    "supervisor",
 ];
 
 const AUDIO_CONFIG_FIELDS: [&str; 6] = [
@@ -88,6 +89,8 @@ const HISTORY_CONFIG_FIELDS: [&str; 3] = ["persistence_mode", "max_entries", "en
 
 const PRESETS_CONFIG_FIELDS: [&str; 1] = ["enabled_presets"];
 
+const SUPERVISOR_CONFIG_FIELDS: [&str; 1] = ["captured_log_max_lines"];
+
 /// Root application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -126,6 +129,10 @@ pub struct AppConfig {
     /// Preset configurations.
     #[serde(default)]
     pub presets: PresetsConfig,
+
+    /// Supervisor settings (sidecar lifecycle management).
+    #[serde(default)]
+    pub supervisor: SupervisorConfig,
 }
 
 impl Default for AppConfig {
@@ -140,6 +147,7 @@ impl Default for AppConfig {
             ui: UiConfig::default(),
             history: HistoryConfig::default(),
             presets: PresetsConfig::default(),
+            supervisor: SupervisorConfig::default(),
         }
     }
 }
@@ -675,6 +683,27 @@ pub struct PresetsConfig {
     pub enabled_presets: Vec<String>,
 }
 
+/// Supervisor settings exposed to the user config file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SupervisorConfig {
+    /// Maximum sidecar log lines retained in supervisor memory.
+    #[serde(default = "default_captured_log_max_lines")]
+    pub captured_log_max_lines: usize,
+}
+
+impl Default for SupervisorConfig {
+    fn default() -> Self {
+        Self {
+            captured_log_max_lines: default_captured_log_max_lines(),
+        }
+    }
+}
+
+fn default_captured_log_max_lines() -> usize {
+    1000
+}
+
 fn default_schema_version() -> u32 {
     CURRENT_SCHEMA_VERSION
 }
@@ -1059,6 +1088,14 @@ fn sensitive_unknown_config_fields(config: &Value) -> Vec<String> {
     }
     if let Some(presets) = root.get("presets").and_then(Value::as_object) {
         collect_sensitive_unknown_keys(presets, "presets", &PRESETS_CONFIG_FIELDS, &mut fields);
+    }
+    if let Some(supervisor) = root.get("supervisor").and_then(Value::as_object) {
+        collect_sensitive_unknown_keys(
+            supervisor,
+            "supervisor",
+            &SUPERVISOR_CONFIG_FIELDS,
+            &mut fields,
+        );
     }
 
     fields.sort();

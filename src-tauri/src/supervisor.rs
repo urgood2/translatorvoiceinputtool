@@ -129,6 +129,9 @@ impl SidecarController for SidecarManager {
     }
 }
 
+/// Minimum time the sidecar must run in Ready state before backoff resets.
+const SUSTAINED_READY_THRESHOLD: Duration = Duration::from_secs(30);
+
 pub struct SidecarSupervisor<C = SidecarManager>
 where
     C: SidecarController,
@@ -138,6 +141,8 @@ where
     state: SidecarState,
     restart_count: u32,
     last_restart_at: Option<Instant>,
+    /// When the sidecar last entered Ready state (used for sustained-health backoff reset).
+    ready_since: Option<Instant>,
     circuit_breaker: CircuitBreakerState,
     app_handle: Option<AppHandle>,
     captured_logs: VecDeque<SidecarLogRecord>,
@@ -154,6 +159,7 @@ where
             state: SidecarState::Stopped,
             restart_count: 0,
             last_restart_at: None,
+            ready_since: None,
             circuit_breaker: CircuitBreakerState::default(),
             app_handle: None,
             captured_logs: VecDeque::new(),
@@ -238,9 +244,8 @@ where
             err
         })?;
 
-        // Successful ping means the restart completed; reset backoff progression.
-        self.restart_count = 0;
-        self.last_restart_at = None;
+        // Record when sidecar became ready; backoff resets only after sustained healthy operation.
+        self.ready_since = Some(Instant::now());
         self.state = SidecarState::Ready;
         self.emit_status(None);
         Ok(())
@@ -257,6 +262,7 @@ where
     pub async fn restart(&mut self) -> Result<(), String> {
         self.reset_circuit_breaker();
         self.restart_count = 0;
+        self.ready_since = None;
         self.state = SidecarState::Restarting;
         self.emit_status(Some("manual sidecar restart requested"));
 
@@ -267,6 +273,16 @@ where
     pub async fn handle_crash(&mut self) -> Result<(), String> {
         let now = Instant::now();
         self.capture_controller_logs();
+
+        // Reset backoff only if the sidecar ran healthily for a sustained period.
+        if let Some(ready_at) = self.ready_since {
+            if now.duration_since(ready_at) >= SUSTAINED_READY_THRESHOLD {
+                self.restart_count = 0;
+                self.last_restart_at = None;
+            }
+        }
+        self.ready_since = None;
+
         self.register_failure(now);
         let recent_excerpt = self.recent_log_excerpt(STATUS_LOG_EXCERPT_LINES);
 
@@ -320,6 +336,8 @@ where
             tokio::time::sleep(delay).await;
         }
 
+        // Stop any lingering process before starting a new one (e.g., hung but not crashed).
+        let _ = self.controller.stop();
         self.start().await
     }
 
@@ -1058,7 +1076,8 @@ mod tests {
             .expect("restart should recover after successful self-check");
 
         assert_eq!(supervisor.state(), SidecarState::Ready);
-        assert_eq!(supervisor.restart_count(), 0);
+        // Backoff counter is NOT reset immediately; it only resets after sustained healthy operation.
+        assert_eq!(supervisor.restart_count(), 1);
         assert!(!supervisor.circuit_breaker_open());
 
         let state = controller.state();
@@ -1098,8 +1117,113 @@ mod tests {
             .expect("restart should recover once spawn failures stop");
 
         assert_eq!(supervisor.state(), SidecarState::Ready);
-        assert_eq!(supervisor.restart_count(), 0);
+        // restart_count is NOT reset immediately on successful start; only after sustained healthy operation.
+        assert_eq!(supervisor.restart_count(), 2);
         assert!(!supervisor.circuit_breaker_open());
+    }
+
+    #[tokio::test]
+    async fn backoff_resets_after_sustained_healthy_operation() {
+        let controller = FakeController::default();
+        let mut supervisor = SidecarSupervisor::new(
+            controller.clone(),
+            SidecarSupervisorConfig {
+                max_restart_count: 10,
+                backoff_base_ms: 100,
+                backoff_factor: 2.0,
+                backoff_max_ms: 5000,
+                circuit_breaker_window_ms: 60_000,
+                auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
+            },
+        );
+
+        // First crash: restart succeeds
+        supervisor
+            .handle_crash()
+            .await
+            .expect("restart should succeed");
+        assert_eq!(supervisor.restart_count(), 1);
+
+        // Simulate the sidecar having been ready for longer than the sustained threshold
+        supervisor.ready_since = Some(Instant::now() - SUSTAINED_READY_THRESHOLD - Duration::from_secs(1));
+
+        // Second crash: should reset backoff because sidecar was healthy for > threshold
+        supervisor
+            .handle_crash()
+            .await
+            .expect("restart should succeed after backoff reset");
+
+        // restart_count was reset to 0 before incrementing to 1 for this crash
+        assert_eq!(supervisor.restart_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn backoff_does_not_reset_after_quick_crash() {
+        let controller = FakeController::default();
+        let mut supervisor = SidecarSupervisor::new(
+            controller.clone(),
+            SidecarSupervisorConfig {
+                max_restart_count: 10,
+                backoff_base_ms: 0,
+                backoff_factor: 2.0,
+                backoff_max_ms: 0,
+                circuit_breaker_window_ms: 60_000,
+                auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
+            },
+        );
+
+        // First crash: restart succeeds, restart_count = 1
+        supervisor
+            .handle_crash()
+            .await
+            .expect("restart should succeed");
+        assert_eq!(supervisor.restart_count(), 1);
+
+        // ready_since was just set by start(), so < threshold
+        // Second crash: backoff should NOT reset because not sustained-healthy
+        supervisor
+            .handle_crash()
+            .await
+            .expect("restart should succeed");
+        assert_eq!(supervisor.restart_count(), 2, "backoff should not reset after quick crash");
+    }
+
+    #[tokio::test]
+    async fn handle_crash_stops_lingering_process_before_starting_new_one() {
+        // Regression: 3kwp — a hung (still alive) sidecar was never killed before
+        // starting its replacement, leading to duplicate processes.
+        let controller = FakeController::default();
+        let mut supervisor = SidecarSupervisor::new(
+            controller.clone(),
+            SidecarSupervisorConfig {
+                max_restart_count: 10,
+                backoff_base_ms: 0,
+                backoff_factor: 2.0,
+                backoff_max_ms: 0,
+                circuit_breaker_window_ms: 60_000,
+                auto_restart_enabled: true,
+                captured_log_max_lines: DEFAULT_CAPTURED_LOG_MAX_LINES,
+            },
+        );
+
+        supervisor
+            .handle_crash()
+            .await
+            .expect("crash recovery should succeed");
+
+        let state = controller.state();
+        // handle_crash must call stop() to kill a potentially hung process
+        // before calling start() to spawn a new one.
+        assert!(
+            state.stop_calls >= 1,
+            "handle_crash must stop lingering process before starting replacement (stop_calls={})",
+            state.stop_calls
+        );
+        assert_eq!(state.start_calls, 1);
+        assert_eq!(state.ping_calls, 1);
+        assert_eq!(supervisor.state(), SidecarState::Ready);
     }
 
     #[test]

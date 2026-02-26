@@ -173,11 +173,7 @@ fn truncate_for_menu(text: &str, max_chars: usize) -> String {
 /// Pure menu builder: deterministic for a given input state.
 pub fn build_tray_menu(state: &TrayMenuState) -> Vec<TrayMenuEntry> {
     let mut recent_items = Vec::new();
-    for (entry_id, transcript) in state
-        .recent_transcripts
-        .iter()
-        .take(MAX_RECENT_TRANSCRIPTS)
-    {
+    for (entry_id, transcript) in state.recent_transcripts.iter().take(MAX_RECENT_TRANSCRIPTS) {
         recent_items.push(TrayMenuEntry::Action {
             id: format!("{}{}", menu_ids::COPY_RECENT_PREFIX, entry_id),
             text: truncate_for_menu(transcript, MAX_RECENT_TRANSCRIPT_CHARS),
@@ -907,10 +903,10 @@ mod tests {
             .collect();
 
         // IDs must embed the entry UUID, not a volatile index
-        assert_eq!(ids, vec![
-            "copy_recent::abc-uuid-1",
-            "copy_recent::def-uuid-2",
-        ]);
+        assert_eq!(
+            ids,
+            vec!["copy_recent::abc-uuid-1", "copy_recent::def-uuid-2",]
+        );
     }
 
     #[test]

@@ -315,10 +315,11 @@ impl Watchdog {
                 // Perform health check
                 let ping_result = tokio::time::timeout(config.ping_timeout, pinger.ping()).await;
 
-                let status = {
+                let (previous_status, status) = {
                     let mut state_guard = state.write().await;
+                    let previous = state_guard.last_status;
 
-                    match ping_result {
+                    let current = match ping_result {
                         Ok(Ok(())) => {
                             state_guard.last_activity = Instant::now();
                             state_guard.last_status = HealthStatus::Healthy;
@@ -346,14 +347,19 @@ impl Watchdog {
                                 HealthStatus::Unhealthy
                             }
                         }
-                    }
+                    };
+
+                    (previous, current)
                 };
 
                 // Emit health check event
                 let _ = event_tx.send(WatchdogEvent::HealthCheck { status });
 
-                // If hung and auto-restart is enabled, request supervisor-mediated recovery.
-                if status == HealthStatus::Hung && config.auto_restart_on_hang {
+                // Request recovery only on the transition to hung (not on every iteration while hung).
+                if status == HealthStatus::Hung
+                    && previous_status != HealthStatus::Hung
+                    && config.auto_restart_on_hang
+                {
                     log::error!("Watchdog: Sidecar appears hung, requesting supervisor recovery");
                     let _ = event_tx.send(WatchdogEvent::SidecarRecoveryRequested {
                         reason: "sidecar_hung".to_string(),
@@ -734,6 +740,43 @@ mod tests {
         );
 
         // Shutdown
+        watchdog.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_watchdog_emits_recovery_only_on_transition_to_hung() {
+        let config = WatchdogConfig {
+            check_interval: Duration::from_millis(20),
+            hang_threshold: Duration::from_millis(50),
+            auto_restart_on_hang: true,
+            ..Default::default()
+        };
+        let watchdog = Watchdog::with_config(config);
+        let pinger = Arc::new(MockPinger::new(false)); // Always fails
+        let mut receiver = watchdog.subscribe();
+
+        watchdog.start_loop(Arc::clone(&pinger));
+
+        // Collect recovery events over several hung iterations
+        let mut recovery_count = 0;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(400) {
+            if let Ok(Ok(event)) =
+                tokio::time::timeout(Duration::from_millis(30), receiver.recv()).await
+            {
+                if matches!(event, WatchdogEvent::SidecarRecoveryRequested { .. }) {
+                    recovery_count += 1;
+                }
+            }
+        }
+
+        // Recovery should fire exactly once (on transition), not on every iteration
+        assert_eq!(
+            recovery_count, 1,
+            "Expected exactly 1 recovery request (transition only), got {}",
+            recovery_count
+        );
+
         watchdog.shutdown();
     }
 

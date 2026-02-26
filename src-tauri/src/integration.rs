@@ -12,6 +12,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::{cell::RefCell, thread_local};
 
 use global_hotkey::GlobalHotKeyEvent;
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
+use crate::audio_cue::{AudioCueManager, CueType};
 use crate::config::{self, HotkeyMode, ReplacementRule};
 use crate::errors::{AppError, ErrorKind};
 use crate::focus::{capture_focus, FocusSignature};
@@ -411,6 +413,28 @@ fn stop_rpc_method_for_result(result: &StopResult) -> &'static str {
         StopResult::TooShort => "recording.cancel",
         StopResult::Transcribing { .. } => "recording.stop",
     }
+}
+
+fn recording_event_audio_cue(event: &RecordingEvent) -> Option<CueType> {
+    match event {
+        RecordingEvent::Started { .. } => Some(CueType::StartRecording),
+        RecordingEvent::Stopped { .. } => Some(CueType::StopRecording),
+        RecordingEvent::Cancelled { .. } => Some(CueType::CancelRecording),
+        RecordingEvent::TranscriptionFailed { .. } => Some(CueType::Error),
+        _ => None,
+    }
+}
+
+thread_local! {
+    static AUDIO_CUE_MANAGER: RefCell<Option<AudioCueManager>> = const { RefCell::new(None) };
+}
+
+fn play_lifecycle_audio_cue(cue: CueType) {
+    AUDIO_CUE_MANAGER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let manager = slot.get_or_insert_with(AudioCueManager::new);
+        manager.play_cue(cue);
+    });
 }
 
 fn has_transcription_timed_out(
@@ -903,11 +927,15 @@ impl IntegrationManager {
         let recording_controller = Arc::new(RecordingController::new(Arc::clone(&state_manager)));
         let watchdog = Arc::new(Watchdog::with_config(WatchdogConfig::default()));
         let config = IntegrationConfig::default();
+        let app_config = config::load_config();
         let mut sidecar_manager = SidecarManager::new();
         sidecar_manager.set_python_mode(config.python_path.clone(), config.sidecar_module.clone());
         let supervisor = Arc::new(Mutex::new(SidecarSupervisor::new(
             sidecar_manager,
-            SidecarSupervisorConfig::default(),
+            SidecarSupervisorConfig {
+                captured_log_max_lines: app_config.supervisor.captured_log_max_lines,
+                ..SidecarSupervisorConfig::default()
+            },
         )));
 
         Self {
@@ -1057,10 +1085,10 @@ impl IntegrationManager {
                         }
                     }
                     WatchdogEvent::SidecarHung => {
-                        // Legacy event retained in watchdog; recovery is now supervisor-mediated.
-                        if let Err(err) = manager.recover_sidecar_from_watchdog().await {
-                            log::error!("Watchdog legacy hung recovery failed: {}", err);
-                        }
+                        // Legacy event retained in watchdog for observability.
+                        // Recovery is handled by the SidecarRecoveryRequested branch above;
+                        // calling recover here would trigger a duplicate attempt.
+                        log::warn!("Watchdog: legacy SidecarHung event received (no-op)");
                     }
                     WatchdogEvent::SystemResumed => {
                         log::info!("System resumed from suspend, triggering revalidation");
@@ -2603,6 +2631,10 @@ impl IntegrationManager {
             log::info!("Recording event loop started");
 
             while let Ok(event) = receiver.recv().await {
+                if let Some(cue) = recording_event_audio_cue(&event) {
+                    play_lifecycle_audio_cue(cue);
+                }
+
                 match event {
                     RecordingEvent::Started {
                         session_id,
@@ -2912,12 +2944,7 @@ impl IntegrationManager {
                             emit_with_shared_seq(
                                 handle,
                                 &[EVENT_RECORDING_STATUS],
-                                recording_status_event_payload(
-                                    "idle",
-                                    None,
-                                    None,
-                                    None,
-                                ),
+                                recording_status_event_payload("idle", None, None, None),
                                 &event_seq,
                             );
                         }
@@ -3911,6 +3938,41 @@ mod tests {
     }
 
     #[test]
+    fn test_stale_drop_with_realistic_notification_payloads() {
+        let active = Some("session-active");
+
+        // Transcription complete from active session → accepted
+        let params = json!({ "session_id": "session-active", "text": "hello", "duration_ms": 100 });
+        assert!(!is_stale_session(extract_session_id(&params), active));
+
+        // Transcription complete from stale session → dropped
+        let params = json!({ "session_id": "session-old", "text": "stale", "duration_ms": 50 });
+        assert!(is_stale_session(extract_session_id(&params), active));
+
+        // Transcription error from stale session → dropped
+        let params = json!({ "session_id": "session-old", "error": "timeout" });
+        assert!(is_stale_session(extract_session_id(&params), active));
+
+        // Transcription error from active session → accepted
+        let params = json!({ "session_id": "session-active", "error": "decoder crash" });
+        assert!(!is_stale_session(extract_session_id(&params), active));
+
+        // Audio level event (no session_id) → always forwarded, never stale
+        let params = json!({ "level": 0.5 });
+        assert!(!is_stale_session(extract_session_id(&params), active));
+        assert!(!is_stale_session(extract_session_id(&params), None));
+
+        // Status event (no session_id) → always forwarded
+        let params = json!({ "state": "ready", "restart_count": 0 });
+        assert!(!is_stale_session(extract_session_id(&params), active));
+
+        // Stale notification message format is meaningful
+        let msg = stale_notification_message(Some("session-old"), active);
+        assert!(msg.contains("session-old"));
+        assert!(msg.contains("session-active"));
+    }
+
+    #[test]
     fn test_integration_config_default() {
         let config = IntegrationConfig::default();
         assert_eq!(config.python_path, "python3");
@@ -4165,6 +4227,68 @@ mod tests {
                 session_id: "session".to_string()
             }),
             "recording.stop"
+        );
+    }
+
+    #[test]
+    fn test_recording_event_audio_cue_mapping_for_lifecycle_events() {
+        let now = chrono::Utc::now();
+        let session_id = "session-1".to_string();
+
+        assert_eq!(
+            recording_event_audio_cue(&RecordingEvent::Started {
+                session_id: session_id.clone(),
+                timestamp: now,
+            }),
+            Some(CueType::StartRecording)
+        );
+
+        assert_eq!(
+            recording_event_audio_cue(&RecordingEvent::Stopped {
+                session_id: session_id.clone(),
+                duration_ms: 1200,
+                timestamp: now,
+            }),
+            Some(CueType::StopRecording)
+        );
+
+        assert_eq!(
+            recording_event_audio_cue(&RecordingEvent::Cancelled {
+                session_id: session_id.clone(),
+                reason: CancelReason::UserButton,
+                timestamp: now,
+            }),
+            Some(CueType::CancelRecording)
+        );
+
+        assert_eq!(
+            recording_event_audio_cue(&RecordingEvent::TranscriptionFailed {
+                session_id,
+                error: "decoder crash".to_string(),
+                timestamp: now,
+            }),
+            Some(CueType::Error)
+        );
+    }
+
+    #[test]
+    fn test_recording_event_audio_cue_mapping_ignores_non_cue_events() {
+        let now = chrono::Utc::now();
+
+        assert_eq!(
+            recording_event_audio_cue(&RecordingEvent::TooShort {
+                duration_ms: 100,
+                timestamp: now,
+            }),
+            None
+        );
+
+        assert_eq!(
+            recording_event_audio_cue(&RecordingEvent::TranscriptionTimeout {
+                session_id: "session-1".to_string(),
+                timestamp: now,
+            }),
+            None
         );
     }
 
@@ -4451,6 +4575,67 @@ mod tests {
                 .and_then(Value::as_u64),
             Some(11)
         );
+    }
+
+    #[test]
+    fn test_injection_failed_to_clipboard_only_recovery_emits_app_error() {
+        // Simulate the full pipeline: injection fails → clipboard-only fallback → app:error payload.
+        let injection_error = "Focus changed from Terminal to Browser";
+        let text = "Hello world from dictation";
+        let fallback_reason = format!(
+            "{}; transcript copied to clipboard for manual paste",
+            injection_error
+        );
+
+        // Step 1: The injection result transitions to ClipboardOnly.
+        let result = crate::injection::InjectionResult::ClipboardOnly {
+            reason: fallback_reason.clone(),
+            text_length: text.len(),
+            timestamp: chrono::Utc::now(),
+        };
+
+        // Step 2: clipboard_only_requires_app_error determines if app:error should fire.
+        // Focus-change reasons (not app-override) should trigger app:error.
+        assert!(clipboard_only_requires_app_error(&fallback_reason));
+
+        // Step 3: Build the injection failure AppError.
+        let app_error = injection_failure_app_error(&fallback_reason, text.len());
+        assert_eq!(app_error.code, ErrorKind::InjectionFailed.to_sidecar());
+        assert!(app_error.recoverable);
+
+        // Step 4: Build the app:error event payload that would be emitted.
+        let payload = app_error_event_payload(&app_error);
+        assert_eq!(
+            payload.pointer("/error/code").and_then(Value::as_str),
+            Some("E_INJECTION_FAILED")
+        );
+        assert_eq!(
+            payload.get("message").and_then(Value::as_str),
+            Some("Automatic text injection failed. Transcript preserved in history.")
+        );
+        assert_eq!(
+            payload.get("recoverable").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            payload
+                .pointer("/error/details/method_attempted")
+                .and_then(Value::as_str),
+            Some("focus_guard")
+        );
+        assert_eq!(
+            payload
+                .pointer("/error/details/text_length")
+                .and_then(Value::as_u64),
+            Some(text.len() as u64)
+        );
+
+        // Step 5: The history entry reflects ClipboardOnly status.
+        let history_result = HistoryInjectionResult::from_injection_result(&result);
+        assert!(matches!(
+            history_result,
+            HistoryInjectionResult::ClipboardOnly { reason } if reason.contains("Focus changed")
+        ));
     }
 
     #[test]
