@@ -624,6 +624,8 @@ pub struct ReplacementPreviewResult {
     pub result: String,
     pub truncated: bool,
     pub applied_rules_count: usize,
+    #[serde(default)]
+    pub applied_presets: Vec<String>,
 }
 
 fn preview_replacement_local(
@@ -720,22 +722,14 @@ pub async fn preview_replacement(
             result,
             truncated,
             applied_rules_count,
+            applied_presets,
         }) => Ok(ReplacementPreviewResult {
             result,
             truncated,
             applied_rules_count: applied_rules_count.unwrap_or_default(),
+            applied_presets: applied_presets.unwrap_or_default(),
         }),
-        Err(message) => {
-            if is_sidecar_unavailable_preview_error(&message) {
-                log::warn!(
-                    "Sidecar replacements.preview unavailable ({}); falling back to local preview, which may differ from injected output",
-                    message
-                );
-                Ok(preview_replacement_local(input, rules))
-            } else {
-                Err(CommandError::SidecarIpc { message })
-            }
-        }
+        Err(message) => Err(CommandError::SidecarIpc { message }),
     }
 }
 
