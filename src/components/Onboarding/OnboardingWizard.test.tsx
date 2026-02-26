@@ -60,7 +60,18 @@ function makeConfig(overrides: Partial<AppConfig['ui']> = {}): AppConfig {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  useAppStore.setState({ config: makeConfig() });
+  useAppStore.setState({
+    config: makeConfig(),
+    // MicSetupStep dependencies
+    devices: [],
+    selectedDeviceUid: null,
+    audioLevel: null,
+    isMeterRunning: false,
+    refreshDevices: vi.fn(),
+    selectDevice: vi.fn(),
+    startMicTest: vi.fn(),
+    stopMicTest: vi.fn(),
+  });
 });
 
 // ── Tests ─────────────────────────────────────────────────────────
@@ -88,8 +99,8 @@ describe('OnboardingWizard', () => {
     expect(screen.getByText('Hotkey Configuration')).toBeDefined();
     fireEvent.click(screen.getByText('Next'));
 
-    // Step 4: Model
-    expect(screen.getByText('Model Ready')).toBeDefined();
+    // Step 4: Model (ModelReadinessStep renders with status check)
+    expect(screen.getByText('Speech Recognition Model')).toBeDefined();
     fireEvent.click(screen.getByText('Next'));
 
     // Step 5: Complete

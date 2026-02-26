@@ -8,6 +8,8 @@
 import { useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../store/appStore';
+import { MicSetupStep } from './MicSetupStep';
+import { ModelReadinessStep } from './ModelReadinessStep';
 
 const STEPS = ['Welcome', 'Microphone', 'Hotkey', 'Model', 'Complete'] as const;
 type Step = (typeof STEPS)[number];
@@ -76,12 +78,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
         )}
 
         {step === 'Microphone' && (
-          <div>
-            <h2 className="text-2xl font-bold mb-4">Microphone Setup</h2>
-            <p className="text-gray-600 dark:text-gray-400 mb-8">
-              Select your preferred microphone for voice input.
-            </p>
-          </div>
+          <MicSetupStep onReady={handleNext} />
         )}
 
         {step === 'Hotkey' && (
@@ -94,12 +91,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
         )}
 
         {step === 'Model' && (
-          <div>
-            <h2 className="text-2xl font-bold mb-4">Model Ready</h2>
-            <p className="text-gray-600 dark:text-gray-400 mb-8">
-              The speech recognition model will be downloaded when needed.
-            </p>
-          </div>
+          <ModelReadinessStep onReady={handleNext} />
         )}
 
         {step === 'Complete' && (
