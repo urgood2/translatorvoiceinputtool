@@ -5761,6 +5761,102 @@ for raw in sys.stdin:
     }
 
     #[test]
+    fn test_app_error_event_mic_permission_code_and_shape() {
+        let app_error = AppError::new(
+            ErrorKind::MicPermission.to_sidecar(),
+            "Microphone access denied",
+            Some(json!({"reason": "os_denied"})),
+            false,
+        );
+
+        let payload = app_error_event_payload(&app_error);
+
+        assert_eq!(
+            payload.pointer("/error/code").and_then(Value::as_str),
+            Some("E_MIC_PERMISSION")
+        );
+        assert_eq!(
+            payload.get("message").and_then(Value::as_str),
+            Some("Microphone access denied")
+        );
+        assert_eq!(
+            payload.get("recoverable").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            payload.pointer("/error/details/reason").and_then(Value::as_str),
+            Some("os_denied")
+        );
+    }
+
+    #[test]
+    fn test_app_error_event_device_removed_code_and_shape() {
+        let app_error = AppError::new(
+            ErrorKind::DeviceRemoved.to_sidecar(),
+            "Audio device disconnected",
+            Some(json!({"device_uid": "usb-mic-1"})),
+            true,
+        );
+
+        let payload = app_error_event_payload(&app_error);
+
+        assert_eq!(
+            payload.pointer("/error/code").and_then(Value::as_str),
+            Some("E_DEVICE_REMOVED")
+        );
+        assert_eq!(
+            payload.get("message").and_then(Value::as_str),
+            Some("Audio device disconnected")
+        );
+        assert_eq!(
+            payload.get("recoverable").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_transcription_error_event_mic_permission_preserves_legacy_fields() {
+        let app_error = AppError::new(
+            ErrorKind::MicPermission.to_sidecar(),
+            "Microphone permission denied by OS",
+            None,
+            false,
+        );
+
+        let payload = transcription_error_event_payload("session-mic-1", &app_error);
+
+        // Legacy flat fields
+        assert_eq!(
+            payload.get("error").and_then(Value::as_str),
+            Some("Microphone permission denied by OS")
+        );
+        assert_eq!(
+            payload.get("message").and_then(Value::as_str),
+            Some("Microphone permission denied by OS")
+        );
+        assert_eq!(
+            payload.get("recoverable").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some("session-mic-1")
+        );
+
+        // Structured app_error
+        assert_eq!(
+            payload.pointer("/app_error/code").and_then(Value::as_str),
+            Some("E_MIC_PERMISSION")
+        );
+        assert_eq!(
+            payload
+                .pointer("/app_error/recoverable")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn test_clipboard_only_requires_app_error_ignores_app_override_mode() {
         assert!(!clipboard_only_requires_app_error(
             "App override clipboard-only mode (slack)"
