@@ -325,6 +325,61 @@ listen('sidecar:status', () => {});
             errors = MODULE.validate_rust_event_payloads(root, events_contract)
             self.assertTrue(any("unexpected field(s) not in schema" in err for err in errors))
 
+    def test_validate_rust_event_payloads_scans_multiple_source_files(self) -> None:
+        """Regression (13vc, 32y1): validator must scan all .rs files, not just integration.rs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            src_dir = root / "src-tauri" / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+
+            # integration.rs: defines the event constant
+            (src_dir / "integration.rs").write_text(
+                "\n".join(
+                    [
+                        'const EVENT_SIDECAR_STATUS: &str = "sidecar:status";',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            # supervisor.rs: emits the event via app_handle.emit
+            (src_dir / "supervisor.rs").write_text(
+                "\n".join(
+                    [
+                        'const EVENT_SIDECAR_STATUS: &str = "sidecar:status";',
+                        "fn status_payload() -> serde_json::Value {",
+                        '  json!({ "state": "running", "restart_count": 0 })',
+                        "}",
+                        "fn emit_status() {",
+                        "  let payload = status_payload();",
+                        "  app_handle.emit(EVENT_SIDECAR_STATUS, payload);",
+                        "}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            events_contract = {
+                "items": [
+                    {
+                        "type": "event",
+                        "name": "sidecar:status",
+                        "payload_schema": {
+                            "type": "object",
+                            "required": ["state", "restart_count"],
+                            "properties": {
+                                "state": {"type": "string"},
+                                "restart_count": {"type": "integer"},
+                            },
+                            "additionalProperties": True,
+                        },
+                    }
+                ]
+            }
+
+            errors = MODULE.validate_rust_event_payloads(root, events_contract)
+            self.assertEqual(errors, [])
+
     def test_validate_tauri_event_payload_examples_reports_schema_violation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -573,6 +628,29 @@ listen('sidecar:status', () => {});
             self.assertEqual(len(errors), 1)
             self.assertIn("shadow.method", errors[0])
 
+    def test_extract_sidecar_handler_methods_works_without_type_annotation(self) -> None:
+        """Regression (3qsj): extraction must not depend on dict[...] type annotation."""
+        text_no_annotation = "\n".join(
+            [
+                "HANDLERS = {",
+                "  'system.ping': handle_ping,",
+                "  'status.get': handle_status,",
+                "}",
+            ]
+        )
+        methods = MODULE.extract_sidecar_handler_methods(text_no_annotation)
+        self.assertEqual(methods, {"system.ping", "status.get"})
+
+        text_with_Dict = "\n".join(
+            [
+                "HANDLERS: Dict[str, Callable] = {",
+                "  'system.ping': handle_ping,",
+                "}",
+            ]
+        )
+        methods2 = MODULE.extract_sidecar_handler_methods(text_with_Dict)
+        self.assertEqual(methods2, {"system.ping"})
+
     def test_validate_generator_determinism_accepts_stable_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -624,6 +702,71 @@ listen('sidecar:status', () => {});
             errors = MODULE.validate_generator_determinism(root)
             self.assertGreaterEqual(len(errors), 1)
             self.assertTrue(any("non-deterministic output across runs" in err for err in errors))
+
+    def test_validate_frontend_listener_events_fails_on_unresolved_dynamic_listen(self) -> None:
+        """Regression (irkm): unresolved dynamic listen() must fail, not just warn."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            hook_file = root / "src" / "hooks" / "useTauriEvents.ts"
+            hook_file.parent.mkdir(parents=True, exist_ok=True)
+            hook_file.write_text(
+                "\n".join(
+                    [
+                        "import { listen } from '@tauri-apps/api/event';",
+                        "void listen(someVariable, () => {});",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            events_contract = {
+                "items": [
+                    {
+                        "type": "event",
+                        "name": "state:changed",
+                        "payload_schema": {"type": "object"},
+                    }
+                ]
+            }
+            errors = MODULE.validate_frontend_listener_events(root, events_contract)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("could not be resolved statically", errors[0])
+
+    def test_validate_frontend_listener_events_skips_known_passthrough_wrappers(self) -> None:
+        """Regression (irkm): known pass-through wrappers must be skipped, not flagged."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            hook_file = root / "src" / "hooks" / "useTauriEvents.ts"
+            hook_file.parent.mkdir(parents=True, exist_ok=True)
+            hook_file.write_text(
+                "\n".join(
+                    [
+                        "import { listen } from '@tauri-apps/api/event';",
+                        "const registerListener = async (eventName: string, onEvent: any) => {",
+                        "  const unlisten = await listen(eventName, onEvent);",
+                        "};",
+                        "await registerListener('state:changed', () => {});",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            events_contract = {
+                "items": [
+                    {
+                        "type": "event",
+                        "name": "state:changed",
+                        "payload_schema": {"type": "object"},
+                    }
+                ]
+            }
+
+            stream = io.StringIO()
+            with redirect_stdout(stream):
+                errors = MODULE.validate_frontend_listener_events(root, events_contract)
+            self.assertEqual(errors, [])
+            output = stream.getvalue()
+            self.assertIn("pass-through wrapper", output)
 
     def test_self_test_mode_returns_success(self) -> None:
         self.assertEqual(MODULE.main(["--self-test"]), 0)

@@ -500,6 +500,16 @@ def tauri_event_name_maps(events_contract: dict[str, Any]) -> tuple[set[str], di
     return canonical_names, alias_to_canonical
 
 
+KNOWN_PASSTHROUGH_WRAPPERS: set[tuple[str, str]] = {
+    # registerListener<T>(eventName, ...) wrapper in useTauriEvents hook
+    ("src/hooks/useTauriEvents.ts", "eventName"),
+    # useTauriEvent<T>(eventName, ...) generic hook
+    ("src/hooks/useTauriEvents.ts", "eventName"),
+    # subscribe<T>(eventName, ...) helper in OverlayApp
+    ("src/overlay/OverlayApp.tsx", "eventName"),
+}
+
+
 def validate_frontend_listener_events(repo_root: Path, events_contract: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     allowed, _ = allowed_tauri_event_names(events_contract)
@@ -542,8 +552,15 @@ def validate_frontend_listener_events(repo_root: Path, events_contract: dict[str
         location = f"{rel}:{reg.line}"
 
         if reg.event_name is None:
+            rel_key = (str(rel), reg.expression)
+            if rel_key in KNOWN_PASSTHROUGH_WRAPPERS:
+                log(f"OK: {location}: listener '{reg.expression}' is a known pass-through wrapper (skipped)")
+                continue
             unresolved += 1
-            log(f"WARN: {location}: listener '{reg.expression}' could not be resolved statically")
+            log(f"FAIL: {location}: listener '{reg.expression}' could not be resolved statically")
+            errors.append(
+                f"{location}: listener '{reg.expression}' could not be resolved statically"
+            )
             continue
 
         if reg.event_name not in allowed:
@@ -622,15 +639,26 @@ def parse_rust_event_list_expression(expr: str, constants: dict[str, str]) -> li
     return events
 
 
+def _find_cfg_test_line(text: str) -> int | None:
+    """Return the line number of the first top-level #[cfg(test)] attribute, or None."""
+    match = re.search(r"^#\[cfg\(test\)\]", text, re.MULTILINE)
+    if match is None:
+        return None
+    return line_number_for_offset(text, match.start())
+
+
 def extract_rust_emission_sites(repo_root: Path, rust_file: Path) -> list[RustEmissionSite]:
     if not rust_file.exists():
         return []
 
     text = rust_file.read_text(encoding="utf-8")
     constants = parse_rust_event_constants(text)
+    cfg_test_line = _find_cfg_test_line(text)
     sites: list[RustEmissionSite] = []
 
-    for match in re.finditer(r"\bemit_with_shared_seq\s*\(", text):
+    # Match emit_with_shared_seq, emit_with_shared_seq_for_broadcaster,
+    # and emit_with_existing_seq_to_all_windows (all have handle, events, payload args)
+    for match in re.finditer(r"\bemit_with_(?:shared_seq|shared_seq_for_broadcaster|existing_seq_to_all_windows)\s*\(", text):
         paren_start = text.find("(", match.start())
         if paren_start == -1:
             continue
@@ -655,7 +683,8 @@ def extract_rust_emission_sites(repo_root: Path, rust_file: Path) -> list[RustEm
                 )
             )
 
-    for match in re.finditer(r"\bhandle\.emit\s*\(", text):
+    # Match any_identifier.emit(...) — covers handle.emit, app_handle.emit, app.emit, self.emit
+    for match in re.finditer(r"[A-Za-z_][A-Za-z0-9_]*\.emit\s*\(", text):
         paren_start = text.find("(", match.start())
         if paren_start == -1:
             continue
@@ -679,6 +708,10 @@ def extract_rust_emission_sites(repo_root: Path, rust_file: Path) -> list[RustEm
                 payload_expr=payload_expr,
             )
         )
+
+    # Exclude emit sites inside #[cfg(test)] blocks (test-only payloads)
+    if cfg_test_line is not None:
+        sites = [s for s in sites if s.line < cfg_test_line]
 
     return sites
 
@@ -948,7 +981,10 @@ def schema_allows_json_type(schema: dict[str, Any], root_schema: dict[str, Any],
 def infer_rust_payload_shape(
     rust_text: str,
     site: RustEmissionSite,
+    site_file_text: str | None = None,
 ) -> tuple[str, dict[str, str | None]] | None:
+    # Use file-specific text for line-relative assignment lookups, global text for definitions
+    local_text = site_file_text if site_file_text is not None else rust_text
     expr = site.payload_expr.strip()
     fn_match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", expr)
     if fn_match:
@@ -967,7 +1003,7 @@ def infer_rust_payload_shape(
         if inner.startswith("{") and inner.endswith("}"):
             return ("inline:json-object", parse_json_object_key_types(inner, {}))
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", inner):
-            rhs = find_identifier_assignment_source(rust_text, inner, site.line)
+            rhs = find_identifier_assignment_source(local_text, inner, site.line)
             if rhs:
                 if rhs.startswith("model_status_event_payload("):
                     shape = infer_payload_shape_from_rust_struct(rust_text, "ModelStatusPayload")
@@ -978,19 +1014,43 @@ def infer_rust_payload_shape(
                     if shape is not None:
                         return shape
 
+    # Bare identifier: trace assignment in the same file and try to resolve the RHS
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", expr):
+        rhs = find_identifier_assignment_source(local_text, expr, site.line)
+        if rhs:
+            fn_match_rhs = re.match(r"(?:self\.)?([A-Za-z_][A-Za-z0-9_]*)\s*\(", rhs)
+            if fn_match_rhs:
+                fn_name = fn_match_rhs.group(1)
+                shape = infer_payload_shape_from_rust_function(rust_text, fn_name)
+                if shape is not None:
+                    return shape
+            if rhs.startswith("json!(") and rhs.endswith(")"):
+                inner = rhs[len("json!(") : -1].strip()
+                if inner.startswith("{") and inner.endswith("}"):
+                    return ("inline:json-object", parse_json_object_key_types(inner, {}))
+
     return None
 
 
 def validate_rust_event_payloads(repo_root: Path, events_contract: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-    rust_file = repo_root / "src-tauri" / "src" / "integration.rs"
-    if not rust_file.exists():
-        return [f"missing Rust integration source: {rust_file.relative_to(repo_root)}"]
+    rust_src_dir = repo_root / "src-tauri" / "src"
+    if not rust_src_dir.is_dir():
+        return [f"missing Rust source directory: {rust_src_dir.relative_to(repo_root)}"]
 
-    rust_text = rust_file.read_text(encoding="utf-8")
-    sites = extract_rust_emission_sites(repo_root, rust_file)
+    rust_files = sorted(rust_src_dir.glob("*.rs"))
+    if not rust_files:
+        return [f"{rust_src_dir.relative_to(repo_root)}: no Rust source files found"]
+
+    # Per-file text for line-relative assignment lookups; concatenated for cross-file definitions
+    file_texts: dict[Path, str] = {f: f.read_text(encoding="utf-8") for f in rust_files}
+    rust_text = "\n".join(file_texts.values())
+
+    sites: list[RustEmissionSite] = []
+    for rust_file in rust_files:
+        sites.extend(extract_rust_emission_sites(repo_root, rust_file))
     if not sites:
-        return [f"{rust_file.relative_to(repo_root)}: no Rust emission sites found"]
+        return [f"{rust_src_dir.relative_to(repo_root)}: no Rust emission sites found"]
 
     canonical_names, _alias_map = tauri_event_name_maps(events_contract)
     canonical_schema_map: dict[str, dict[str, Any]] = {}
@@ -1016,7 +1076,8 @@ def validate_rust_event_payloads(repo_root: Path, events_contract: dict[str, Any
             f"Rust emit site: {rel}:{site.line}: event '{site.event_name}' payload expr '{site.payload_expr}'"
         )
 
-        inferred = infer_rust_payload_shape(rust_text, site)
+        site_file_text = file_texts.get(site.file, rust_text)
+        inferred = infer_rust_payload_shape(rust_text, site, site_file_text)
         if inferred is None:
             errors.append(
                 f"{rel}:{site.line}: unable to infer Rust payload shape for event '{site.event_name}'"
@@ -1080,7 +1141,7 @@ def validate_rust_event_payloads(repo_root: Path, events_contract: dict[str, Any
 
     if checked == 0:
         errors.append(
-            f"{rust_file.relative_to(repo_root)}: no canonical tauri.events emissions found for validation"
+            f"{rust_src_dir.relative_to(repo_root)}: no canonical tauri.events emissions found for validation"
         )
     log(f"Rust payload validation summary: {checked} checked, {passed} passed, {len(errors)} failed")
     return errors
@@ -1158,7 +1219,8 @@ def sidecar_contract_maps(sidecar_contract: dict[str, Any]) -> tuple[dict[str, d
 
 
 def extract_sidecar_handler_methods(server_text: str) -> set[str]:
-    match = re.search(r"HANDLERS\s*:\s*dict\[[^\]]+\]\s*=\s*{", server_text)
+    # Accept HANDLERS with any type annotation (dict[...], Dict[...]) or none at all
+    match = re.search(r"^HANDLERS\s*(?::[^=]*)?\s*=\s*{", server_text, re.MULTILINE)
     if not match:
         return set()
     brace_start = server_text.find("{", match.start())
