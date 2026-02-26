@@ -23,7 +23,6 @@ import json
 import os
 import platform
 import shutil
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -32,8 +31,14 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
-from .protocol import Request, log
-from .resources import MODEL_MANIFEST_REL, resolve_shared_path, resolve_shared_path_optional
+from .protocol import Notification, Request, log, write_notification
+from .resources import (
+    MODEL_CATALOG_REL,
+    MODEL_MANIFESTS_DIR_REL,
+    MODEL_MANIFEST_REL,
+    resolve_shared_path,
+    resolve_shared_path_optional,
+)
 
 # === Constants ===
 
@@ -719,7 +724,8 @@ class ModelCacheManager:
 
         cache_dir = get_cache_directory()
         model_dir = cache_dir / manifest.model_id
-        temp_dir = None
+        partial_root = cache_dir / ".partial"
+        temp_dir = partial_root / manifest.model_id
 
         try:
             # Check disk space
@@ -732,8 +738,9 @@ class ModelCacheManager:
                     log(f"Model {manifest.model_id} already cached")
                     return model_dir
 
-                # Create temp directory
-                temp_dir = Path(tempfile.mkdtemp(dir=cache_dir, prefix=f"{manifest.model_id}_tmp_"))
+                # Keep .partial staging across retries so interrupted downloads can resume.
+                temp_dir.parent.mkdir(parents=True, exist_ok=True)
+                temp_dir.mkdir(parents=True, exist_ok=True)
 
                 # Save manifest to temp
                 manifest_path = temp_dir / "manifest.json"
@@ -774,6 +781,24 @@ class ModelCacheManager:
                         progress_callback(self.progress)
 
                     dest_path = temp_dir / file_info.path
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    # Reuse any staged file that already passed integrity checks.
+                    if verify_file(dest_path, file_info.sha256, file_info.size_bytes):
+                        completed_bytes = sum(fi.size_bytes for fi in manifest.files[: i + 1])
+                        with self._state_lock:
+                            self._progress.current_bytes = completed_bytes
+                        if progress_callback:
+                            progress_callback(self.progress)
+                        continue
+
+                    # If staged data is larger than expected, restart this file.
+                    if (
+                        file_info.size_bytes > 0
+                        and dest_path.exists()
+                        and dest_path.stat().st_size > file_info.size_bytes
+                    ):
+                        dest_path.unlink()
 
                     def update_progress(current: int, total: int) -> None:
                         # Calculate total progress across all files
@@ -791,6 +816,10 @@ class ModelCacheManager:
                     with self._state_lock:
                         self._status = ModelStatus.VERIFYING
                     if not verify_file(dest_path, file_info.sha256, file_info.size_bytes):
+                        try:
+                            dest_path.unlink()
+                        except OSError:
+                            pass
                         raise CacheCorruptError(
                             f"Verification failed for {file_info.path}", str(dest_path)
                         )
@@ -801,6 +830,7 @@ class ModelCacheManager:
                 # Atomic rename
                 if model_dir.exists():
                     shutil.rmtree(model_dir)
+                model_dir.parent.mkdir(parents=True, exist_ok=True)
                 temp_dir.rename(model_dir)
                 temp_dir = None  # Don't clean up on success
 
@@ -819,13 +849,6 @@ class ModelCacheManager:
                 self._status = ModelStatus.ERROR
                 self._error = str(e)
             raise ModelCacheError(str(e))
-        finally:
-            # Clean up temp directory on failure
-            if temp_dir and temp_dir.exists():
-                try:
-                    shutil.rmtree(temp_dir)
-                except Exception:
-                    pass
 
     def purge_cache(self, model_id: Optional[str] = None) -> bool:
         """Purge model cache.
@@ -877,6 +900,133 @@ def get_cache_manager() -> ModelCacheManager:
     return _manager
 
 
+_install_lock = threading.Lock()
+_install_thread: Optional[threading.Thread] = None
+_install_model_id: Optional[str] = None
+
+
+def _normalize_model_id(model_id: str) -> str:
+    return model_id.strip().lower().replace("\\", "/")
+
+
+def _model_id_variants(model_id: str) -> set[str]:
+    normalized = _normalize_model_id(model_id)
+    suffix = normalized.split("/")[-1]
+    variants = {normalized, suffix}
+    if not normalized.startswith("nvidia/"):
+        variants.add(f"nvidia/{suffix}")
+    return variants
+
+
+def _resolve_manifest_path_for_model(model_id: str) -> Path:
+    """Resolve model manifest path using catalog/manifests fallbacks."""
+    requested_variants = _model_id_variants(model_id)
+
+    catalog_path = resolve_shared_path_optional(MODEL_CATALOG_REL)
+    if catalog_path is not None:
+        with open(catalog_path) as f:
+            catalog = json.load(f)
+
+        for model in catalog.get("models", []):
+            catalog_model_id = str(model.get("model_id", "")).strip()
+            if _normalize_model_id(catalog_model_id) not in requested_variants:
+                continue
+
+            manifest_path = str(model.get("manifest_path", "")).strip()
+            if manifest_path:
+                relative = (
+                    manifest_path
+                    if manifest_path.startswith("model/")
+                    else f"model/{manifest_path}"
+                )
+                candidate = resolve_shared_path_optional(relative)
+                if candidate is not None:
+                    return candidate
+
+    model_slug = _normalize_model_id(model_id).split("/")[-1]
+    manifests_candidate = resolve_shared_path_optional(
+        f"{MODEL_MANIFESTS_DIR_REL}/{model_slug}.json"
+    )
+    if manifests_candidate is not None:
+        return manifests_candidate
+
+    return resolve_shared_path(MODEL_MANIFEST_REL)
+
+
+def _emit_model_progress(model_id: str, progress: DownloadProgress) -> None:
+    payload = {
+        "model_id": model_id,
+        "current": progress.current_bytes,
+        "total": progress.total_bytes if progress.total_bytes > 0 else None,
+        "unit": "bytes",
+        "stage": "download",
+        "current_file": progress.current_file,
+        "files_completed": progress.files_completed,
+        "files_total": progress.files_total,
+    }
+    write_notification(Notification(method="event.model_progress", params=payload))
+
+    # Mirror through status_changed for host integrations that only consume this channel.
+    write_notification(
+        Notification(
+            method="event.status_changed",
+            params={
+                "state": "loading_model",
+                "detail": "Downloading model...",
+                "progress": {
+                    "current": payload["current"],
+                    "total": payload["total"],
+                    "unit": payload["unit"],
+                    "stage": payload["stage"],
+                },
+                "model": {
+                    "model_id": model_id,
+                    "status": "downloading",
+                },
+            },
+        )
+    )
+
+
+def _emit_model_status(model_id: str, status: str, error: Optional[str] = None) -> None:
+    payload: dict[str, Any] = {
+        "model_id": model_id,
+        "status": status,
+    }
+    if error:
+        payload["error"] = error
+
+    write_notification(Notification(method="event.model_status", params=payload))
+    write_notification(
+        Notification(
+            method="event.status_changed",
+            params={
+                "state": "idle" if status == "ready" else "error",
+                "detail": "Model ready" if status == "ready" else error or "Model install failed",
+                "model": payload,
+            },
+        )
+    )
+
+
+def _run_model_install(manager: ModelCacheManager, manifest: ModelManifest) -> None:
+    global _install_thread, _install_model_id
+    try:
+        manager.download_model(
+            manifest,
+            progress_callback=lambda p: _emit_model_progress(manifest.model_id, p),
+        )
+        _emit_model_status(manifest.model_id, "ready")
+    except (DiskFullError, NetworkError, CacheCorruptError, LockError, ModelCacheError) as e:
+        _emit_model_status(manifest.model_id, "error", str(e))
+    except Exception as e:
+        _emit_model_status(manifest.model_id, "error", str(e))
+    finally:
+        with _install_lock:
+            _install_thread = None
+            _install_model_id = None
+
+
 # === JSON-RPC Handlers ===
 
 
@@ -925,6 +1075,45 @@ def handle_model_download(request: Request) -> dict[str, Any]:
         raise e
 
     return manager.get_status()
+
+
+def handle_model_install(request: Request) -> dict[str, Any]:
+    """Handle model.install request.
+
+    Starts model install in the background and returns immediately.
+    """
+    global _install_thread, _install_model_id
+
+    model_id = request.params.get("model_id")
+    if not isinstance(model_id, str) or not model_id.strip():
+        raise ModelCacheError("model_id is required", "E_INVALID_PARAMS")
+
+    manager = get_cache_manager()
+    manifest_path = _resolve_manifest_path_for_model(model_id)
+    manifest = manager.load_manifest(manifest_path)
+
+    with _install_lock:
+        if _install_thread is not None and _install_thread.is_alive():
+            return {
+                "model_id": _install_model_id or manifest.model_id,
+                "revision": manifest.revision,
+                "status": "installing",
+                "progress": manager.progress.to_dict(),
+            }
+
+        _install_model_id = manifest.model_id
+        _install_thread = threading.Thread(
+            target=_run_model_install,
+            args=(manager, manifest),
+            daemon=True,
+        )
+        _install_thread.start()
+
+    return {
+        "model_id": manifest.model_id,
+        "revision": manifest.revision,
+        "status": "installing",
+    }
 
 
 def handle_model_purge_cache(request: Request) -> dict[str, Any]:

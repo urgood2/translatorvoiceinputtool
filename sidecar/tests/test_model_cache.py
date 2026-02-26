@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import openvoicy_sidecar.model_cache as model_cache
 from openvoicy_sidecar.model_cache import (
     DOWNLOAD_CHUNK_SIZE,
     CacheCorruptError,
@@ -21,6 +22,7 @@ from openvoicy_sidecar.model_cache import (
     DiskFullError,
     DownloadProgress,
     LockError,
+    ModelCacheError,
     ModelCacheManager,
     ModelFileInfo,
     ModelInUseError,
@@ -34,9 +36,11 @@ from openvoicy_sidecar.model_cache import (
     download_with_mirrors,
     format_bytes,
     get_cache_directory,
+    handle_model_install,
     verify_file,
     verify_manifest,
 )
+from openvoicy_sidecar.protocol import Request
 
 
 # === Fixtures ===
@@ -618,3 +622,211 @@ class TestModelCacheIntegration:
         # Both should succeed (second one waits for lock)
         # OR second finds cache already populated
         assert "success" in results["manager1"] or "error" not in results["manager1"]
+
+    def test_interrupted_download_keeps_partial_staging(self, temp_cache_dir, sample_manifest):
+        """Should preserve .partial staging on interruption for resume support."""
+        manager = ModelCacheManager()
+
+        def interrupted_download(file_info, dest, callback):
+            dest.write_bytes(b"x" * min(file_info.size_bytes, 128))
+            raise NetworkError("connection dropped", file_info.primary_url)
+
+        with patch("openvoicy_sidecar.model_cache.download_with_mirrors", side_effect=interrupted_download):
+            with pytest.raises(NetworkError):
+                manager.download_model(sample_manifest)
+
+        partial_dir = temp_cache_dir / ".partial" / sample_manifest.model_id
+        assert partial_dir.exists()
+        assert (partial_dir / "manifest.json").exists()
+        assert (partial_dir / "model.bin").exists()
+
+    def test_resume_reuses_verified_staged_files(self, temp_cache_dir):
+        """Should skip re-downloading files already valid in .partial staging."""
+        manager = ModelCacheManager()
+        manifest = ModelManifest(
+            model_id="resume-model",
+            revision="r1",
+            display_name="Resume Model",
+            total_size_bytes=7,
+            files=[
+                ModelFileInfo(
+                    path="model.bin",
+                    size_bytes=4,
+                    sha256="",
+                    primary_url="http://example.com/model.bin",
+                ),
+                ModelFileInfo(
+                    path="config.json",
+                    size_bytes=3,
+                    sha256="",
+                    primary_url="http://example.com/config.json",
+                ),
+            ],
+        )
+
+        partial_dir = temp_cache_dir / ".partial" / manifest.model_id
+        partial_dir.mkdir(parents=True)
+        (partial_dir / "model.bin").write_bytes(b"xxxx")
+
+        downloaded_paths: list[str] = []
+
+        def mock_download(file_info, dest, callback):
+            downloaded_paths.append(file_info.path)
+            if file_info.path == "config.json":
+                dest.write_bytes(b"cfg")
+            else:
+                dest.write_bytes(b"xxxx")
+
+        with patch("openvoicy_sidecar.model_cache.download_with_mirrors", side_effect=mock_download):
+            model_dir = manager.download_model(manifest)
+
+        assert downloaded_paths == ["config.json"]
+        assert model_dir == temp_cache_dir / manifest.model_id
+        assert (model_dir / "model.bin").read_bytes() == b"xxxx"
+        assert (model_dir / "config.json").read_bytes() == b"cfg"
+        assert not partial_dir.exists()
+
+
+class _FakeThread:
+    def __init__(self, target=None, args=(), daemon=False):
+        self._target = target
+        self._args = args
+        self.daemon = daemon
+        self.started = False
+        self._alive = True
+
+    def start(self):
+        self.started = True
+        # Do not execute target; keep deterministic for handler tests.
+
+    def is_alive(self):
+        return self._alive
+
+
+class _AliveThread:
+    def is_alive(self):
+        return True
+
+
+class TestModelInstallHandler:
+    @pytest.fixture(autouse=True)
+    def _reset_install_globals(self):
+        model_cache._install_thread = None
+        model_cache._install_model_id = None
+        yield
+        model_cache._install_thread = None
+        model_cache._install_model_id = None
+
+    def test_requires_model_id(self):
+        request = Request(method="model.install", id=1, params={})
+
+        with pytest.raises(ModelCacheError) as exc_info:
+            handle_model_install(request)
+
+        assert exc_info.value.code == "E_INVALID_PARAMS"
+
+    def test_resolves_manifest_from_catalog(self, tmp_path):
+        shared = tmp_path / "shared"
+        model_dir = shared / "model"
+        manifests = model_dir / "manifests"
+        manifests.mkdir(parents=True)
+        manifest_path = manifests / "parakeet-tdt-0.6b-v3.json"
+        manifest_path.write_text('{"model_id":"parakeet-tdt-0.6b-v3","revision":"r1","files":[]}')
+        (model_dir / "MODEL_CATALOG.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "models": [
+                        {
+                            "model_id": "nvidia/parakeet-tdt-0.6b-v3",
+                            "manifest_path": "manifests/parakeet-tdt-0.6b-v3.json",
+                        }
+                    ],
+                }
+            )
+        )
+
+        with patch.dict(os.environ, {"OPENVOICY_SHARED_ROOT": str(shared)}):
+            resolved = model_cache._resolve_manifest_path_for_model("nvidia/parakeet-tdt-0.6b-v3")
+
+        assert resolved == manifest_path
+
+    def test_returns_installing_and_starts_background_thread(self):
+        manifest = ModelManifest(
+            model_id="parakeet-tdt-0.6b-v3",
+            revision="rev-1",
+            display_name="Parakeet",
+            total_size_bytes=123,
+            files=[],
+        )
+
+        manager = MagicMock()
+        manager.load_manifest.return_value = manifest
+        manager.progress.to_dict.return_value = {
+            "current": 0,
+            "total": 123,
+            "unit": "bytes",
+            "current_file": "",
+            "files_completed": 0,
+            "files_total": 0,
+        }
+
+        with (
+            patch("openvoicy_sidecar.model_cache._resolve_manifest_path_for_model", return_value=Path("/tmp/manifest.json")),
+            patch("openvoicy_sidecar.model_cache.get_cache_manager", return_value=manager),
+            patch("openvoicy_sidecar.model_cache.threading.Thread", _FakeThread),
+        ):
+            # Ensure deterministic global state for this test.
+            model_cache._install_thread = None
+            model_cache._install_model_id = None
+
+            request = Request(
+                method="model.install",
+                id=1,
+                params={"model_id": "nvidia/parakeet-tdt-0.6b-v3"},
+            )
+            result = handle_model_install(request)
+
+        assert result["status"] == "installing"
+        assert result["model_id"] == "parakeet-tdt-0.6b-v3"
+        assert result["revision"] == "rev-1"
+        assert model_cache._install_thread is not None
+        assert model_cache._install_thread.started is True
+
+    def test_idempotent_when_already_installing(self):
+        manifest = ModelManifest(
+            model_id="parakeet-tdt-0.6b-v3",
+            revision="rev-2",
+            display_name="Parakeet",
+            total_size_bytes=321,
+            files=[],
+        )
+        manager = MagicMock()
+        manager.load_manifest.return_value = manifest
+        manager.progress.to_dict.return_value = {
+            "current": 42,
+            "total": 321,
+            "unit": "bytes",
+            "current_file": "model.nemo",
+            "files_completed": 0,
+            "files_total": 1,
+        }
+
+        with (
+            patch("openvoicy_sidecar.model_cache._resolve_manifest_path_for_model", return_value=Path("/tmp/manifest.json")),
+            patch("openvoicy_sidecar.model_cache.get_cache_manager", return_value=manager),
+        ):
+            model_cache._install_thread = _AliveThread()
+            model_cache._install_model_id = "parakeet-tdt-0.6b-v3"
+
+            request = Request(
+                method="model.install",
+                id=2,
+                params={"model_id": "nvidia/parakeet-tdt-0.6b-v3"},
+            )
+            result = handle_model_install(request)
+
+        assert result["status"] == "installing"
+        assert result["model_id"] == "parakeet-tdt-0.6b-v3"
+        assert "progress" in result
+        assert result["progress"]["current"] == 42

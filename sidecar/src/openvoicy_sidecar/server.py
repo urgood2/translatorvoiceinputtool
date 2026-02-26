@@ -44,6 +44,7 @@ from .model_cache import (
     NetworkError,
     handle_model_download,
     handle_model_get_status,
+    handle_model_install,
     handle_model_purge_cache,
 )
 from .notifications import get_session_tracker
@@ -240,6 +241,7 @@ HANDLERS: dict[str, Any] = {
     "replacements.preview": handle_replacements_preview,
     "model.get_status": handle_model_get_status,
     "model.download": handle_model_download,
+    "model.install": handle_model_install,
     "model.purge_cache": handle_model_purge_cache,
     "asr.initialize": handle_asr_initialize,
     "asr.status": handle_asr_status,
