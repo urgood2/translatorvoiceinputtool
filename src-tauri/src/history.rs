@@ -15,6 +15,8 @@ use std::sync::RwLock;
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::history_persistence::HistoryPersistence;
+
 /// Default maximum history size.
 const DEFAULT_MAX_SIZE: usize = 100;
 const CSV_UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
@@ -190,6 +192,7 @@ impl TranscriptEntry {
 pub struct TranscriptHistory {
     entries: RwLock<VecDeque<TranscriptEntry>>,
     max_size: AtomicUsize,
+    persistence: Option<Box<dyn HistoryPersistence>>,
 }
 
 impl Default for TranscriptHistory {
@@ -201,15 +204,60 @@ impl Default for TranscriptHistory {
 impl TranscriptHistory {
     /// Create a new history with default max size (100).
     pub fn new() -> Self {
-        Self::with_capacity(DEFAULT_MAX_SIZE)
+        Self::with_capacity_and_persistence(DEFAULT_MAX_SIZE, None)
     }
 
     /// Create a new history with a specific max size.
     pub fn with_capacity(max_size: usize) -> Self {
+        Self::with_capacity_and_persistence(max_size, None)
+    }
+
+    /// Create a new history with a specific max size and persistence backend.
+    pub fn with_capacity_and_persistence(
+        max_size: usize,
+        persistence: Option<Box<dyn HistoryPersistence>>,
+    ) -> Self {
         let max_size = max_size.max(1);
+        let mut loaded_entries = persistence
+            .as_ref()
+            .map(|storage| match storage.load() {
+                Ok(entries) => entries,
+                Err(error) => {
+                    log::warn!("Failed to load transcript history from persistence: {error}");
+                    Vec::new()
+                }
+            })
+            .unwrap_or_default();
+
+        if loaded_entries.len() > max_size {
+            loaded_entries = loaded_entries.split_off(loaded_entries.len() - max_size);
+        }
+
+        let mut entries = VecDeque::with_capacity(max_size);
+        for entry in loaded_entries {
+            entries.push_back(entry);
+        }
+
         Self {
-            entries: RwLock::new(VecDeque::with_capacity(max_size)),
+            entries: RwLock::new(entries),
             max_size: AtomicUsize::new(max_size),
+            persistence,
+        }
+    }
+
+    fn persist_snapshot(&self, snapshot: &[TranscriptEntry]) {
+        if let Some(persistence) = self.persistence.as_ref() {
+            if let Err(error) = persistence.save(snapshot) {
+                log::warn!("Failed to persist transcript history snapshot: {error}");
+            }
+        }
+    }
+
+    fn purge_persistence(&self) {
+        if let Some(persistence) = self.persistence.as_ref() {
+            if let Err(error) = persistence.purge() {
+                log::warn!("Failed to purge transcript history persistence: {error}");
+            }
         }
     }
 
@@ -217,12 +265,16 @@ impl TranscriptHistory {
     ///
     /// If the history is full, the oldest entry is removed.
     pub fn push(&self, entry: TranscriptEntry) {
-        let mut entries = self.entries.write().unwrap();
-        let max_size = self.max_size.load(Ordering::Relaxed);
-        if entries.len() >= max_size {
-            entries.pop_front();
-        }
-        entries.push_back(entry);
+        let snapshot = {
+            let mut entries = self.entries.write().unwrap();
+            let max_size = self.max_size.load(Ordering::Relaxed);
+            if entries.len() >= max_size {
+                entries.pop_front();
+            }
+            entries.push_back(entry);
+            entries.iter().cloned().collect::<Vec<_>>()
+        };
+        self.persist_snapshot(&snapshot);
     }
 
     /// Resize the maximum retained entries.
@@ -235,18 +287,23 @@ impl TranscriptHistory {
             return;
         }
 
-        let mut entries = self.entries.write().unwrap();
-        let before = entries.len();
-        while entries.len() > new_max_size {
-            entries.pop_front();
-        }
-        let removed = before.saturating_sub(entries.len());
+        let (removed, snapshot) = {
+            let mut entries = self.entries.write().unwrap();
+            let before = entries.len();
+            while entries.len() > new_max_size {
+                entries.pop_front();
+            }
+            let removed = before.saturating_sub(entries.len());
+            let snapshot = entries.iter().cloned().collect::<Vec<_>>();
+            (removed, snapshot)
+        };
         log::info!(
             "Resized transcript history max entries: {} -> {} (removed {} old entries)",
             previous_max,
             new_max_size,
             removed
         );
+        self.persist_snapshot(&snapshot);
     }
 
     /// Current configured max entries.
@@ -285,8 +342,11 @@ impl TranscriptHistory {
 
     /// Clear all entries from the history.
     pub fn clear(&self) {
-        let mut entries = self.entries.write().unwrap();
-        entries.clear();
+        {
+            let mut entries = self.entries.write().unwrap();
+            entries.clear();
+        }
+        self.purge_persistence();
     }
 
     /// Get the text of the most recent transcript.
@@ -523,7 +583,49 @@ fn csv_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::history_persistence::{HistoryPersistence, PersistenceError};
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
+
+    struct MockPersistenceCore {
+        loaded_entries: Vec<TranscriptEntry>,
+        saved_snapshots: Mutex<Vec<Vec<TranscriptEntry>>>,
+        purge_calls: AtomicUsize,
+    }
+
+    impl MockPersistenceCore {
+        fn with_loaded_entries(loaded_entries: Vec<TranscriptEntry>) -> Self {
+            Self {
+                loaded_entries,
+                saved_snapshots: Mutex::new(Vec::new()),
+                purge_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    struct SharedMockPersistence(Arc<MockPersistenceCore>);
+
+    impl HistoryPersistence for SharedMockPersistence {
+        fn save(&self, entries: &[TranscriptEntry]) -> Result<(), PersistenceError> {
+            let mut snapshots = self.0.saved_snapshots.lock().unwrap();
+            snapshots.push(entries.to_vec());
+            Ok(())
+        }
+
+        fn load(&self) -> Result<Vec<TranscriptEntry>, PersistenceError> {
+            Ok(self.0.loaded_entries.clone())
+        }
+
+        fn purge(&self) -> Result<(), PersistenceError> {
+            self.0.purge_calls.fetch_add(1, AtomicOrdering::Relaxed);
+            Ok(())
+        }
+
+        fn entry_count(&self) -> Result<usize, PersistenceError> {
+            Ok(self.0.loaded_entries.len())
+        }
+    }
 
     #[test]
     fn test_new_history_is_empty() {
@@ -923,7 +1025,6 @@ mod tests {
 
     #[test]
     fn test_thread_safety() {
-        use std::sync::Arc;
         use std::thread;
 
         let history = Arc::new(TranscriptHistory::with_capacity(100));
@@ -951,5 +1052,88 @@ mod tests {
 
         // All 100 entries should have been added
         assert_eq!(history.len(), 100);
+    }
+
+    #[test]
+    fn test_history_loads_entries_from_persistence_on_startup() {
+        let loaded = vec![
+            TranscriptEntry::new(
+                "oldest".to_string(),
+                1000,
+                100,
+                HistoryInjectionResult::Injected,
+            ),
+            TranscriptEntry::new(
+                "middle".to_string(),
+                1000,
+                100,
+                HistoryInjectionResult::Injected,
+            ),
+            TranscriptEntry::new(
+                "newest".to_string(),
+                1000,
+                100,
+                HistoryInjectionResult::Injected,
+            ),
+        ];
+
+        let persistence = Arc::new(MockPersistenceCore::with_loaded_entries(loaded));
+        let history = TranscriptHistory::with_capacity_and_persistence(
+            2,
+            Some(Box::new(SharedMockPersistence(Arc::clone(&persistence)))),
+        );
+
+        let entries = history.all();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].text, "newest");
+        assert_eq!(entries[1].text, "middle");
+    }
+
+    #[test]
+    fn test_history_push_persists_snapshot() {
+        let persistence = Arc::new(MockPersistenceCore::with_loaded_entries(Vec::new()));
+        let history = TranscriptHistory::with_capacity_and_persistence(
+            3,
+            Some(Box::new(SharedMockPersistence(Arc::clone(&persistence)))),
+        );
+
+        history.push(TranscriptEntry::new(
+            "first".to_string(),
+            1000,
+            100,
+            HistoryInjectionResult::Injected,
+        ));
+        history.push(TranscriptEntry::new(
+            "second".to_string(),
+            1000,
+            100,
+            HistoryInjectionResult::Injected,
+        ));
+
+        let snapshots = persistence.saved_snapshots.lock().unwrap();
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots[0].len(), 1);
+        assert_eq!(snapshots[1].len(), 2);
+        assert_eq!(snapshots[1][0].text, "first");
+        assert_eq!(snapshots[1][1].text, "second");
+    }
+
+    #[test]
+    fn test_history_clear_purges_persistence() {
+        let persistence = Arc::new(MockPersistenceCore::with_loaded_entries(Vec::new()));
+        let history = TranscriptHistory::with_capacity_and_persistence(
+            3,
+            Some(Box::new(SharedMockPersistence(Arc::clone(&persistence)))),
+        );
+        history.push(TranscriptEntry::new(
+            "entry".to_string(),
+            1000,
+            100,
+            HistoryInjectionResult::Injected,
+        ));
+
+        history.clear();
+        assert_eq!(history.len(), 0);
+        assert_eq!(persistence.purge_calls.load(AtomicOrdering::Relaxed), 1);
     }
 }
