@@ -1705,22 +1705,24 @@ impl IntegrationManager {
         if affects_configured_model {
             *self.model_status.write().await = ModelStatus::Missing;
             self.recording_controller.set_model_ready(false).await;
-            // Emit global model status only when the purge impacts configured model.
-            Self::emit_model_status_with_details(
-                &self.app_handle,
-                ModelStatus::Missing,
-                &self.event_seq,
-                Some(
-                    purge_model_id
-                        .as_ref()
-                        .cloned()
-                        .unwrap_or(configured_model_id),
-                ),
-                None,
-                None,
-                None,
-            );
         }
+
+        // Always emit model:status for the purged model so UI consumers can
+        // track cache state for any model, not just the configured one.
+        Self::emit_model_status_with_details(
+            &self.app_handle,
+            ModelStatus::Missing,
+            &self.event_seq,
+            Some(
+                purge_model_id
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or(configured_model_id),
+            ),
+            None,
+            None,
+            None,
+        );
 
         log::info!(
             "Model cache purged{}",
@@ -4244,14 +4246,14 @@ mod tests {
         ));
     }
 
-    /// Regression test: purging an unrelated model must NOT trigger model status
-    /// event emission. This prevents the UI from briefly flashing "Not Installed"
-    /// for the configured model when a different model's cache is cleared.
+    /// Purging an unrelated model must NOT update global model state or
+    /// recording readiness. The model:status event IS still emitted (for the
+    /// purged model) so UI consumers can observe cache transitions, but the
+    /// configured model's internal status stays untouched.
     #[test]
-    fn test_purge_unrelated_model_suppresses_status_event() {
-        // The guard condition in purge_model_cache checks purge_affects_configured_model
-        // and only emits model:status / sets ModelStatus::Missing when it returns true.
-        // For unrelated purges, the function returns false and no event is emitted.
+    fn test_purge_unrelated_model_does_not_affect_configured_state() {
+        // purge_affects_configured_model gates global-state mutation only;
+        // event emission is unconditional since bug 10l6.
         let configured = "nvidia/parakeet-tdt-0.6b-v3";
 
         // Purging a completely different model should not affect configured model status
@@ -4270,6 +4272,29 @@ mod tests {
         ));
         // None (purge all) should affect status
         assert!(purge_affects_configured_model(None, configured));
+    }
+
+    /// Regression (10l6): purging a non-configured model must still produce a
+    /// model:status payload targeting the purged model ID so UI consumers can
+    /// observe cache transitions for any model.
+    #[test]
+    fn test_purge_non_configured_model_event_payload_carries_purged_model_id() {
+        let purged = "openai/whisper-large";
+        let configured = "nvidia/parakeet-tdt-0.6b-v3";
+
+        // The purge does not affect global state…
+        assert!(!purge_affects_configured_model(Some(purged), configured));
+
+        // …but the event payload must carry the purged model's ID.
+        let payload = model_status_event_payload(
+            ModelStatus::Missing,
+            Some(purged.to_string()),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(payload.model_id, purged);
+        assert_eq!(payload.status, "missing");
     }
 
     #[test]
