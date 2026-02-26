@@ -124,6 +124,11 @@ run_test() {
             echo -e "${GREEN}PASS${NC} (${duration}s)"
             ((TESTS_PASSED++)) || true
             ;;
+        77)
+            RESULTS[$name]="SKIP"
+            echo -e "${YELLOW}SKIP${NC} (not supported on this host)"
+            ((TESTS_SKIPPED++)) || true
+            ;;
         1)
             RESULTS[$name]="FAIL"
             echo -e "${RED}FAIL${NC} (${duration}s)"
@@ -180,6 +185,7 @@ if [ "$PARALLEL" = true ]; then
             case $exit_code in
                 1) RESULTS[$name]="FAIL"; ((TESTS_FAILED++)) || true ;;
                 2) RESULTS[$name]="SKIP"; ((TESTS_SKIPPED++)) || true ;;
+                77) RESULTS[$name]="SKIP"; ((TESTS_SKIPPED++)) || true ;;
                 3) RESULTS[$name]="TIMEOUT"; ((TESTS_FAILED++)) || true ;;
                 *) RESULTS[$name]="ERROR:$exit_code"; ((TESTS_FAILED++)) || true ;;
             esac
