@@ -92,6 +92,45 @@ describe('ModelSettings', () => {
     expect(screen.getByText(/1 KB/)).toBeDefined();
   });
 
+  test('shows download speed and ETA when progress advances over time', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      const { rerender } = render(
+        <ModelSettings
+          status={makeStatus({
+            status: 'downloading',
+            progress: { current: 0, total: 1000, unit: 'bytes' },
+          })}
+          onDownload={vi.fn()}
+          onPurgeCache={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByText(/Speed:/)).toBeNull();
+      expect(screen.queryByText(/ETA:/)).toBeNull();
+
+      vi.setSystemTime(new Date('2026-01-01T00:00:02.000Z'));
+      await act(async () => {
+        rerender(
+          <ModelSettings
+            status={makeStatus({
+              status: 'downloading',
+              progress: { current: 500, total: 1000, unit: 'bytes' },
+            })}
+            onDownload={vi.fn()}
+            onPurgeCache={vi.fn()}
+          />
+        );
+      });
+
+      expect(screen.getByText('Speed: 250 B/s')).toBeDefined();
+      expect(screen.getByText('ETA: 2s')).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('loads model catalog and renders model cards', async () => {
     vi.mocked(invoke).mockImplementation((cmd: string) => {
       if (cmd === 'get_model_catalog') {

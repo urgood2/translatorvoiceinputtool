@@ -8,7 +8,7 @@
  * - Model info (ID, revision, size)
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { AppConfig, ModelCatalogEntry, ModelStatus, ModelState, Progress } from '../../types';
 
@@ -58,6 +58,34 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
+function formatProgressValue(value: number, unit: string): string {
+  const normalizedUnit = unit.trim().toLowerCase();
+  if (normalizedUnit === 'bytes' || normalizedUnit === 'byte') {
+    return formatBytes(value);
+  }
+
+  return unit.length > 0 ? `${value} ${unit}` : String(value);
+}
+
+function formatEta(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return '<1s';
+  }
+
+  const rounded = Math.round(seconds);
+  if (rounded < 60) return `${rounded}s`;
+
+  const minutes = Math.floor(rounded / 60);
+  const remainingSeconds = rounded % 60;
+  if (minutes < 60) {
+    return remainingSeconds === 0 ? `${minutes}m` : `${minutes}m ${remainingSeconds}s`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes === 0 ? `${hours}h` : `${hours}h ${remainingMinutes}m`;
+}
+
 /** Get status configuration for display. */
 function getStatusConfig(state: ModelState): { color: string; icon: string; label: string } {
   switch (state) {
@@ -83,9 +111,53 @@ function getStatusConfig(state: ModelState): { color: string; icon: string; labe
 
 /** Progress bar component. */
 function ProgressBar({ progress }: { progress: Progress }) {
+  const sampleRef = useRef<{ bytes: number; atMs: number } | null>(null);
+  const [bytesPerSecond, setBytesPerSecond] = useState<number | null>(null);
   const percentage = progress.total
     ? Math.round((progress.current / progress.total) * 100)
     : 0;
+  const normalizedUnit = progress.unit.trim().toLowerCase();
+  const isByteProgress = normalizedUnit === 'bytes' || normalizedUnit === 'byte';
+
+  useEffect(() => {
+    if (!isByteProgress) {
+      sampleRef.current = null;
+      setBytesPerSecond(null);
+      return;
+    }
+
+    const nowMs = Date.now();
+    const previous = sampleRef.current;
+    if (previous) {
+      if (progress.current < previous.bytes) {
+        // New transfer session or reset; discard prior throughput sample.
+        setBytesPerSecond(null);
+      } else if (progress.current > previous.bytes && nowMs > previous.atMs) {
+        const deltaBytes = progress.current - previous.bytes;
+        const deltaSeconds = (nowMs - previous.atMs) / 1000;
+        if (deltaBytes > 0 && deltaSeconds > 0) {
+          const instantaneous = deltaBytes / deltaSeconds;
+          setBytesPerSecond((prior) => (prior && prior > 0 ? (prior * 0.7) + (instantaneous * 0.3) : instantaneous));
+        }
+      }
+    }
+
+    sampleRef.current = { bytes: progress.current, atMs: nowMs };
+  }, [isByteProgress, progress.current]);
+
+  const etaSeconds = useMemo(() => {
+    if (
+      !isByteProgress
+      || !bytesPerSecond
+      || bytesPerSecond <= 0
+      || typeof progress.total !== 'number'
+      || progress.total <= progress.current
+    ) {
+      return null;
+    }
+
+    return (progress.total - progress.current) / bytesPerSecond;
+  }, [bytesPerSecond, isByteProgress, progress.current, progress.total]);
 
   return (
     <div className="space-y-2" aria-live="polite">
@@ -104,11 +176,21 @@ function ProgressBar({ progress }: { progress: Progress }) {
       </div>
       <div className="flex justify-between text-sm text-gray-600 dark:text-gray-400">
         <span>
-          {formatBytes(progress.current)}
-          {progress.total ? ` / ${formatBytes(progress.total)}` : ''}
+          {formatProgressValue(progress.current, progress.unit)}
+          {progress.total ? ` / ${formatProgressValue(progress.total, progress.unit)}` : ''}
         </span>
         <span>{percentage}%</span>
       </div>
+      {(bytesPerSecond || etaSeconds) && (
+        <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400">
+          <span>
+            {bytesPerSecond ? `Speed: ${formatBytes(bytesPerSecond)}/s` : ''}
+          </span>
+          <span>
+            {etaSeconds ? `ETA: ${formatEta(etaSeconds)}` : ''}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
