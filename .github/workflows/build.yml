@@ -132,7 +132,7 @@ jobs:
           cache: 'npm'
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -148,7 +148,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          args: --target ${{ matrix.target == 'macos-arm64' && 'aarch64-apple-darwin' || '' }}
+          args: ${{ matrix.target == 'macos-arm64' && '--target aarch64-apple-darwin' || '' }}
 
       - name: Generate app manifest
         shell: bash
