@@ -37,7 +37,7 @@ fn sidecar_contract_declares_asr_initialize_language_param() {
     let raw = fs::read_to_string(contract_path).expect("contract should be readable");
     let contract: Value = serde_json::from_str(&raw).expect("contract should parse");
     let methods = contract
-        .get("methods")
+        .get("items")
         .and_then(Value::as_array)
         .expect("contract methods should be array");
 

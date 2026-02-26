@@ -316,6 +316,10 @@ fn asr_initialize_params(model_id: &str, device_pref: &str, language: Option<&st
 fn asr_initialize_language_rejected(error: &RpcError) -> bool {
     match error {
         RpcError::Remote { kind, message, .. } => {
+            if kind.eq_ignore_ascii_case("E_METHOD_NOT_FOUND") {
+                return true;
+            }
+
             let kind_matches = kind.is_empty()
                 || kind.eq_ignore_ascii_case("E_INVALID_PARAMS")
                 || kind.eq_ignore_ascii_case("E_INVALID");
@@ -5207,6 +5211,17 @@ for raw in sys.stdin:
             code: -32602,
             kind: "E_INVALID_PARAMS".to_string(),
             message: "Invalid params: unknown field 'language'".to_string(),
+        };
+
+        assert!(asr_initialize_language_rejected(&error));
+    }
+
+    #[test]
+    fn test_asr_initialize_language_rejected_detects_method_not_found_for_compatibility_retry() {
+        let error = RpcError::Remote {
+            code: -32601,
+            kind: "E_METHOD_NOT_FOUND".to_string(),
+            message: "Method not found".to_string(),
         };
 
         assert!(asr_initialize_language_rejected(&error));
