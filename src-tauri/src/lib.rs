@@ -33,7 +33,7 @@ mod tray;
 mod watchdog;
 
 use history::TranscriptHistory;
-use history_persistence::{EncryptionProvider, JsonlPersistence, NullPersistence};
+use history_persistence::build_history_persistence;
 use integration::IntegrationManager;
 use state::AppStateManager;
 
@@ -55,51 +55,17 @@ pub fn run() {
     ))));
     let initial_config = config::load_config();
     let history_max_entries = initial_config.history.max_entries as usize;
-    let transcript_history = if initial_config.history.persistence_mode == "disk" {
-        let history_file = config::config_dir().join("history.jsonl");
-        if initial_config.history.encrypt_at_rest {
-            match EncryptionProvider::from_keychain() {
-                Ok(encryption) => TranscriptHistory::with_capacity_and_persistence(
-                    history_max_entries,
-                    Some(Box::new(JsonlPersistence::new(
-                        history_file,
-                        Some(encryption),
-                        history_max_entries,
-                    ))),
-                ),
-                Err(error) => {
-                    log::warn!(
-                        "History encryption requested but keychain is unavailable ({}). \
-                        Falling back to memory-only history for privacy. \
-                        Set history.encrypt_at_rest=false to explicitly allow unencrypted disk persistence.",
-                        error
-                    );
-                    TranscriptHistory::with_capacity_and_persistence(
-                        history_max_entries,
-                        Some(Box::new(NullPersistence)),
-                    )
-                }
-            }
-        } else {
-            log::warn!(
-                "History disk persistence is explicitly configured without encryption \
-                (history.encrypt_at_rest=false)."
-            );
-            TranscriptHistory::with_capacity_and_persistence(
-                history_max_entries,
-                Some(Box::new(JsonlPersistence::new(
-                    history_file,
-                    None,
-                    history_max_entries,
-                ))),
-            )
-        }
-    } else {
-        TranscriptHistory::with_capacity_and_persistence(
-            history_max_entries,
-            Some(Box::new(NullPersistence)),
-        )
-    };
+    let history_file = config::config_dir().join("history.jsonl");
+    let history_persistence = build_history_persistence(
+        history_file,
+        history_max_entries,
+        &initial_config.history.persistence_mode,
+        initial_config.history.encrypt_at_rest,
+    );
+    let transcript_history = TranscriptHistory::with_capacity_and_persistence(
+        history_max_entries,
+        Some(history_persistence),
+    );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())

@@ -53,6 +53,35 @@ pub trait HistoryPersistence: Send + Sync {
     fn entry_count(&self) -> Result<usize, PersistenceError>;
 }
 
+/// Effective persistence policy after applying config gates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryPersistencePolicy {
+    MemoryOnly,
+    DiskPlaintext,
+    DiskEncrypted,
+}
+
+/// Resolve effective persistence policy from config flags and keychain availability.
+pub fn resolve_history_persistence_policy(
+    persistence_mode: &str,
+    encrypt_at_rest: bool,
+    keychain_available: bool,
+) -> HistoryPersistencePolicy {
+    if persistence_mode != "disk" {
+        return HistoryPersistencePolicy::MemoryOnly;
+    }
+
+    if !encrypt_at_rest {
+        return HistoryPersistencePolicy::DiskPlaintext;
+    }
+
+    if keychain_available {
+        HistoryPersistencePolicy::DiskEncrypted
+    } else {
+        HistoryPersistencePolicy::MemoryOnly
+    }
+}
+
 /// Keychain-backed encryption provider.
 #[derive(Debug, Clone)]
 pub struct EncryptionProvider {
@@ -414,6 +443,48 @@ impl HistoryPersistence for NullPersistence {
     }
 }
 
+/// Build the history persistence backend from config gating rules.
+///
+/// - `persistence_mode != "disk"` always returns memory-only persistence.
+/// - `persistence_mode == "disk" && encrypt_at_rest == false` returns plaintext JSONL.
+/// - `persistence_mode == "disk" && encrypt_at_rest == true` returns encrypted JSONL
+///   when keychain is available; otherwise falls back to memory-only mode.
+pub fn build_history_persistence(
+    history_path: PathBuf,
+    max_entries: usize,
+    persistence_mode: &str,
+    encrypt_at_rest: bool,
+) -> Box<dyn HistoryPersistence> {
+    if persistence_mode != "disk" {
+        return Box::new(NullPersistence);
+    }
+
+    if !encrypt_at_rest {
+        log::warn!(
+            "History disk persistence is explicitly configured without encryption \
+            (history.encrypt_at_rest=false)."
+        );
+        return Box::new(JsonlPersistence::new(history_path, None, max_entries));
+    }
+
+    match EncryptionProvider::from_keychain() {
+        Ok(encryption) => Box::new(JsonlPersistence::new(
+            history_path,
+            Some(encryption),
+            max_entries,
+        )),
+        Err(error) => {
+            log::warn!(
+                "History encryption requested but keychain is unavailable ({}). \
+                Falling back to memory-only history for privacy. \
+                Set history.encrypt_at_rest=false to explicitly allow unencrypted disk persistence.",
+                error
+            );
+            Box::new(NullPersistence)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -428,6 +499,42 @@ mod tests {
             200,
             HistoryInjectionResult::Injected,
         )
+    }
+
+    #[test]
+    fn resolve_policy_memory_mode_ignores_encrypt_flag() {
+        assert_eq!(
+            resolve_history_persistence_policy("memory", true, true),
+            HistoryPersistencePolicy::MemoryOnly
+        );
+        assert_eq!(
+            resolve_history_persistence_policy("memory", false, false),
+            HistoryPersistencePolicy::MemoryOnly
+        );
+    }
+
+    #[test]
+    fn resolve_policy_disk_without_encryption_uses_plaintext() {
+        assert_eq!(
+            resolve_history_persistence_policy("disk", false, false),
+            HistoryPersistencePolicy::DiskPlaintext
+        );
+        assert_eq!(
+            resolve_history_persistence_policy("disk", false, true),
+            HistoryPersistencePolicy::DiskPlaintext
+        );
+    }
+
+    #[test]
+    fn resolve_policy_disk_with_encryption_requires_keychain() {
+        assert_eq!(
+            resolve_history_persistence_policy("disk", true, true),
+            HistoryPersistencePolicy::DiskEncrypted
+        );
+        assert_eq!(
+            resolve_history_persistence_policy("disk", true, false),
+            HistoryPersistencePolicy::MemoryOnly
+        );
     }
 
     #[test]
