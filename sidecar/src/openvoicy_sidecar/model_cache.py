@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import platform
+import errno
 import re
 import shutil
 import threading
@@ -51,6 +52,10 @@ HASH_CHUNK_SIZE = 65536
 DISK_SPACE_BUFFER = 1.1  # 10% buffer
 MODEL_PROGRESS_MIN_INTERVAL_SECONDS = 1.0
 MODEL_PROGRESS_PERCENT_STEP = 1
+NETWORK_RETRY_MAX_ATTEMPTS = 3
+NETWORK_RETRY_INITIAL_BACKOFF_SECONDS = 0.5
+NETWORK_RETRY_BACKOFF_MULTIPLIER = 2.0
+NETWORK_RETRY_MAX_BACKOFF_SECONDS = 8.0
 
 TRUSTED_HF_HOSTS = ("huggingface.co", "hf.co")
 
@@ -300,6 +305,15 @@ def _cleanup_partial_file(file_path: Path) -> None:
         pass
 
 
+def _cleanup_partial_dir(dir_path: Path) -> None:
+    """Remove a staged partial directory, best-effort."""
+    try:
+        if dir_path.exists():
+            shutil.rmtree(dir_path)
+    except OSError:
+        pass
+
+
 def _hash_mismatch_details(
     *,
     expected_sha256: str,
@@ -444,6 +458,39 @@ def check_disk_space(required_bytes: int) -> None:
 
     if free < needed:
         raise DiskFullError(needed, free)
+
+
+def _available_cache_bytes() -> int:
+    """Get currently available bytes in the model-cache filesystem."""
+    cache_dir = get_cache_directory()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    _, _, free = shutil.disk_usage(cache_dir)
+    return free
+
+
+def _raise_disk_full_from_os_error(
+    *,
+    error: OSError,
+    expected_size: int,
+    downloaded_bytes: int,
+) -> None:
+    """Translate ENOSPC failures into a structured DiskFullError."""
+    if error.errno != errno.ENOSPC:
+        raise error
+
+    required_bytes = (
+        max(1, expected_size - max(0, downloaded_bytes))
+        if expected_size > 0
+        else DOWNLOAD_CHUNK_SIZE
+    )
+    available_bytes = _available_cache_bytes()
+    raise DiskFullError(
+        required_bytes,
+        available_bytes,
+        "Insufficient disk space while downloading model files. "
+        f"required_bytes={required_bytes}, available_bytes={available_bytes}. "
+        "Run purge_model_cache to free space, then retry.",
+    ) from error
 
 
 # === Download Functions ===
@@ -614,17 +661,26 @@ def download_file(
                 else:
                     total = expected_size if expected_size > 0 else 0
 
+                downloaded = existing_size
+
                 # Download
-                with open(dest_path, mode) as f:
-                    downloaded = existing_size
-                    while True:
-                        chunk = response.read(DOWNLOAD_CHUNK_SIZE)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if progress_callback:
-                            progress_callback(downloaded, total)
+                try:
+                    with open(dest_path, mode) as f:
+                        while True:
+                            chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if progress_callback:
+                                progress_callback(downloaded, total)
+                except OSError as error:
+                    _raise_disk_full_from_os_error(
+                        error=error,
+                        expected_size=expected_size,
+                        downloaded_bytes=downloaded,
+                    )
+                    raise
 
                 # Additional post-download integrity check on final size.
                 if expected_size > 0:
@@ -639,6 +695,13 @@ def download_file(
             raise NetworkError(f"HTTP error {e.code}: {e.reason}", url)
         except urllib.error.URLError as e:
             raise NetworkError(f"URL error: {e.reason}", url)
+        except OSError as error:
+            _raise_disk_full_from_os_error(
+                error=error,
+                expected_size=expected_size,
+                downloaded_bytes=existing_size,
+            )
+            raise
 
     except ImportError:
         # Fallback if urllib not available (shouldn't happen)
@@ -689,7 +752,7 @@ def download_with_mirrors(
             successful download attempt. Raise to fail over to the next mirror.
 
     Raises:
-        ModelCacheError: If all mirrors fail.
+        ModelCacheError: If all mirrors fail after retries.
     """
     urls = [file_info.primary_url] + file_info.mirror_urls
     urls = [u for u in urls if u]  # Filter empty URLs
@@ -700,21 +763,49 @@ def download_with_mirrors(
     last_error: Optional[ModelCacheError] = None
 
     for idx, url in enumerate(urls, start=1):
-        try:
-            log(f"Downloading from mirror {idx}/{len(urls)}: {url}")
-            download_file(url, dest_path, file_info.size_bytes, progress_callback)
-            if verify_callback is not None:
-                verify_callback(url, dest_path)
-            log(f"Download succeeded from mirror {idx}/{len(urls)}: {url}")
-            return
-        except (NetworkError, CacheCorruptError) as e:
-            last_error = e
-            # Reset staged file before trying a different mirror source.
-            _cleanup_partial_file(dest_path)
-            log(
-                f"Download failed from mirror {idx}/{len(urls)}: {url}: "
-                f"{e.message}; trying next mirror"
-            )
+        attempt = 1
+        while attempt <= NETWORK_RETRY_MAX_ATTEMPTS:
+            try:
+                log(
+                    f"Downloading from mirror {idx}/{len(urls)} "
+                    f"(attempt {attempt}/{NETWORK_RETRY_MAX_ATTEMPTS}): {url}"
+                )
+                download_file(url, dest_path, file_info.size_bytes, progress_callback)
+                if verify_callback is not None:
+                    verify_callback(url, dest_path)
+                log(f"Download succeeded from mirror {idx}/{len(urls)}: {url}")
+                return
+            except NetworkError as e:
+                last_error = e
+                _cleanup_partial_file(dest_path)
+                if attempt >= NETWORK_RETRY_MAX_ATTEMPTS:
+                    log(
+                        f"Network error from mirror {idx}/{len(urls)} after "
+                        f"{attempt} attempts: {url}: {e.message}; trying next mirror"
+                    )
+                    break
+
+                backoff_seconds = min(
+                    NETWORK_RETRY_INITIAL_BACKOFF_SECONDS
+                    * (NETWORK_RETRY_BACKOFF_MULTIPLIER ** (attempt - 1)),
+                    NETWORK_RETRY_MAX_BACKOFF_SECONDS,
+                )
+                log(
+                    f"Network error from mirror {idx}/{len(urls)}: {url}: {e.message}; "
+                    f"retrying in {backoff_seconds:.2f}s"
+                )
+                time.sleep(backoff_seconds)
+                attempt += 1
+                continue
+            except CacheCorruptError as e:
+                last_error = e
+                # Corrupt payload from this mirror; move on immediately.
+                _cleanup_partial_file(dest_path)
+                log(
+                    f"Download failed integrity check from mirror {idx}/{len(urls)}: "
+                    f"{url}: {e.message}; trying next mirror"
+                )
+                break
 
     if last_error is not None:
         raise last_error
@@ -1137,7 +1228,20 @@ class ModelCacheManager:
                 log(f"Model {manifest.model_id} downloaded successfully")
                 return model_dir
 
-        except (DiskFullError, NetworkError, CacheCorruptError, LockError) as e:
+        except DiskFullError as e:
+            _cleanup_partial_dir(temp_dir)
+            with self._state_lock:
+                self._status = ModelStatus.ERROR
+                self._error = str(e)
+            raise
+        except (NetworkError, CacheCorruptError, LockError) as e:
+            with self._state_lock:
+                self._status = ModelStatus.ERROR
+                self._error = str(e)
+            raise
+        except ModelCacheError as e:
+            if e.code == "E_CANCELED":
+                _cleanup_partial_dir(temp_dir)
             with self._state_lock:
                 self._status = ModelStatus.ERROR
                 self._error = str(e)

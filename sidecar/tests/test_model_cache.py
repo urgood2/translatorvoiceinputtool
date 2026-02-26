@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -497,6 +498,46 @@ class TestDownload:
         assert dest.exists()
         assert dest.stat().st_size == len(content)
 
+    def test_download_file_maps_enospc_to_disk_full(self, tmp_path):
+        """Should surface ENOSPC as structured DiskFullError with recovery guidance."""
+        dest = tmp_path / "downloaded.bin"
+        content = b"test file content"
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_response = MagicMock()
+            mock_response.status = 200
+            mock_response.headers = {"Content-Length": str(len(content))}
+            mock_response.read.side_effect = [content, b""]
+            mock_response.__enter__ = lambda s: s
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_response
+
+            with (
+                patch(
+                    "builtins.open",
+                    side_effect=OSError(errno.ENOSPC, "No space left on device"),
+                ),
+                patch(
+                    "openvoicy_sidecar.model_cache.get_cache_directory",
+                    return_value=tmp_path,
+                ),
+                patch(
+                    "openvoicy_sidecar.model_cache.shutil.disk_usage",
+                    return_value=(1024, 924, 100),
+                ),
+            ):
+                with pytest.raises(DiskFullError) as exc_info:
+                    download_file(
+                        "http://example.com/file.bin",
+                        dest,
+                        expected_size=len(content),
+                    )
+
+        error = exc_info.value
+        assert error.required == len(content)
+        assert error.available == 100
+        assert "purge_model_cache" in error.message
+
     def test_build_download_headers_uses_hf_token_for_trusted_hf_urls_only(self):
         """Should include Authorization header only for trusted Hugging Face HTTPS URLs."""
         with patch.dict(os.environ, {"HF_TOKEN": "hf_test_token"}, clear=False):
@@ -592,7 +633,8 @@ class TestDownload:
         )
 
         with patch("openvoicy_sidecar.model_cache.download_file", side_effect=mock_download):
-            download_with_mirrors(file_info, dest)
+            with patch("openvoicy_sidecar.model_cache.NETWORK_RETRY_MAX_ATTEMPTS", 1):
+                download_with_mirrors(file_info, dest)
 
         assert call_count[0] == 2  # Primary + mirror
         assert dest.read_bytes() == content
@@ -657,8 +699,70 @@ class TestDownload:
         )
 
         with patch("openvoicy_sidecar.model_cache.download_file", side_effect=mock_download):
-            with pytest.raises(NetworkError):
+            with patch("openvoicy_sidecar.model_cache.NETWORK_RETRY_MAX_ATTEMPTS", 1):
+                with pytest.raises(NetworkError):
+                    download_with_mirrors(file_info, dest)
+
+    def test_download_with_mirrors_retries_network_error_with_backoff(self, tmp_path):
+        """Should retry network errors with exponential backoff before succeeding."""
+        dest = tmp_path / "downloaded.bin"
+        calls: list[str] = []
+
+        def mock_download(url, path, size, callback):
+            calls.append(url)
+            if len(calls) < 3:
+                raise NetworkError("temporary network issue", url)
+            path.write_bytes(b"good")
+
+        file_info = ModelFileInfo(
+            path="file.bin",
+            size_bytes=4,
+            sha256="",
+            primary_url="http://primary.example.com/file.bin",
+            mirror_urls=[],
+        )
+
+        with (
+            patch("openvoicy_sidecar.model_cache.download_file", side_effect=mock_download),
+            patch("openvoicy_sidecar.model_cache.NETWORK_RETRY_MAX_ATTEMPTS", 3),
+            patch("openvoicy_sidecar.model_cache.NETWORK_RETRY_INITIAL_BACKOFF_SECONDS", 0.25),
+            patch("openvoicy_sidecar.model_cache.NETWORK_RETRY_BACKOFF_MULTIPLIER", 2.0),
+            patch("openvoicy_sidecar.model_cache.time.sleep") as mock_sleep,
+        ):
+            download_with_mirrors(file_info, dest)
+
+        assert calls == [file_info.primary_url, file_info.primary_url, file_info.primary_url]
+        assert dest.read_bytes() == b"good"
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [0.25, 0.5]
+
+    def test_download_with_mirrors_raises_network_after_max_retries(self, tmp_path):
+        """Should propagate E_NETWORK after retry budget is exhausted."""
+        dest = tmp_path / "downloaded.bin"
+
+        def mock_download(url, path, size, callback):
+            raise NetworkError("network unavailable", url)
+
+        file_info = ModelFileInfo(
+            path="file.bin",
+            size_bytes=4,
+            sha256="",
+            primary_url="http://primary.example.com/file.bin",
+            mirror_urls=[],
+        )
+
+        with (
+            patch("openvoicy_sidecar.model_cache.download_file", side_effect=mock_download),
+            patch("openvoicy_sidecar.model_cache.NETWORK_RETRY_MAX_ATTEMPTS", 3),
+            patch("openvoicy_sidecar.model_cache.NETWORK_RETRY_INITIAL_BACKOFF_SECONDS", 0.1),
+            patch("openvoicy_sidecar.model_cache.NETWORK_RETRY_BACKOFF_MULTIPLIER", 2.0),
+            patch("openvoicy_sidecar.model_cache.time.sleep") as mock_sleep,
+        ):
+            with pytest.raises(NetworkError) as exc_info:
                 download_with_mirrors(file_info, dest)
+
+        assert exc_info.value.code == "E_NETWORK"
+        assert "network unavailable" in exc_info.value.message
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [0.1, 0.2]
 
 
 # === Unit Tests: ModelCacheManager ===
@@ -873,6 +977,53 @@ class TestModelCacheIntegration:
         assert model_dir == temp_cache_dir / manifest.model_id
         assert (model_dir / "model.bin").read_bytes() == b"good"
         assert manager.status == ModelStatus.READY
+
+    def test_download_model_uses_cached_model_when_network_unavailable(
+        self,
+        temp_cache_dir,
+        sample_manifest,
+    ):
+        """Offline mode: valid installed model should bypass network download."""
+        manager = ModelCacheManager()
+
+        model_dir = temp_cache_dir / sample_manifest.model_id
+        model_dir.mkdir(parents=True)
+        (model_dir / "manifest.json").write_text(json.dumps({"model_id": sample_manifest.model_id}))
+        (model_dir / "model.bin").write_bytes(b"x" * 800)
+        (model_dir / "config.json").write_bytes(b"y" * 200)
+
+        with (
+            patch("openvoicy_sidecar.model_cache.verify_file", return_value=True),
+            patch("openvoicy_sidecar.model_cache.download_with_mirrors") as mock_download,
+        ):
+            resolved = manager.download_model(sample_manifest)
+
+        assert resolved == model_dir
+        assert manager.status == ModelStatus.READY
+        mock_download.assert_not_called()
+
+    def test_download_model_cleans_partial_dir_on_disk_full(self, temp_cache_dir, sample_manifest):
+        """Should clear staged .partial data when a disk-full error occurs."""
+        manager = ModelCacheManager()
+
+        def fail_with_disk_full(_file_info, _dest, _callback):
+            raise DiskFullError(
+                1234,
+                321,
+                "Insufficient disk space while downloading model files. "
+                "required_bytes=1234, available_bytes=321. "
+                "Run purge_model_cache to free space, then retry.",
+            )
+
+        with patch("openvoicy_sidecar.model_cache.download_with_mirrors", side_effect=fail_with_disk_full):
+            with pytest.raises(DiskFullError):
+                manager.download_model(sample_manifest)
+
+        partial_dir = temp_cache_dir / ".partial" / sample_manifest.model_id
+        assert not partial_dir.exists()
+        assert manager.status == ModelStatus.ERROR
+        assert manager.error is not None
+        assert "purge_model_cache" in manager.error
 
     def test_concurrent_downloads_blocked(self, temp_cache_dir, sample_manifest):
         """Should block concurrent downloads with lock."""

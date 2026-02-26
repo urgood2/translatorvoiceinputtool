@@ -2,7 +2,7 @@
 
 Covers the full download-verify-commit pipeline: happy path, hash/size
 mismatches, partial downloads, concurrent installs, cancel, atomic rename
-failure, disk full, no network, and mirror fallback per bead 1ed.2.12.
+failure, disk full, no network, and mirror fallback.
 """
 
 from __future__ import annotations
@@ -16,10 +16,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import openvoicy_sidecar.model_cache as model_cache
 from openvoicy_sidecar.model_cache import (
+    CacheCorruptError,
     CacheLock,
     DiskFullError,
     DownloadProgress,
+    ModelCacheError,
     ModelCacheManager,
     ModelFileInfo,
     ModelManifest,
@@ -28,8 +31,10 @@ from openvoicy_sidecar.model_cache import (
     compute_sha256,
     download_file,
     download_with_mirrors,
+    handle_model_install,
     verify_file,
 )
+from openvoicy_sidecar.protocol import Request
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -78,6 +83,12 @@ def cache_dir(tmp_path: Path) -> Path:
     d = tmp_path / "cache" / "models"
     d.mkdir(parents=True)
     return d
+
+
+@pytest.fixture
+def managed_cache_dir(cache_dir: Path):
+    with patch("openvoicy_sidecar.model_cache.get_cache_directory", return_value=cache_dir):
+        yield cache_dir
 
 
 # ── 1. HAPPY PATH ────────────────────────────────────────────────────
@@ -147,6 +158,37 @@ class TestHashMismatch:
         shutil.rmtree(temp_dir)
         assert not temp_dir.exists()
 
+    def test_manager_reports_cache_corrupt_and_cleans_partial(
+        self,
+        managed_cache_dir: Path,
+    ) -> None:
+        manager = ModelCacheManager()
+        good = b"good-model"
+        manifest = _make_manifest(
+            [ModelFileInfo(
+                path="model.bin",
+                size_bytes=len(good),
+                sha256=hashlib.sha256(good).hexdigest(),
+                primary_url="http://example.com/model.bin",
+                mirror_urls=[],
+            )]
+        )
+
+        def corrupt_download(_file_info, dest, _callback):
+            dest.write_bytes(b"bad-model")
+
+        with patch(
+            "openvoicy_sidecar.model_cache.download_with_mirrors",
+            side_effect=corrupt_download,
+        ):
+            with pytest.raises(CacheCorruptError) as exc_info:
+                manager.download_model(manifest)
+
+        partial_file = managed_cache_dir / ".partial" / manifest.model_id / "model.bin"
+        assert not partial_file.exists()
+        assert exc_info.value.code == "E_CACHE_CORRUPT"
+        assert manager.status == ModelStatus.ERROR
+
 
 # ── 3. SIZE MISMATCH ────────────────────────────────────────────────
 
@@ -165,6 +207,37 @@ class TestSizeMismatch:
         assert not verify_file(
             fp, hashlib.sha256(SAMPLE_CONTENT[:5]).hexdigest(), SAMPLE_SIZE
         )
+
+    def test_manager_size_mismatch_raises_and_cleans_partial(
+        self,
+        managed_cache_dir: Path,
+    ) -> None:
+        manager = ModelCacheManager()
+        payload = b"size-mismatch"
+        manifest = _make_manifest(
+            [ModelFileInfo(
+                path="model.bin",
+                size_bytes=len(payload) - 1,
+                sha256=hashlib.sha256(payload).hexdigest(),
+                primary_url="http://example.com/model.bin",
+                mirror_urls=[],
+            )]
+        )
+
+        def wrong_size_download(_file_info, dest, _callback):
+            dest.write_bytes(payload)
+
+        with patch(
+            "openvoicy_sidecar.model_cache.download_with_mirrors",
+            side_effect=wrong_size_download,
+        ):
+            with pytest.raises(CacheCorruptError) as exc_info:
+                manager.download_model(manifest)
+
+        partial_file = managed_cache_dir / ".partial" / manifest.model_id / "model.bin"
+        assert not partial_file.exists()
+        assert "size mismatch" in str(exc_info.value).lower()
+        assert manager.status == ModelStatus.ERROR
 
 
 # ── 4. PARTIAL DOWNLOAD / RESUME ────────────────────────────────────
@@ -199,6 +272,52 @@ class TestPartialDownload:
             download_file("http://example.com/model.bin", fp, SAMPLE_SIZE, None)
 
         assert fp.exists()
+
+    def test_partial_interrupt_keeps_partial_and_not_ready(
+        self,
+        managed_cache_dir: Path,
+    ) -> None:
+        manager = ModelCacheManager()
+        manifest = _make_manifest()
+
+        def interrupted_download(file_info, dest, _callback):
+            dest.write_bytes(SAMPLE_CONTENT[:10])
+            raise NetworkError("connection dropped", file_info.primary_url)
+
+        with patch(
+            "openvoicy_sidecar.model_cache.download_with_mirrors",
+            side_effect=interrupted_download,
+        ):
+            with pytest.raises(NetworkError):
+                manager.download_model(manifest)
+
+        partial_file = managed_cache_dir / ".partial" / manifest.model_id / "model.bin"
+        final_model_dir = managed_cache_dir / manifest.model_id
+        assert partial_file.exists()
+        assert not final_model_dir.exists()
+        assert manager.status == ModelStatus.ERROR
+
+    def test_resume_uses_range_header_when_server_supports_partial(self, tmp_path: Path) -> None:
+        fp = tmp_path / "model.bin"
+        fp.write_bytes(SAMPLE_CONTENT[:10])
+
+        remaining = SAMPLE_CONTENT[10:]
+        mock_resp = MagicMock()
+        mock_resp.status = 206
+        mock_resp.headers = {
+            "Content-Length": str(len(remaining)),
+            "Content-Range": f"bytes 10-{SAMPLE_SIZE - 1}/{SAMPLE_SIZE}",
+        }
+        mock_resp.read = MagicMock(side_effect=[remaining, b""])
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+            download_file("http://example.com/model.bin", fp, SAMPLE_SIZE, None)
+            request = mock_urlopen.call_args.args[0]
+            assert request.headers.get("Range") == "bytes=10-"
+
+        assert fp.read_bytes() == SAMPLE_CONTENT
 
 
 # ── 5. CONCURRENT INSTALLS ──────────────────────────────────────────
@@ -249,9 +368,53 @@ class TestConcurrentInstalls:
             assert lock.acquire()
             lock.release()
 
-            assert lock.acquire()
-            lock.release()
+    def test_handle_model_install_returns_installing_when_same_model_in_progress(self) -> None:
+        manifest = ModelManifest(
+            model_id="test-model-v1",
+            revision="v1",
+            display_name="Test Model",
+            total_size_bytes=SAMPLE_SIZE,
+            files=[],
+        )
+        manager = MagicMock()
+        manager.load_manifest.return_value = manifest
+        manager.progress.to_dict.return_value = {
+            "current": 5,
+            "total": 10,
+            "unit": "bytes",
+            "current_file": "model.bin",
+            "files_completed": 0,
+            "files_total": 1,
+        }
 
+        class _AliveThread:
+            def is_alive(self) -> bool:
+                return True
+
+        try:
+            with (
+                patch(
+                    "openvoicy_sidecar.model_cache._resolve_manifest_path_for_model",
+                    return_value=Path("/tmp/manifest.json"),
+                ),
+                patch("openvoicy_sidecar.model_cache.get_cache_manager", return_value=manager),
+            ):
+                model_cache._install_thread = _AliveThread()
+                model_cache._install_model_id = manifest.model_id
+
+                result = handle_model_install(
+                    Request(
+                        method="model.install",
+                        id=1,
+                        params={"model_id": "nvidia/test-model-v1"},
+                    )
+                )
+        finally:
+            model_cache._install_thread = None
+            model_cache._install_model_id = None
+
+        assert result["status"] == "installing"
+        assert result["model_id"] == manifest.model_id
 
 # ── 6. CANCEL MID-DOWNLOAD ──────────────────────────────────────────
 
@@ -272,6 +435,31 @@ class TestCancelMidDownload:
         manifest = _make_manifest()
         final_dir = cache_dir / manifest.model_id
         assert not final_dir.exists()
+
+    def test_manager_canceled_download_cleans_partial_and_leaves_no_ready_model(
+        self,
+        managed_cache_dir: Path,
+    ) -> None:
+        manager = ModelCacheManager()
+        manifest = _make_manifest()
+
+        def canceled_download(_file_info, dest, _callback):
+            dest.write_bytes(SAMPLE_CONTENT[:10])
+            raise ModelCacheError("Download canceled by user", "E_CANCELED")
+
+        with patch(
+            "openvoicy_sidecar.model_cache.download_with_mirrors",
+            side_effect=canceled_download,
+        ):
+            with pytest.raises(ModelCacheError) as exc_info:
+                manager.download_model(manifest)
+
+        partial_dir = managed_cache_dir / ".partial" / manifest.model_id
+        final_dir = managed_cache_dir / manifest.model_id
+        assert exc_info.value.code == "E_CANCELED"
+        assert not partial_dir.exists()
+        assert not final_dir.exists()
+        assert manager.status == ModelStatus.ERROR
 
 
 # ── 7. ATOMIC RENAME FAILURE ────────────────────────────────────────
@@ -307,6 +495,31 @@ class TestAtomicRenameFailure:
                 temp_dir.rename(cache_dir / manifest.model_id)
 
         assert temp_dir.exists()
+
+    def test_manager_activates_verified_model_via_atomic_rename(
+        self,
+        managed_cache_dir: Path,
+    ) -> None:
+        manager = ModelCacheManager()
+        manifest = _make_manifest()
+
+        def mock_download(_file_info, dest, _callback):
+            dest.write_bytes(SAMPLE_CONTENT)
+
+        original_rename = model_cache.os.rename
+        with (
+            patch("openvoicy_sidecar.model_cache.download_with_mirrors", side_effect=mock_download),
+            patch("openvoicy_sidecar.model_cache.os.rename", wraps=original_rename) as spy_rename,
+        ):
+            model_dir = manager.download_model(manifest)
+
+        staged_dir = managed_cache_dir / ".partial" / manifest.model_id
+        final_dir = managed_cache_dir / manifest.model_id
+        assert model_dir == final_dir
+        assert any(
+            Path(call.args[0]) == staged_dir and Path(call.args[1]) == final_dir
+            for call in spy_rename.call_args_list
+        )
 
 
 # ── 8. DISK FULL ────────────────────────────────────────────────────
@@ -392,7 +605,10 @@ class TestMirrorFallback:
         fi = _make_file_info()
         fp = tmp_path / "model.bin"
 
-        with patch("urllib.request.urlopen", side_effect=side_effect):
+        with (
+            patch("urllib.request.urlopen", side_effect=side_effect),
+            patch("openvoicy_sidecar.model_cache.NETWORK_RETRY_MAX_ATTEMPTS", 1),
+        ):
             download_with_mirrors(fi, fp, None)
 
         assert fp.exists()
@@ -412,9 +628,19 @@ class TestMirrorFallback:
         fp = tmp_path / "model.bin"
         err = urllib.error.URLError("All servers down")
 
-        with patch("urllib.request.urlopen", side_effect=err):
-            with pytest.raises(NetworkError):
+        with (
+            patch("urllib.request.urlopen", side_effect=err),
+            patch("openvoicy_sidecar.model_cache.NETWORK_RETRY_MAX_ATTEMPTS", 2),
+            patch("openvoicy_sidecar.model_cache.NETWORK_RETRY_INITIAL_BACKOFF_SECONDS", 0.01),
+            patch("openvoicy_sidecar.model_cache.time.sleep") as mock_sleep,
+        ):
+            with pytest.raises(NetworkError) as exc_info:
                 download_with_mirrors(fi, fp, None)
+
+        assert exc_info.value.code == "E_NETWORK"
+        assert "all servers down" in exc_info.value.message.lower()
+        # 3 mirrors * (2 attempts each - final attempt has no sleep) => 3 sleeps.
+        assert len(mock_sleep.call_args_list) == 3
 
 
 if __name__ == "__main__":
