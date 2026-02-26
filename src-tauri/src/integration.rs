@@ -5631,6 +5631,64 @@ for raw in sys.stdin:
     }
 
     #[test]
+    fn test_sidecar_status_bridge_emits_canonical_and_legacy_with_shared_seq() {
+        // Regression (qf3m): the event.status_changed bridge must emit both
+        // sidecar:status (canonical) and status:changed (legacy) with the same seq.
+        let broadcaster = MockBroadcaster::with_windows(&["main"]);
+        let seq_counter = Arc::new(AtomicU64::new(100));
+
+        // Simulate the bridge logic from the event loop
+        let canonical_payload = sidecar_status_payload_from_status_event(
+            Some("idle"),
+            Some("Sidecar ready".to_string()),
+            Some(0),
+        );
+        let raw_params = json!({
+            "state": "idle",
+            "detail": "Sidecar ready",
+            "restart_count": 0,
+        });
+
+        let seq = next_seq(&seq_counter);
+        emit_with_existing_seq_to_all_windows(
+            &broadcaster,
+            EVENT_SIDECAR_STATUS,
+            canonical_payload,
+            seq,
+        );
+        emit_with_existing_seq_to_all_windows(
+            &broadcaster,
+            EVENT_STATUS_CHANGED,
+            raw_params,
+            seq,
+        );
+
+        let event_names = broadcaster.received_event_names("main");
+        let payloads = broadcaster.received_payloads("main");
+        assert_eq!(event_names.len(), 2, "Bridge must emit exactly 2 events");
+
+        // First: canonical sidecar:status
+        assert_eq!(event_names[0], "sidecar:status");
+        assert_eq!(
+            payloads[0].get("state").and_then(Value::as_str),
+            Some("ready")
+        );
+        let canonical_seq = payloads[0].get("seq").and_then(Value::as_u64);
+        assert!(canonical_seq.is_some(), "canonical event must have seq");
+
+        // Second: legacy status:changed
+        assert_eq!(event_names[1], "status:changed");
+        let legacy_seq = payloads[1].get("seq").and_then(Value::as_u64);
+        assert!(legacy_seq.is_some(), "legacy event must have seq");
+
+        // Both must share the same seq
+        assert_eq!(
+            canonical_seq, legacy_seq,
+            "canonical and legacy events must share the same seq"
+        );
+    }
+
+    #[test]
     fn test_transcription_error_event_payload_preserves_legacy_error_string() {
         let app_error = AppError::new(
             ErrorKind::TranscriptionFailed.to_sidecar(),
