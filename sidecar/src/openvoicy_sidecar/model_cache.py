@@ -1272,12 +1272,13 @@ class ModelCacheManager:
         purged_ids: list[str] = []
 
         with CacheLock():
-            if model_id:
-                model_dir = cache_dir / model_id
+            if model_id is not None:
+                validated_model_id = _validate_purge_model_id(model_id)
+                model_dir = cache_dir / validated_model_id
                 if model_dir.exists():
                     shutil.rmtree(model_dir)
-                    purged_ids.append(model_id)
-                    log(f"Purged cache for {model_id}")
+                    purged_ids.append(validated_model_id)
+                    log(f"Purged cache for {validated_model_id}")
             else:
                 # Purge all models
                 if cache_dir.exists():
@@ -1313,6 +1314,28 @@ _install_revision: Optional[str] = None
 
 def _normalize_model_id(model_id: str) -> str:
     return model_id.strip().lower().replace("\\", "/")
+
+
+def _validate_purge_model_id(model_id: Any) -> str:
+    """Validate and normalize a targeted purge model identifier."""
+    if not isinstance(model_id, str):
+        raise ModelCacheError("model_id must be a string", "E_INVALID_PARAMS")
+
+    normalized = model_id.strip().replace("\\", "/")
+    if not normalized:
+        raise ModelCacheError("model_id must not be blank", "E_INVALID_PARAMS")
+    if normalized.startswith("/"):
+        raise ModelCacheError("model_id must be a relative model identifier", "E_INVALID_PARAMS")
+
+    segments = normalized.split("/")
+    if any(segment in {"", ".", ".."} for segment in segments):
+        raise ModelCacheError("model_id contains invalid path segments", "E_INVALID_PARAMS")
+    if any(":" in segment for segment in segments):
+        raise ModelCacheError("model_id contains invalid path segments", "E_INVALID_PARAMS")
+    if not all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", segment) for segment in segments):
+        raise ModelCacheError("model_id contains invalid characters", "E_INVALID_PARAMS")
+
+    return "/".join(segments)
 
 
 def _model_id_variants(model_id: str) -> set[str]:

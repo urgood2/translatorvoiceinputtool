@@ -503,9 +503,14 @@ def run_server() -> None:
                 )
             except (LockError, ModelCacheError) as e:
                 log(f"Model cache error: {e}")
+                error_code = (
+                    ERROR_INVALID_PARAMS
+                    if getattr(e, "code", "") == "E_INVALID_PARAMS"
+                    else ERROR_MODEL_LOAD
+                )
                 response = make_error(
                     request.id,
-                    ERROR_MODEL_LOAD,
+                    error_code,
                     str(e),
                     e.code if hasattr(e, "code") else "E_MODEL",
                 )

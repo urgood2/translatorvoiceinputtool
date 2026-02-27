@@ -109,11 +109,19 @@ def _cleanup_persistent_sidecar_process(
             pass
 
     if proc.poll() is None:
-        proc.terminate()
+        try:
+            proc.terminate()
+        except (ProcessLookupError, OSError):
+            # Process may exit between poll() and terminate(); treat as already cleaned up.
+            pass
         try:
             proc.wait(timeout=terminate_timeout)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                # Same race window applies for kill fallback.
+                pass
             try:
                 proc.wait(timeout=terminate_timeout)
             except subprocess.TimeoutExpired:
@@ -705,6 +713,64 @@ def test_cleanup_persistent_sidecar_process_forces_terminate_and_kill() -> None:
     assert stop_reader.is_set()
     assert reader.join_calls == 1
     assert reader.timeout_values == [1.0]
+
+
+def test_cleanup_persistent_sidecar_process_ignores_process_lookup_race() -> None:
+    class _FakeStdin:
+        def write(self, _text: str) -> None:
+            pass
+
+        def flush(self) -> None:
+            pass
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdin = _FakeStdin()
+            self._alive = True
+            self.terminate_calls = 0
+            self.kill_calls = 0
+            self.wait_calls = 0
+
+        def poll(self) -> int | None:
+            return None if self._alive else 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_calls += 1
+            return 0
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+            self._alive = False
+            raise ProcessLookupError()
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+            self._alive = False
+            raise ProcessLookupError()
+
+    class _FakeReader:
+        def __init__(self) -> None:
+            self.join_calls = 0
+
+        def join(self, timeout: float | None = None) -> None:
+            self.join_calls += 1
+
+    fake_proc = _FakeProc()
+    stop_reader = threading.Event()
+    reader = _FakeReader()
+
+    _cleanup_persistent_sidecar_process(
+        fake_proc,
+        '{"jsonrpc":"2.0","id":99,"method":"system.shutdown"}',
+        stop_reader,
+        reader,  # type: ignore[arg-type]
+    )
+
+    assert fake_proc.terminate_calls == 1
+    assert fake_proc.kill_calls == 0
+    assert fake_proc.wait_calls >= 1
+    assert stop_reader.is_set()
+    assert reader.join_calls == 1
 
 
 def test_system_info_required_runtime_fields() -> None:

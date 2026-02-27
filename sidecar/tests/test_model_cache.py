@@ -39,6 +39,7 @@ from openvoicy_sidecar.model_cache import (
     format_bytes,
     get_cache_directory,
     handle_model_install,
+    handle_model_purge_cache,
     verify_file,
     verify_sha256,
     verify_manifest,
@@ -866,6 +867,29 @@ class TestModelCacheManager:
 
         with pytest.raises(ModelInUseError):
             manager.purge_cache()
+
+    @pytest.mark.parametrize(
+        "invalid_model_id",
+        ["", "   ", "../outside", "/tmp/unsafe", "model/../other", "C:/Windows/System32", "bad|id"],
+    )
+    def test_purge_cache_rejects_invalid_target_model_ids(self, temp_cache_dir, invalid_model_id):
+        """Targeted purge must reject invalid/traversal model_id values."""
+        manager = ModelCacheManager()
+
+        with pytest.raises(ModelCacheError) as exc_info:
+            manager.purge_cache(invalid_model_id)
+
+        assert exc_info.value.code == "E_INVALID_PARAMS"
+
+
+class TestModelPurgeHandler:
+    def test_requires_string_model_id_when_provided(self):
+        request = Request(method="model.purge_cache", id=1, params={"model_id": 123})
+
+        with pytest.raises(ModelCacheError) as exc_info:
+            handle_model_purge_cache(request)
+
+        assert exc_info.value.code == "E_INVALID_PARAMS"
 
 
 # === Unit Tests: DownloadProgress ===
