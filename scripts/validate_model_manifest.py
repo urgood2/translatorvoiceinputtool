@@ -238,6 +238,30 @@ def validate_catalog_manifest_paths(
     return errors, resolved_docs
 
 
+def validate_catalog_unique_model_ids(catalog: dict[str, Any]) -> list[str]:
+    """Validate MODEL_CATALOG.json has unique model_id values."""
+    errors: list[str] = []
+    models = catalog.get("models")
+    if not isinstance(models, list):
+        return errors
+
+    seen: dict[str, int] = {}
+    for i, model in enumerate(models):
+        if not isinstance(model, dict):
+            continue
+        model_id = model.get("model_id")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        if model_id in seen:
+            errors.append(
+                f"MODEL_CATALOG.json: duplicate model_id '{model_id}' at models[{seen[model_id]}] and models[{i}]"
+            )
+            continue
+        seen[model_id] = i
+
+    return errors
+
+
 def validate_manifests_directory(
     manifests_dir: Path,
     manifest_schema: dict[str, Any],
@@ -398,6 +422,7 @@ def main() -> int:
 
     # Catalog manifest path resolution
     if catalog is not None:
+        all_errors.extend(validate_catalog_unique_model_ids(catalog))
         path_errors, _ = validate_catalog_manifest_paths(catalog, model_root)
         all_errors.extend(path_errors)
 

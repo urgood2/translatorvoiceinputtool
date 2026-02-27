@@ -216,6 +216,32 @@ class ValidateModelManifestTests(unittest.TestCase):
             errors, _ = MODULE.validate_catalog_manifest_paths(catalog, model_root)
             self.assertTrue(any("does not match" in err for err in errors))
 
+    def test_validate_catalog_unique_model_ids_detects_duplicates(self) -> None:
+        catalog = {
+            "schema_version": 1,
+            "models": [
+                {"model_id": "nvidia/parakeet-tdt-0.6b-v3"},
+                {"model_id": "openai/whisper-base"},
+                {"model_id": "nvidia/parakeet-tdt-0.6b-v3"},
+            ],
+        }
+
+        errors = MODULE.validate_catalog_unique_model_ids(catalog)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("duplicate model_id 'nvidia/parakeet-tdt-0.6b-v3'", errors[0])
+
+    def test_validate_catalog_unique_model_ids_passes_for_unique_entries(self) -> None:
+        catalog = {
+            "schema_version": 1,
+            "models": [
+                {"model_id": "nvidia/parakeet-tdt-0.6b-v3"},
+                {"model_id": "openai/whisper-base"},
+            ],
+        }
+
+        errors = MODULE.validate_catalog_unique_model_ids(catalog)
+        self.assertEqual(errors, [])
+
     def test_validate_manifests_directory_validates_sha_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
