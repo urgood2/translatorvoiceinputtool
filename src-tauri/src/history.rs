@@ -1183,4 +1183,138 @@ mod tests {
         assert_eq!(history.len(), 0);
         assert_eq!(persistence.purge_calls.load(AtomicOrdering::Relaxed), 1);
     }
+
+    #[test]
+    fn test_export_csv_preserves_all_transcript_entry_fields() {
+        let history = TranscriptHistory::new();
+        let session = Uuid::new_v4();
+        let mut entry = TranscriptEntry::new(
+            "hello world".to_string(),
+            2500,
+            430,
+            HistoryInjectionResult::Injected,
+        );
+        entry.session_id = Some(session);
+        entry.language = Some("fr".to_string());
+        entry.confidence = Some(0.945);
+        history.push(entry.clone());
+
+        let dir = tempdir().expect("temp dir should be available");
+        let output = history
+            .export_to_dir(HistoryExportFormat::Csv, dir.path())
+            .expect("csv export should succeed");
+        let bytes = fs::read(output).expect("csv file should be readable");
+        let content = String::from_utf8(bytes[CSV_UTF8_BOM.len()..].to_vec())
+            .expect("csv content should be utf-8");
+        let lines: Vec<&str> = content.lines().collect();
+
+        assert_eq!(lines.len(), 2, "should have header + 1 data row");
+        assert_eq!(
+            lines[0],
+            "id,timestamp,text,audio_duration_ms,transcription_duration_ms,injection_result,session_id,language,confidence"
+        );
+
+        let row = lines[1];
+        assert!(row.contains(&entry.id.to_string()), "row should contain entry id");
+        assert!(row.contains(&entry.timestamp.to_rfc3339()), "row should contain timestamp");
+        assert!(row.contains("hello world"), "row should contain text");
+        assert!(row.contains("2500"), "row should contain audio_duration_ms");
+        assert!(row.contains("430"), "row should contain transcription_duration_ms");
+        assert!(row.contains("injected"), "row should contain injection_result");
+        assert!(row.contains(&session.to_string()), "row should contain session_id");
+        assert!(row.contains("fr"), "row should contain language");
+        assert!(row.contains("0.945000"), "row should contain confidence");
+    }
+
+    #[test]
+    fn test_export_markdown_preserves_all_transcript_entry_fields() {
+        let history = TranscriptHistory::new();
+        let session = Uuid::new_v4();
+        let mut entry = TranscriptEntry::new(
+            "bonjour le monde".to_string(),
+            1800,
+            310,
+            HistoryInjectionResult::Error {
+                message: "window not found".to_string(),
+            },
+        );
+        entry.session_id = Some(session);
+        entry.language = Some("fr".to_string());
+        entry.confidence = Some(0.82);
+        entry.final_text = "Bonjour le monde".to_string();
+        history.push(entry);
+
+        let dir = tempdir().expect("temp dir should be available");
+        let output = history
+            .export_to_dir(HistoryExportFormat::Markdown, dir.path())
+            .expect("markdown export should succeed");
+        let content = fs::read_to_string(output).expect("markdown file should be readable");
+
+        assert!(content.contains("Bonjour le monde"), "md should contain final_text");
+        assert!(content.contains(&session.to_string()), "md should contain session_id");
+        assert!(content.contains("1800"), "md should contain audio_duration_ms");
+        assert!(content.contains("310"), "md should contain transcription_duration_ms");
+        assert!(content.contains("fr"), "md should contain language");
+        assert!(content.contains("0.820"), "md should contain confidence");
+        assert!(content.contains("error"), "md should contain injection_result");
+        assert!(content.contains("window not found"), "md should contain injection detail");
+    }
+
+    #[test]
+    fn test_export_returns_path_with_correct_extension() {
+        let history = TranscriptHistory::new();
+        history.push(TranscriptEntry::new(
+            "test".to_string(),
+            500,
+            100,
+            HistoryInjectionResult::Injected,
+        ));
+        let dir = tempdir().expect("temp dir should be available");
+
+        let md_path = history
+            .export_to_dir(HistoryExportFormat::Markdown, dir.path())
+            .expect("markdown export should succeed");
+        assert_eq!(md_path.extension().and_then(|e| e.to_str()), Some("md"));
+        assert!(md_path.file_name().unwrap().to_str().unwrap().starts_with("openvoicy-history-"));
+
+        let csv_path = history
+            .export_to_dir(HistoryExportFormat::Csv, dir.path())
+            .expect("csv export should succeed");
+        assert_eq!(csv_path.extension().and_then(|e| e.to_str()), Some("csv"));
+        assert!(csv_path.file_name().unwrap().to_str().unwrap().starts_with("openvoicy-history-"));
+    }
+
+    #[test]
+    fn test_export_csv_multiple_entries_preserves_order() {
+        let history = TranscriptHistory::new();
+        let e1 = TranscriptEntry::new(
+            "first entry".to_string(),
+            1000,
+            100,
+            HistoryInjectionResult::Injected,
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let e2 = TranscriptEntry::new(
+            "second entry".to_string(),
+            2000,
+            200,
+            HistoryInjectionResult::Injected,
+        );
+        history.push(e1);
+        history.push(e2);
+
+        let dir = tempdir().expect("temp dir should be available");
+        let output = history
+            .export_to_dir(HistoryExportFormat::Csv, dir.path())
+            .expect("csv export should succeed");
+        let bytes = fs::read(output).expect("csv file should be readable");
+        let content = String::from_utf8(bytes[CSV_UTF8_BOM.len()..].to_vec())
+            .expect("csv content should be utf-8");
+        let lines: Vec<&str> = content.lines().collect();
+
+        assert_eq!(lines.len(), 3, "header + 2 data rows");
+        // all() returns newest-first, .iter().rev() reverses to oldest-first
+        assert!(lines[1].contains("first entry"), "oldest entry should be first row");
+        assert!(lines[2].contains("second entry"), "newest entry should be second row");
+    }
 }

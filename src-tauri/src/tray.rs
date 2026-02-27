@@ -5,7 +5,7 @@
 //! - State-aware dynamic context menu
 //! - Tooltip showing current status
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Duration;
 
 use tauri::menu::{
@@ -57,6 +57,34 @@ const TRAY_REFLECTION_TARGET_MS: u64 = 250;
 pub struct TrayAudioDevice {
     pub id: String,
     pub name: String,
+}
+
+/// Shared device cache for the tray menu, updated by the hot-swap monitor
+/// and device listing commands. Uses `std::sync::RwLock` so it can be read
+/// synchronously from the tray menu builder.
+pub struct TrayDeviceCache(StdRwLock<Vec<TrayAudioDevice>>);
+
+impl TrayDeviceCache {
+    pub fn new() -> Self {
+        Self(StdRwLock::new(Vec::new()))
+    }
+
+    /// Replace the cached device list.
+    pub fn update(&self, devices: &[(String, String)]) {
+        let entries = devices
+            .iter()
+            .map(|(id, name)| TrayAudioDevice {
+                id: id.clone(),
+                name: name.clone(),
+            })
+            .collect();
+        *self.0.write().expect("TrayDeviceCache poisoned") = entries;
+    }
+
+    /// Read the current cached device list.
+    pub fn get(&self) -> Vec<TrayAudioDevice> {
+        self.0.read().expect("TrayDeviceCache poisoned").clone()
+    }
 }
 
 /// Pure-state snapshot used to build a deterministic tray menu.
@@ -498,8 +526,7 @@ fn load_runtime_tray_menu_state(app: &AppHandle, state: AppState, enabled: bool)
         mode,
         language,
         current_device,
-        // Device listing from sidecar will be wired in translatorvoiceinputtool-36i.1.4.
-        devices: Vec::new(),
+        devices: app.state::<TrayDeviceCache>().get(),
         recent_transcripts,
         overlay_enabled: current_config.ui.overlay_enabled,
         model_status: map_state_to_model_status(state, enabled).to_string(),
@@ -1064,6 +1091,73 @@ mod tests {
     }
 
     #[test]
+    fn test_build_tray_menu_language_label_reflects_specific_language() {
+        let mut state = sample_state();
+        state.language = Some("en".to_string());
+
+        let menu = build_tray_menu(&state);
+        assert!(menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Action { id, text, enabled }
+                    if id == menu_ids::LANGUAGE_STATUS && text == "Language: en" && !enabled
+            )
+        }));
+    }
+
+    #[test]
+    fn test_build_tray_menu_language_label_auto_when_none() {
+        let state = sample_state(); // language is None by default
+        let menu = build_tray_menu(&state);
+        assert!(menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Action { id, text, enabled }
+                    if id == menu_ids::LANGUAGE_STATUS && text == "Language: Auto" && !enabled
+            )
+        }));
+    }
+
+    #[test]
+    fn test_build_tray_menu_language_label_auto_when_explicit_auto() {
+        let mut state = sample_state();
+        state.language = Some("auto".to_string());
+
+        let menu = build_tray_menu(&state);
+        assert!(menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Action { id, text, enabled }
+                    if id == menu_ids::LANGUAGE_STATUS && text == "Language: Auto" && !enabled
+            )
+        }));
+    }
+
+    #[test]
+    fn test_build_tray_menu_mode_and_language_are_disabled_info_items() {
+        let state = sample_state();
+        let menu = build_tray_menu(&state);
+
+        let mode_entry = menu
+            .iter()
+            .find(|e| matches!(e, TrayMenuEntry::Action { id, .. } if id == menu_ids::MODE_STATUS))
+            .expect("mode entry should exist");
+        assert!(
+            matches!(mode_entry, TrayMenuEntry::Action { enabled: false, .. }),
+            "mode should be informational (disabled)"
+        );
+
+        let lang_entry = menu
+            .iter()
+            .find(|e| matches!(e, TrayMenuEntry::Action { id, .. } if id == menu_ids::LANGUAGE_STATUS))
+            .expect("language entry should exist");
+        assert!(
+            matches!(lang_entry, TrayMenuEntry::Action { enabled: false, .. }),
+            "language should be informational (disabled)"
+        );
+    }
+
+    #[test]
     fn test_build_tray_menu_recording_state_controls_start_stop_label() {
         let mut state = sample_state();
         state.recording = true;
@@ -1582,5 +1676,79 @@ mod tests {
             "Failed to load recording icon: {:?}",
             result.err()
         );
+    }
+
+    #[test]
+    fn test_tray_device_cache_initially_empty() {
+        let cache = TrayDeviceCache::new();
+        assert!(cache.get().is_empty());
+    }
+
+    #[test]
+    fn test_tray_device_cache_update_and_get() {
+        let cache = TrayDeviceCache::new();
+        cache.update(&[
+            ("uid-1".to_string(), "Built-in Mic".to_string()),
+            ("uid-2".to_string(), "USB Mic".to_string()),
+        ]);
+
+        let devices = cache.get();
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].id, "uid-1");
+        assert_eq!(devices[0].name, "Built-in Mic");
+        assert_eq!(devices[1].id, "uid-2");
+        assert_eq!(devices[1].name, "USB Mic");
+    }
+
+    #[test]
+    fn test_tray_device_cache_update_replaces_previous() {
+        let cache = TrayDeviceCache::new();
+        cache.update(&[("uid-1".to_string(), "Old Mic".to_string())]);
+        assert_eq!(cache.get().len(), 1);
+
+        cache.update(&[
+            ("uid-2".to_string(), "New Mic A".to_string()),
+            ("uid-3".to_string(), "New Mic B".to_string()),
+        ]);
+        let devices = cache.get();
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].id, "uid-2");
+    }
+
+    #[test]
+    fn test_build_tray_menu_shows_cached_devices_with_selection() {
+        let mut state = sample_state();
+        state.devices = vec![
+            TrayAudioDevice {
+                id: "uid-builtin".to_string(),
+                name: "Built-in Mic".to_string(),
+            },
+            TrayAudioDevice {
+                id: "uid-usb".to_string(),
+                name: "USB Condenser".to_string(),
+            },
+        ];
+        state.current_device = Some("uid-usb".to_string());
+
+        let menu = build_tray_menu(&state);
+        let mic_items = menu
+            .iter()
+            .find_map(|entry| match entry {
+                TrayMenuEntry::Submenu { id, items, .. } if id == menu_ids::MIC_SUBMENU => {
+                    Some(items)
+                }
+                _ => None,
+            })
+            .expect("mic submenu should exist");
+
+        assert_eq!(mic_items.len(), 2);
+        assert!(matches!(
+            &mic_items[0],
+            TrayMenuEntry::Toggle { id, checked: false, .. } if id == "select_mic::uid-builtin"
+        ));
+        assert!(matches!(
+            &mic_items[1],
+            TrayMenuEntry::Toggle { id, checked: true, .. } if id == "select_mic::uid-usb"
+        ));
     }
 }

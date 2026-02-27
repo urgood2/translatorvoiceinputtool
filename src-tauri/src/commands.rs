@@ -251,6 +251,7 @@ pub struct AudioDevice {
 #[tauri::command]
 pub async fn list_audio_devices(
     integration_state: tauri::State<'_, IntegrationState>,
+    device_cache: tauri::State<'_, crate::tray::TrayDeviceCache>,
     app: tauri::AppHandle,
 ) -> Result<Vec<AudioDevice>, CommandError> {
     let manager = integration_state.0.read().await;
@@ -258,6 +259,14 @@ pub async fn list_audio_devices(
         .list_audio_devices()
         .await
         .map_err(|message| CommandError::Audio { message })?;
+
+    // Update the shared tray device cache so the tray menu stays current.
+    device_cache.update(
+        &devices
+            .iter()
+            .map(|d| (d.uid.clone(), d.name.clone()))
+            .collect::<Vec<_>>(),
+    );
 
     emit_tray_update(&app, "device_list_refreshed");
 

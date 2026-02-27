@@ -570,6 +570,11 @@ impl OverlayManager {
             self.auto_disabled = true;
             self.rate_limiter.set_enabled(false);
 
+            log::warn!(
+                "Overlay disabled after {} consecutive failures (last: {error}). Re-enable in Settings.",
+                self.consecutive_failures
+            );
+
             if let Err(config_error) = config_store.set_overlay_enabled(false) {
                 return OverlayError::Config(format!(
                     "failed to auto-disable overlay after error '{error}': {config_error}"
@@ -904,6 +909,262 @@ mod tests {
         assert_eq!(backend.call_count("destroy_window"), 1);
         assert_eq!(backend.call_count("hide"), 0);
         assert!(!manager.visible());
+    }
+
+    #[test]
+    fn compute_overlay_position_all_anchor_positions() {
+        let monitor = MonitorBounds {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            work_x: 0,
+            work_y: 0,
+            work_width: 1920,
+            work_height: 1080,
+        };
+        let size = OverlayWindowSize {
+            width: 300,
+            height: 80,
+        };
+        let margin_x = DEFAULT_MARGIN_X;
+        let margin_y = DEFAULT_MARGIN_Y;
+
+        let (x, y) = compute_overlay_position(
+            &monitor,
+            size,
+            OverlayPositionConfig {
+                anchor: OverlayAnchor::TopLeft,
+                ..Default::default()
+            },
+        );
+        assert_eq!((x, y), (margin_x, margin_y));
+
+        let (x, y) = compute_overlay_position(
+            &monitor,
+            size,
+            OverlayPositionConfig {
+                anchor: OverlayAnchor::TopRight,
+                ..Default::default()
+            },
+        );
+        assert_eq!((x, y), (1920 - 300 - margin_x, margin_y));
+
+        let (x, y) = compute_overlay_position(
+            &monitor,
+            size,
+            OverlayPositionConfig {
+                anchor: OverlayAnchor::BottomLeft,
+                ..Default::default()
+            },
+        );
+        assert_eq!((x, y), (margin_x, 1080 - 80 - margin_y));
+
+        let (x, y) = compute_overlay_position(
+            &monitor,
+            size,
+            OverlayPositionConfig {
+                anchor: OverlayAnchor::BottomRight,
+                ..Default::default()
+            },
+        );
+        assert_eq!((x, y), (1920 - 300 - margin_x, 1080 - 80 - margin_y));
+    }
+
+    #[test]
+    fn compute_overlay_position_second_monitor_with_offset() {
+        let monitor = MonitorBounds {
+            x: 1920,
+            y: 0,
+            width: 2560,
+            height: 1440,
+            work_x: 1920,
+            work_y: 0,
+            work_width: 2560,
+            work_height: 1400,
+        };
+        let size = OverlayWindowSize::default();
+        let config = OverlayPositionConfig::default();
+
+        let (x, y) = compute_overlay_position(&monitor, size, config);
+        // BottomCenter: x = 1920 + (2560 - 300) / 2 = 1920 + 1130 = 3050
+        assert_eq!(x, 3050);
+        // y = 0 + 1400 - 80 - 24 = 1296
+        assert_eq!(y, 1296);
+    }
+
+    #[test]
+    fn resolve_monitor_falls_back_from_current_to_primary() {
+        let primary = MonitorBounds {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            work_x: 0,
+            work_y: 0,
+            work_width: 1920,
+            work_height: 1080,
+        };
+        let config = MockConfigStore::new(true);
+        let backend = MockWindowBackend {
+            current_monitor: None,
+            primary_monitor: Some(primary),
+            ..MockWindowBackend::new()
+        };
+        let mut manager = OverlayManager::new();
+
+        assert!(manager.show(&config, &backend).is_ok());
+        assert!(manager.visible());
+    }
+
+    #[test]
+    fn resolve_monitor_falls_back_to_available_monitors() {
+        let available = MonitorBounds {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            work_x: 0,
+            work_y: 0,
+            work_width: 1920,
+            work_height: 1080,
+        };
+        let config = MockConfigStore::new(true);
+        let backend = MockWindowBackend {
+            current_monitor: None,
+            primary_monitor: None,
+            monitors: vec![available],
+            ..MockWindowBackend::new()
+        };
+        let mut manager = OverlayManager::new();
+
+        assert!(manager.show(&config, &backend).is_ok());
+        assert!(manager.visible());
+    }
+
+    #[test]
+    fn resolve_monitor_fails_when_no_monitors_available() {
+        let config = MockConfigStore::new(true);
+        let backend = MockWindowBackend {
+            current_monitor: None,
+            primary_monitor: None,
+            monitors: vec![],
+            ..MockWindowBackend::new()
+        };
+        let mut manager = OverlayManager::new();
+
+        let result = manager.show(&config, &backend);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn meter_throttle_at_most_15hz_when_visible() {
+        let mut limiter = OverlayRateLimiter::default();
+        limiter.set_visible(true);
+        let t0 = Instant::now();
+
+        // 15Hz = one update per ~66.7ms.
+        let interval = Duration::from_millis(1_000 / OVERLAY_METER_MAX_HZ);
+
+        // First emit always allowed.
+        assert!(limiter.allow_meter_emit(t0));
+
+        // Within interval: blocked.
+        assert!(!limiter.allow_meter_emit(t0 + interval - Duration::from_millis(1)));
+
+        // At interval: allowed.
+        assert!(limiter.allow_meter_emit(t0 + interval));
+
+        // Count how many emits are allowed in 1 second.
+        let mut count = 0;
+        let mut time = t0;
+        for _ in 0..1000 {
+            time += Duration::from_millis(1);
+            if limiter.allow_meter_emit(time) {
+                count += 1;
+            }
+        }
+        assert!(count <= 15, "meter should be ≤15Hz, got {count}");
+        assert!(count >= 14, "meter should get close to 15Hz, got {count}");
+    }
+
+    #[test]
+    fn meter_zero_when_hidden() {
+        let mut limiter = OverlayRateLimiter::default();
+        // Not visible: all meter emits blocked.
+        let t0 = Instant::now();
+        for offset in 0..100 {
+            assert!(!limiter.allow_meter_emit(t0 + Duration::from_millis(offset * 100)));
+        }
+    }
+
+    #[test]
+    fn timer_throttle_at_most_2hz_when_recording() {
+        let mut limiter = OverlayRateLimiter::default();
+        limiter.set_visible(true);
+        let t0 = Instant::now();
+
+        let interval = Duration::from_millis(1_000 / OVERLAY_TIMER_MAX_HZ);
+
+        assert!(limiter.allow_timer_emit(t0, true));
+        assert!(!limiter.allow_timer_emit(t0 + interval - Duration::from_millis(1), true));
+        assert!(limiter.allow_timer_emit(t0 + interval, true));
+
+        let mut count = 0;
+        let mut time = t0;
+        for _ in 0..1000 {
+            time += Duration::from_millis(1);
+            if limiter.allow_timer_emit(time, true) {
+                count += 1;
+            }
+        }
+        assert!(count <= 2, "timer should be ≤2Hz, got {count}");
+        assert!(count >= 1, "timer should get at least 1 emit, got {count}");
+    }
+
+    #[test]
+    fn timer_zero_when_not_recording() {
+        let mut limiter = OverlayRateLimiter::default();
+        limiter.set_visible(true);
+        let t0 = Instant::now();
+
+        // Timer should be blocked when not recording.
+        for offset in 0..20 {
+            assert!(!limiter.allow_timer_emit(t0 + Duration::from_millis(offset * 600), false));
+        }
+    }
+
+    #[test]
+    fn visibility_toggle_resets_meter_and_timer_state() {
+        let mut limiter = OverlayRateLimiter::default();
+        limiter.set_visible(true);
+        let t0 = Instant::now();
+
+        // Emit meter.
+        assert!(limiter.allow_meter_emit(t0));
+        assert!(limiter.allow_timer_emit(t0, true));
+
+        // Hide → show: timestamps reset, immediate re-emit allowed.
+        limiter.set_visible(false);
+        limiter.set_visible(true);
+        assert!(limiter.allow_meter_emit(t0));
+        assert!(limiter.allow_timer_emit(t0, true));
+    }
+
+    #[test]
+    fn overlay_disabled_blocks_all_emits() {
+        let mut limiter = OverlayRateLimiter::default();
+        limiter.set_visible(true);
+
+        // Disable overlay.
+        limiter.set_enabled(false);
+        let t0 = Instant::now();
+
+        for offset in 0..50 {
+            let t = t0 + Duration::from_millis(offset * 100);
+            assert!(!limiter.allow_meter_emit(t));
+            assert!(!limiter.allow_timer_emit(t, true));
+        }
     }
 
     #[test]

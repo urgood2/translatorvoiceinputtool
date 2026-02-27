@@ -651,6 +651,213 @@ mod tests {
     }
 
     #[test]
+    fn encrypted_file_not_readable_with_wrong_key() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("history.enc");
+        let provider_a = EncryptionProvider::from_raw_key([11u8; ENCRYPTION_KEY_BYTES]);
+        let provider_b = EncryptionProvider::from_raw_key([99u8; ENCRYPTION_KEY_BYTES]);
+
+        let persistence_a = JsonlPersistence::new(path.clone(), Some(provider_a), 10);
+        persistence_a
+            .save(&[sample_entry("secret")])
+            .expect("save should succeed");
+
+        let persistence_b = JsonlPersistence::new(path.clone(), Some(provider_b), 10);
+        let result = persistence_b.load();
+        assert!(result.is_err(), "wrong key should not decrypt");
+        let error = result.unwrap_err();
+        assert!(matches!(error, PersistenceError::Crypto(_)));
+    }
+
+    #[test]
+    fn encrypted_file_is_binary_on_disk() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("history.enc");
+        let provider = EncryptionProvider::from_raw_key([42u8; ENCRYPTION_KEY_BYTES]);
+        let persistence = JsonlPersistence::new(path.clone(), Some(provider), 10);
+        persistence
+            .save(&[sample_entry("sensitive data")])
+            .expect("save should succeed");
+
+        let raw_bytes = fs::read(&path).expect("file should exist");
+        // Must start with magic header
+        assert!(raw_bytes.starts_with(ENCRYPTION_MAGIC));
+        // Must not contain plaintext
+        let raw_str = String::from_utf8_lossy(&raw_bytes);
+        assert!(
+            !raw_str.contains("sensitive data"),
+            "plaintext should not appear in encrypted file"
+        );
+    }
+
+    #[test]
+    fn fresh_instance_loads_persisted_entries() {
+        // Simulates app restart: save with one instance, load with a fresh one.
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("history.jsonl");
+
+        let persistence_1 = JsonlPersistence::new(path.clone(), None, 10);
+        persistence_1
+            .save(&[sample_entry("from-session-1"), sample_entry("from-session-2")])
+            .expect("save should succeed");
+
+        // Drop and create new instance (simulating restart)
+        drop(persistence_1);
+        let persistence_2 = JsonlPersistence::new(path, None, 10);
+        let loaded = persistence_2.load().expect("load should succeed");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].text, "from-session-1");
+        assert_eq!(loaded[1].text, "from-session-2");
+    }
+
+    #[test]
+    fn corrupt_file_returns_error_for_graceful_recovery() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("history.jsonl");
+
+        // Write garbage data
+        fs::write(&path, "not-valid-json\n").expect("write should succeed");
+
+        let persistence = JsonlPersistence::new(path, None, 10);
+        let result = persistence.load();
+        assert!(result.is_err(), "corrupt file should return error");
+        assert!(matches!(
+            result.unwrap_err(),
+            PersistenceError::Deserialize { line: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn null_persistence_does_not_write_files() {
+        let dir = tempdir().expect("temp dir");
+        let persistence = NullPersistence;
+        persistence
+            .save(&[sample_entry("should not be written")])
+            .expect("null save should succeed");
+
+        let entries: Vec<_> = fs::read_dir(dir.path())
+            .expect("read_dir should succeed")
+            .collect();
+        assert!(entries.is_empty(), "no files should be created");
+    }
+
+    #[test]
+    fn build_memory_mode_returns_null_persistence() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("history.jsonl");
+        let persistence = build_history_persistence(path.clone(), 100, "memory", false);
+        persistence
+            .save(&[sample_entry("test")])
+            .expect("save should succeed");
+        assert!(!path.exists(), "memory mode should not write files");
+
+        let loaded = persistence.load().expect("load should succeed");
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn build_disk_plaintext_returns_jsonl_persistence() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("history.jsonl");
+        let persistence = build_history_persistence(path.clone(), 100, "disk", false);
+        persistence
+            .save(&[sample_entry("on-disk")])
+            .expect("save should succeed");
+        assert!(path.exists(), "disk mode should write file");
+
+        let loaded = persistence.load().expect("load should succeed");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].text, "on-disk");
+    }
+
+    #[test]
+    fn encrypted_restart_round_trip_preserves_entries() {
+        // Simulates app restart with encrypted persistence: save with one instance,
+        // drop it, create a new instance with the same key, and verify load.
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("history.enc");
+        let key = [55u8; ENCRYPTION_KEY_BYTES];
+
+        let provider_1 = EncryptionProvider::from_raw_key(key);
+        let persistence_1 = JsonlPersistence::new(path.clone(), Some(provider_1), 10);
+        persistence_1
+            .save(&[sample_entry("encrypted-session-1"), sample_entry("encrypted-session-2")])
+            .expect("save should succeed");
+        drop(persistence_1);
+
+        // New instance with same key (simulating restart)
+        let provider_2 = EncryptionProvider::from_raw_key(key);
+        let persistence_2 = JsonlPersistence::new(path, Some(provider_2), 10);
+        let loaded = persistence_2.load().expect("load should succeed");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].text, "encrypted-session-1");
+        assert_eq!(loaded[1].text, "encrypted-session-2");
+    }
+
+    #[test]
+    fn jsonl_persistence_empty_history_save_and_load() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("history.jsonl");
+        let persistence = JsonlPersistence::new(path.clone(), None, 10);
+
+        // Save empty snapshot
+        persistence.save(&[]).expect("save empty should succeed");
+        let loaded = persistence.load().expect("load should succeed");
+        assert!(loaded.is_empty(), "loaded entries should be empty");
+        assert_eq!(
+            persistence.entry_count().expect("entry_count should work"),
+            0
+        );
+    }
+
+    #[test]
+    fn jsonl_persistence_load_nonexistent_file_returns_empty() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("does-not-exist.jsonl");
+        let persistence = JsonlPersistence::new(path, None, 10);
+
+        let loaded = persistence.load().expect("load should succeed");
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn build_disk_encrypted_falls_back_to_memory_when_keychain_unavailable() {
+        // The build_history_persistence function calls from_keychain() which
+        // may fail in CI/test environments. Either way, it should NOT produce
+        // unencrypted disk files when encrypt_at_rest=true.
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("history.enc");
+        let persistence = build_history_persistence(path.clone(), 100, "disk", true);
+
+        // Save an entry
+        persistence
+            .save(&[sample_entry("maybe-encrypted")])
+            .expect("save should succeed");
+
+        if path.exists() {
+            // If keychain was available, file should be encrypted (not plaintext)
+            let raw = fs::read(&path).expect("file should be readable");
+            assert!(
+                raw.starts_with(ENCRYPTION_MAGIC),
+                "disk file with encrypt_at_rest=true must be encrypted"
+            );
+            let raw_str = String::from_utf8_lossy(&raw);
+            assert!(
+                !raw_str.contains("maybe-encrypted"),
+                "plaintext must not appear on disk when encrypt_at_rest=true"
+            );
+        } else {
+            // Keychain unavailable: fell back to NullPersistence (memory-only)
+            // This is correct behavior - no unencrypted data on disk
+            let loaded = persistence.load().expect("load should succeed");
+            assert!(
+                loaded.is_empty(),
+                "memory-only fallback should have no persisted entries"
+            );
+        }
+    }
+
+    #[test]
     fn jsonl_persistence_appends_only_new_entries_across_snapshots() {
         let dir = tempdir().expect("temp dir should be available");
         let path = dir.path().join("history.jsonl");

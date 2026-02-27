@@ -51,8 +51,6 @@ use crate::watchdog::{self, PingCallback, Watchdog, WatchdogConfig, WatchdogEven
 const EVENT_TRAY_UPDATE: &str = "tray:update";
 /// Canonical app state change event.
 const EVENT_STATE_CHANGED: &str = "state:changed";
-/// Legacy app state change event alias.
-const EVENT_STATE_CHANGED_LEGACY: &str = "state_changed";
 
 /// Model progress event name.
 const EVENT_MODEL_PROGRESS: &str = "model:progress";
@@ -175,19 +173,12 @@ pub struct SidecarModelProgress {
     pub files_total: Option<u64>,
 }
 
-/// Status changed event name (mirrors sidecar event).
-const EVENT_STATUS_CHANGED: &str = "status:changed";
-
 /// Canonical transcription complete event name.
 const EVENT_TRANSCRIPT_COMPLETE: &str = "transcript:complete";
-/// Legacy transcription complete event alias.
-const EVENT_TRANSCRIPTION_COMPLETE: &str = "transcription:complete";
 
 /// Canonical transcription error event name.
 const EVENT_TRANSCRIPT_ERROR: &str = "transcript:error";
-/// Transcription error event name.
-/// Legacy alias retained for compatibility.
-const EVENT_TRANSCRIPTION_ERROR: &str = "transcription:error";
+
 /// Application error event name (legacy + structured compatibility payload).
 const EVENT_APP_ERROR: &str = "app:error";
 const AUDIO_LEVEL_METER_MIN_INTERVAL_MS: u64 = 34; // <=30Hz
@@ -673,9 +664,24 @@ fn stop_rpc_method_for_result(result: &StopResult) -> &'static str {
     }
 }
 
+/// Returns `true` when the overlay should remain visible for this recording event.
+///
+/// The overlay is shown during active recording and the transcription phase
+/// (Stopped means recording ended but transcription is in progress). It hides
+/// for terminal events: TranscriptionComplete, TranscriptionFailed, Cancelled,
+/// TooShort.
+fn is_overlay_recording_active(event: &RecordingEvent) -> bool {
+    matches!(
+        event,
+        RecordingEvent::Started { .. } | RecordingEvent::Stopped { .. }
+    )
+}
+
 fn recording_event_audio_cue(event: &RecordingEvent) -> Option<CueType> {
     match event {
-        RecordingEvent::Started { .. } => Some(CueType::StartRecording),
+        // StartRecording cue is played pre-roll in start_recording_flow
+        // before mic capture begins, so the event loop skips it.
+        RecordingEvent::Started { .. } => None,
         RecordingEvent::Stopped { .. } => Some(CueType::StopRecording),
         RecordingEvent::Cancelled { .. } => Some(CueType::CancelRecording),
         RecordingEvent::TranscriptionFailed { .. } => Some(CueType::Error),
@@ -691,6 +697,10 @@ fn play_lifecycle_audio_cue(cue: CueType) {
     AUDIO_CUE_MANAGER.with(|slot| {
         let mut slot = slot.borrow_mut();
         let manager = slot.get_or_insert_with(AudioCueManager::new);
+        // Re-read config so toggling audio_cues_enabled takes effect
+        // immediately without requiring a restart.
+        let cfg = config::load_config();
+        manager.set_enabled(cfg.audio.audio_cues_enabled);
         manager.play_cue(cue);
     });
 }
@@ -1285,11 +1295,11 @@ impl IntegrationManager {
         Ok(())
     }
 
-    /// Start overlay config gate loop.
+    /// Start overlay config-gate loop.
     ///
-    /// Ensures:
-    /// - `ui.overlay_enabled=false` => overlay window is destroyed and not shown.
-    /// - `ui.overlay_enabled=true` => overlay window exists and is shown.
+    /// Ensures the overlay window is pre-created when `ui.overlay_enabled=true`
+    /// and destroyed when disabled. The actual show/hide is driven by recording
+    /// events in `start_recording_event_loop`.
     fn start_overlay_window_loop(&self) {
         let app_handle = self.app_handle.clone();
         let overlay_manager = Arc::clone(&self.overlay_manager);
@@ -1301,44 +1311,39 @@ impl IntegrationManager {
             };
 
             let config_store = FileOverlayConfigStore;
-            let mut tick = tokio::time::interval(Duration::from_millis(100));
+            let mut tick = tokio::time::interval(Duration::from_millis(500));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut last_enabled: Option<bool> = None;
 
-            log::info!("Overlay window loop started");
+            log::info!("Overlay config-gate loop started");
 
             loop {
                 tick.tick().await;
 
                 let enabled = config::load_config().ui.overlay_enabled;
-                let backend = TauriOverlayWindowBackend::new(&handle);
-                let window_exists = backend.window_exists(OVERLAY_WINDOW_LABEL);
-                let mut manager = overlay_manager.lock().await;
-
-                let needs_transition = if enabled {
-                    last_enabled != Some(true) || !window_exists || !manager.visible()
-                } else {
-                    last_enabled != Some(false) || window_exists || manager.visible()
-                };
-
-                if !needs_transition {
+                if last_enabled == Some(enabled) {
                     continue;
                 }
 
-                let result = if enabled {
-                    manager.show(&config_store, &backend)
-                } else {
-                    manager.hide(&config_store, &backend)
-                };
+                let backend = TauriOverlayWindowBackend::new(&handle);
 
-                match result {
-                    Ok(()) => {
-                        last_enabled = Some(enabled);
+                if !enabled {
+                    // Disabled: hide and destroy any existing window.
+                    let mut manager = overlay_manager.lock().await;
+                    if let Err(error) = manager.hide(&config_store, &backend) {
+                        log::warn!("Overlay hide on disable failed: {error}");
                     }
-                    Err(error) => {
-                        log::warn!("Overlay window sync failed: {}", error);
+                } else {
+                    // Enabled: pre-create the window (hidden) so show is fast.
+                    let backend_ref = &backend;
+                    if !backend_ref.window_exists(OVERLAY_WINDOW_LABEL) {
+                        if let Err(error) = backend_ref.create_window(OVERLAY_WINDOW_LABEL) {
+                            log::warn!("Overlay window pre-creation failed: {error}");
+                        }
                     }
                 }
+
+                last_enabled = Some(enabled);
             }
         });
     }
@@ -1402,6 +1407,17 @@ impl IntegrationManager {
                         continue;
                     }
                 };
+
+                // Keep the tray device cache up to date on every successful poll.
+                if let Some(ref handle) = app_handle {
+                    let cache = handle.state::<crate::tray::TrayDeviceCache>();
+                    cache.update(
+                        &devices
+                            .iter()
+                            .map(|d| (d.uid.clone(), d.name.clone()))
+                            .collect::<Vec<_>>(),
+                    );
+                }
 
                 let Some(previous) = previous_devices.as_ref() else {
                     previous_devices = Some(devices);
@@ -2241,6 +2257,11 @@ impl IntegrationManager {
         let focus = capture_focus();
         let app_config = config::load_config();
         let params = recording_start_params(session_id.as_str(), &app_config);
+
+        // Play start cue BEFORE mic capture begins and wait for the pre-roll
+        // delay so the beep is less likely to be picked up by the microphone.
+        play_lifecycle_audio_cue(CueType::StartRecording);
+        tokio::time::sleep(crate::audio_cue::START_CUE_PRE_ROLL).await;
 
         let start_response: Value = {
             let client_guard = rpc_client.read().await;
@@ -3162,7 +3183,7 @@ impl IntegrationManager {
 
                     emit_with_shared_seq(
                         handle,
-                        &[EVENT_STATE_CHANGED, EVENT_STATE_CHANGED_LEGACY],
+                        &[EVENT_STATE_CHANGED],
                         state_changed_event_payload(&event),
                         &event_seq,
                     );
@@ -3180,6 +3201,7 @@ impl IntegrationManager {
         let current_session_id = Arc::clone(&self.current_session_id);
         let app_handle = self.app_handle.clone();
         let event_seq = Arc::clone(&self.event_seq);
+        let overlay_manager = Arc::clone(&self.overlay_manager);
 
         tokio::spawn(async move {
             let mut receiver = recording_controller.subscribe();
@@ -3189,6 +3211,19 @@ impl IntegrationManager {
             while let Ok(event) = receiver.recv().await {
                 if let Some(cue) = recording_event_audio_cue(&event) {
                     play_lifecycle_audio_cue(cue);
+                }
+
+                // Drive overlay show/hide based on recording lifecycle.
+                let recording_active = is_overlay_recording_active(&event);
+                if let Some(ref handle) = app_handle {
+                    let config_store = FileOverlayConfigStore;
+                    let backend = TauriOverlayWindowBackend::new(handle);
+                    let mut manager = overlay_manager.lock().await;
+                    if let Err(error) =
+                        manager.handle_recording_state(recording_active, &config_store, &backend)
+                    {
+                        log::debug!("Overlay recording state transition failed: {error}");
+                    }
                 }
 
                 match event {
@@ -3463,7 +3498,7 @@ impl IntegrationManager {
                         if let Some(ref handle) = app_handle {
                             emit_with_shared_seq(
                                 handle,
-                                &[EVENT_TRANSCRIPT_COMPLETE, EVENT_TRANSCRIPTION_COMPLETE],
+                                &[EVENT_TRANSCRIPT_COMPLETE],
                                 transcript_complete_event_payload(&transcript_entry),
                                 &event_seq,
                             );
@@ -3513,7 +3548,7 @@ impl IntegrationManager {
                                 transcription_failure_app_error(&session_id, error.as_str());
                             emit_with_shared_seq(
                                 handle,
-                                &[EVENT_TRANSCRIPT_ERROR, EVENT_TRANSCRIPTION_ERROR],
+                                &[EVENT_TRANSCRIPT_ERROR],
                                 transcription_error_event_payload(&session_id, &app_error),
                                 &event_seq,
                             );
@@ -3837,12 +3872,6 @@ impl IntegrationManager {
                                 handle,
                                 EVENT_SIDECAR_STATUS,
                                 canonical_sidecar_payload,
-                                seq,
-                            );
-                            emit_with_existing_seq_to_all_windows(
-                                handle,
-                                EVENT_STATUS_CHANGED,
-                                event.params,
                                 seq,
                             );
                         }
@@ -4673,28 +4702,24 @@ for raw in sys.stdin:
             timestamp: chrono::Utc::now(),
         };
 
-        println!("[EVENT_TEST] Emitting canonical+legacy state events");
+        println!("[EVENT_TEST] Emitting canonical state event");
         let emitted_seq = emit_with_shared_seq_for_broadcaster(
             &broadcaster,
-            &[EVENT_STATE_CHANGED, EVENT_STATE_CHANGED_LEGACY],
+            &[EVENT_STATE_CHANGED],
             state_changed_event_payload(&event),
             &seq_counter,
         );
-        println!("[EVENT_TEST] state events emitted with seq={emitted_seq}");
+        println!("[EVENT_TEST] state event emitted with seq={emitted_seq}");
 
         let main_events = broadcaster.received_event_names("main");
         assert_eq!(
             main_events,
-            vec![
-                EVENT_STATE_CHANGED.to_string(),
-                EVENT_STATE_CHANGED_LEGACY.to_string()
-            ]
+            vec![EVENT_STATE_CHANGED.to_string()]
         );
 
         let payloads = broadcaster.received_payloads("main");
-        assert_eq!(payloads.len(), 2);
+        assert_eq!(payloads.len(), 1);
         assert_eq!(payloads[0].get("seq").and_then(Value::as_u64), Some(1));
-        assert_eq!(payloads[1].get("seq").and_then(Value::as_u64), Some(1));
         assert_eq!(
             payloads[0].get("detail").and_then(Value::as_str),
             Some("capturing")
@@ -4716,10 +4741,10 @@ for raw in sys.stdin:
         .with_session_id(Some(session_id))
         .with_asr_metadata(Some("en".to_string()), Some(0.91));
 
-        println!("[EVENT_TEST] Emitting canonical+legacy transcript complete events");
+        println!("[EVENT_TEST] Emitting canonical transcript complete event");
         emit_with_shared_seq_for_broadcaster(
             &broadcaster,
-            &[EVENT_TRANSCRIPT_COMPLETE, EVENT_TRANSCRIPTION_COMPLETE],
+            &[EVENT_TRANSCRIPT_COMPLETE],
             transcript_complete_event_payload(&entry),
             &seq_counter,
         );
@@ -4730,10 +4755,10 @@ for raw in sys.stdin:
             Some(json!({ "restart_count": 1 })),
             false,
         );
-        println!("[EVENT_TEST] Emitting canonical+legacy transcript error events");
+        println!("[EVENT_TEST] Emitting canonical transcript error event");
         emit_with_shared_seq_for_broadcaster(
             &broadcaster,
-            &[EVENT_TRANSCRIPT_ERROR, EVENT_TRANSCRIPTION_ERROR],
+            &[EVENT_TRANSCRIPT_ERROR],
             transcription_error_event_payload("session-1", &app_error),
             &seq_counter,
         );
@@ -4743,18 +4768,14 @@ for raw in sys.stdin:
             events,
             vec![
                 EVENT_TRANSCRIPT_COMPLETE.to_string(),
-                EVENT_TRANSCRIPTION_COMPLETE.to_string(),
                 EVENT_TRANSCRIPT_ERROR.to_string(),
-                EVENT_TRANSCRIPTION_ERROR.to_string()
             ]
         );
 
         let payloads = broadcaster.received_payloads("main");
-        assert_eq!(payloads.len(), 4);
+        assert_eq!(payloads.len(), 2);
         assert_eq!(payloads[0].get("seq").and_then(Value::as_u64), Some(1));
-        assert_eq!(payloads[1].get("seq").and_then(Value::as_u64), Some(1));
-        assert_eq!(payloads[2].get("seq").and_then(Value::as_u64), Some(2));
-        assert_eq!(payloads[3].get("seq").and_then(Value::as_u64), Some(2));
+        assert_eq!(payloads[1].get("seq").and_then(Value::as_u64), Some(2));
 
         let complete_entry = &payloads[0]["entry"];
         assert_eq!(
@@ -4774,9 +4795,9 @@ for raw in sys.stdin:
             Some("en")
         );
 
-        assert!(payloads[2].get("error").is_some());
+        assert!(payloads[1].get("error").is_some());
         assert_eq!(
-            payloads[2].get("message").and_then(Value::as_str),
+            payloads[1].get("message").and_then(Value::as_str),
             Some("Sidecar crashed")
         );
     }
@@ -5479,12 +5500,14 @@ for raw in sys.stdin:
         let now = chrono::Utc::now();
         let session_id = "session-1".to_string();
 
+        // Started is None because start cue is played pre-roll in
+        // start_recording_flow before mic capture begins.
         assert_eq!(
             recording_event_audio_cue(&RecordingEvent::Started {
                 session_id: session_id.clone(),
                 timestamp: now,
             }),
-            Some(CueType::StartRecording)
+            None
         );
 
         assert_eq!(
@@ -5534,6 +5557,60 @@ for raw in sys.stdin:
             }),
             None
         );
+    }
+
+    #[test]
+    fn test_overlay_active_during_recording_and_transcribing() {
+        let now = chrono::Utc::now();
+        let session_id = "session-1".to_string();
+
+        // Active during recording
+        assert!(is_overlay_recording_active(&RecordingEvent::Started {
+            session_id: session_id.clone(),
+            timestamp: now,
+        }));
+
+        // Active during transcription (Stopped = mic off, transcription in progress)
+        assert!(is_overlay_recording_active(&RecordingEvent::Stopped {
+            session_id: session_id.clone(),
+            duration_ms: 1200,
+            timestamp: now,
+        }));
+    }
+
+    #[test]
+    fn test_overlay_inactive_on_terminal_recording_events() {
+        let now = chrono::Utc::now();
+        let session_id = "session-1".to_string();
+
+        assert!(!is_overlay_recording_active(
+            &RecordingEvent::TranscriptionComplete {
+                session_id: session_id.clone(),
+                text: "hello".to_string(),
+                audio_duration_ms: 1200,
+                processing_duration_ms: 300,
+                timestamp: now,
+            }
+        ));
+
+        assert!(!is_overlay_recording_active(
+            &RecordingEvent::TranscriptionFailed {
+                session_id: session_id.clone(),
+                error: "decoder crash".to_string(),
+                timestamp: now,
+            }
+        ));
+
+        assert!(!is_overlay_recording_active(&RecordingEvent::Cancelled {
+            session_id,
+            reason: CancelReason::UserButton,
+            timestamp: now,
+        }));
+
+        assert!(!is_overlay_recording_active(&RecordingEvent::TooShort {
+            duration_ms: 50,
+            timestamp: now,
+        }));
     }
 
     #[test]
@@ -5631,7 +5708,7 @@ for raw in sys.stdin:
     }
 
     #[test]
-    fn test_sidecar_status_bridge_emits_canonical_and_legacy_with_shared_seq() {
+    fn test_sidecar_status_bridge_emits_canonical_event_with_seq() {
         // Regression (qf3m): the event.status_changed bridge must emit both
         // sidecar:status (canonical) and status:changed (legacy) with the same seq.
         let broadcaster = MockBroadcaster::with_windows(&["main"]);
@@ -5643,12 +5720,6 @@ for raw in sys.stdin:
             Some("Sidecar ready".to_string()),
             Some(0),
         );
-        let raw_params = json!({
-            "state": "idle",
-            "detail": "Sidecar ready",
-            "restart_count": 0,
-        });
-
         let seq = next_seq(&seq_counter);
         emit_with_existing_seq_to_all_windows(
             &broadcaster,
@@ -5656,18 +5727,11 @@ for raw in sys.stdin:
             canonical_payload,
             seq,
         );
-        emit_with_existing_seq_to_all_windows(
-            &broadcaster,
-            EVENT_STATUS_CHANGED,
-            raw_params,
-            seq,
-        );
 
         let event_names = broadcaster.received_event_names("main");
         let payloads = broadcaster.received_payloads("main");
-        assert_eq!(event_names.len(), 2, "Bridge must emit exactly 2 events");
+        assert_eq!(event_names.len(), 1, "Bridge must emit exactly 1 canonical event");
 
-        // First: canonical sidecar:status
         assert_eq!(event_names[0], "sidecar:status");
         assert_eq!(
             payloads[0].get("state").and_then(Value::as_str),
@@ -5675,17 +5739,6 @@ for raw in sys.stdin:
         );
         let canonical_seq = payloads[0].get("seq").and_then(Value::as_u64);
         assert!(canonical_seq.is_some(), "canonical event must have seq");
-
-        // Second: legacy status:changed
-        assert_eq!(event_names[1], "status:changed");
-        let legacy_seq = payloads[1].get("seq").and_then(Value::as_u64);
-        assert!(legacy_seq.is_some(), "legacy event must have seq");
-
-        // Both must share the same seq
-        assert_eq!(
-            canonical_seq, legacy_seq,
-            "canonical and legacy events must share the same seq"
-        );
     }
 
     #[test]

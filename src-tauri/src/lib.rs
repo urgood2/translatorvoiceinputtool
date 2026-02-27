@@ -73,6 +73,7 @@ pub fn run() {
         .manage(IntegrationState(Arc::clone(&integration_manager)))
         .manage(state_manager)
         .manage(transcript_history)
+        .manage(tray::TrayDeviceCache::new())
         .invoke_handler(tauri::generate_handler![
             // State commands
             commands::get_app_state,

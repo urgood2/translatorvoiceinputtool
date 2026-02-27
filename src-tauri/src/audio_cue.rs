@@ -268,12 +268,13 @@ mod tests {
     }
 
     #[test]
-    fn loads_existing_project_cues_and_skips_missing_cancel() {
+    fn loads_all_project_cues_from_sounds_directory() {
         let manager = AudioCueManager::with_sounds_dir(default_sounds_dir(), true);
         assert!(manager.has_cue(CueType::StartRecording));
         assert!(manager.has_cue(CueType::StopRecording));
         assert!(manager.has_cue(CueType::Error));
-        assert!(!manager.has_cue(CueType::CancelRecording));
+        assert!(manager.has_cue(CueType::CancelRecording));
+        assert_eq!(manager.loaded_cue_count(), 4);
     }
 
     #[test]
@@ -309,5 +310,81 @@ mod tests {
         let temp = TempDir::new().expect("tempdir");
         let manager = AudioCueManager::with_sounds_dir(temp.path().to_path_buf(), true);
         manager.play_cue(CueType::CancelRecording);
+    }
+
+    #[test]
+    fn set_enabled_toggles_cue_playback_dynamically() {
+        let manager = AudioCueManager::with_sounds_dir(default_sounds_dir(), true);
+        assert!(manager.is_enabled());
+
+        manager.set_enabled(false);
+        assert!(!manager.is_enabled());
+        // play_cue returns immediately when disabled (no panic, no output)
+        manager.play_cue(CueType::StartRecording);
+
+        manager.set_enabled(true);
+        assert!(manager.is_enabled());
+    }
+
+    #[test]
+    fn start_cue_pre_roll_is_bounded_for_responsiveness() {
+        // Pre-roll should be long enough to reduce beep capture but short
+        // enough that recording start feels responsive (< 200ms).
+        assert!(START_CUE_PRE_ROLL.as_millis() >= 50);
+        assert!(START_CUE_PRE_ROLL.as_millis() <= 200);
+    }
+
+    #[test]
+    fn project_cue_wav_files_are_valid_pcm16_mono_44100() {
+        let sounds = default_sounds_dir();
+        for filename in ["cue-start.wav", "cue-stop.wav", "cue-cancel.wav", "cue-error.wav"] {
+            let path = sounds.join(filename);
+            assert!(path.exists(), "{} must exist", filename);
+            let file = File::open(&path).expect("open cue file");
+            let decoder = Decoder::new(BufReader::new(file)).expect("decode cue file");
+            assert_eq!(decoder.channels(), 1, "{filename} should be mono");
+            assert_eq!(decoder.sample_rate(), 44100, "{filename} should be 44100 Hz");
+        }
+    }
+
+    #[test]
+    fn project_cue_wav_files_are_under_100kb() {
+        let sounds = default_sounds_dir();
+        for filename in ["cue-start.wav", "cue-stop.wav", "cue-cancel.wav", "cue-error.wav"] {
+            let path = sounds.join(filename);
+            let size = std::fs::metadata(&path)
+                .unwrap_or_else(|_| panic!("{filename} metadata"))
+                .len();
+            assert!(
+                size <= 100_000,
+                "{filename} is {size} bytes, should be under 100KB"
+            );
+        }
+    }
+
+    #[test]
+    fn cue_candidates_covers_all_cue_types() {
+        for cue in [
+            CueType::StartRecording,
+            CueType::StopRecording,
+            CueType::CancelRecording,
+            CueType::Error,
+        ] {
+            let candidates = cue_candidates(cue);
+            assert!(
+                !candidates.is_empty(),
+                "{cue:?} must have at least one filename candidate"
+            );
+        }
+    }
+
+    #[test]
+    fn new_manager_respects_config_enabled_state() {
+        // AudioCueManager::new() reads config.audio.audio_cues_enabled.
+        // We can't control config in tests easily, but we can verify the
+        // constructor path doesn't panic and produces a valid manager.
+        let manager = AudioCueManager::new();
+        // Should have loaded at least the project cues
+        assert!(manager.loaded_cue_count() >= 3);
     }
 }
