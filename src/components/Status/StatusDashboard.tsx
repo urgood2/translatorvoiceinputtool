@@ -195,6 +195,16 @@ export function StatusDashboard({ onNavigateSettings }: StatusDashboardProps = {
             </button>
           )}
         </div>
+        {appState === 'recording' && config?.audio.vad_enabled ? (
+          <p
+            className="mt-2 text-xs text-purple-600 dark:text-purple-300"
+            data-testid="vad-active-badge"
+          >
+            <span aria-hidden="true">&#9679; </span>
+            Auto-stop enabled &mdash; will stop after{' '}
+            {(config.audio.vad_silence_ms / 1000).toFixed(1)}s of silence
+          </p>
+        ) : null}
         {appState === 'error' && errorDetail ? (
           <p
             role="alert"

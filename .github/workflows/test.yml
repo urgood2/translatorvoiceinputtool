@@ -180,6 +180,13 @@ jobs:
       - name: Run TypeScript tests
         run: bun run test
 
+      - name: Verify frontend build produces overlay assets
+        run: |
+          bun run build
+          test -f dist/index.html || { echo "FAIL: dist/index.html missing"; exit 1; }
+          test -f dist/overlay.html || { echo "FAIL: dist/overlay.html missing"; exit 1; }
+          echo "OK: both index.html and overlay.html present in dist/"
+
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()

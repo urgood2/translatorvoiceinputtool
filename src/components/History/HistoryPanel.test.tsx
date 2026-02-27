@@ -366,6 +366,107 @@ describe('HistoryPanel', () => {
     expect(onClearAll).toHaveBeenCalledTimes(1);
   });
 
+  it('shows export buttons when onExport is provided', () => {
+    render(
+      <HistoryPanel
+        entries={mockEntries}
+        onCopy={vi.fn().mockResolvedValue(undefined)}
+        onExport={vi.fn().mockResolvedValue('/tmp/export.md')}
+      />
+    );
+    expect(screen.getByTestId('history-export-md-button')).toBeDefined();
+    expect(screen.getByTestId('history-export-csv-button')).toBeDefined();
+  });
+
+  it('does not show export buttons when onExport is not provided', () => {
+    render(
+      <HistoryPanel
+        entries={mockEntries}
+        onCopy={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+    expect(screen.queryByTestId('history-export-md-button')).toBeNull();
+    expect(screen.queryByTestId('history-export-csv-button')).toBeNull();
+  });
+
+  it('disables export buttons when history is empty', () => {
+    render(
+      <HistoryPanel
+        entries={[]}
+        onCopy={vi.fn().mockResolvedValue(undefined)}
+        onExport={vi.fn().mockResolvedValue('/tmp/export.md')}
+      />
+    );
+    expect(screen.getByTestId('history-export-md-button')).toBeDisabled();
+    expect(screen.getByTestId('history-export-csv-button')).toBeDisabled();
+  });
+
+  it('calls onExport with markdown format and shows success message', async () => {
+    const onExport = vi.fn().mockResolvedValue('/home/user/export.md');
+    render(
+      <HistoryPanel
+        entries={mockEntries}
+        onCopy={vi.fn().mockResolvedValue(undefined)}
+        onExport={onExport}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('history-export-md-button'));
+    expect(onExport).toHaveBeenCalledWith('markdown');
+
+    expect(await screen.findByTestId('history-export-success')).toBeDefined();
+    expect(screen.getByText('/home/user/export.md')).toBeDefined();
+  });
+
+  it('calls onExport with csv format', async () => {
+    const onExport = vi.fn().mockResolvedValue('/home/user/export.csv');
+    render(
+      <HistoryPanel
+        entries={mockEntries}
+        onCopy={vi.fn().mockResolvedValue(undefined)}
+        onExport={onExport}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('history-export-csv-button'));
+    expect(onExport).toHaveBeenCalledWith('csv');
+
+    expect(await screen.findByTestId('history-export-success')).toBeDefined();
+  });
+
+  it('shows error message when export fails', async () => {
+    const onExport = vi.fn().mockRejectedValue(new Error('Disk full'));
+    render(
+      <HistoryPanel
+        entries={mockEntries}
+        onCopy={vi.fn().mockResolvedValue(undefined)}
+        onExport={onExport}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('history-export-md-button'));
+
+    expect(await screen.findByTestId('history-export-error')).toBeDefined();
+    expect(screen.getByText(/Disk full/)).toBeDefined();
+  });
+
+  it('dismisses export success message when dismiss is clicked', async () => {
+    const onExport = vi.fn().mockResolvedValue('/tmp/export.md');
+    render(
+      <HistoryPanel
+        entries={mockEntries}
+        onCopy={vi.fn().mockResolvedValue(undefined)}
+        onExport={onExport}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('history-export-md-button'));
+    expect(await screen.findByTestId('history-export-success')).toBeDefined();
+
+    fireEvent.click(screen.getByTestId('history-export-dismiss'));
+    expect(screen.queryByTestId('history-export-success')).toBeNull();
+  });
+
   it('shows empty placeholder after successful clear', async () => {
     function Harness() {
       const [entries, setEntries] = useState(mockEntries);

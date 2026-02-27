@@ -13,10 +13,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { TranscriptEntry } from '../../types';
 import { HistoryEntry } from './HistoryEntry';
 
+export type ExportFormat = 'markdown' | 'csv';
+
 export interface HistoryPanelProps {
   entries: TranscriptEntry[];
   onCopy: (id: string) => Promise<void>;
   onClearAll?: () => Promise<void>;
+  onExport?: (format: ExportFormat) => Promise<string>;
 }
 
 function getFocusableElements(container: HTMLElement): HTMLElement[] {
@@ -27,12 +30,15 @@ function getFocusableElements(container: HTMLElement): HTMLElement[] {
   );
 }
 
-export function HistoryPanel({ entries, onCopy, onClearAll }: HistoryPanelProps) {
+export function HistoryPanel({ entries, onCopy, onClearAll, onExport }: HistoryPanelProps) {
   const [searchInput, setSearchInput] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportResult, setExportResult] = useState<{ path: string } | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const clearAllButtonRef = useRef<HTMLButtonElement | null>(null);
   const clearDialogRef = useRef<HTMLDivElement | null>(null);
   const wasDialogOpenRef = useRef(false);
@@ -141,6 +147,25 @@ export function HistoryPanel({ entries, onCopy, onClearAll }: HistoryPanelProps)
     : `${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}`;
 
   const clearDisabled = entries.length === 0 || isClearing;
+  const exportDisabled = entries.length === 0 || isExporting;
+
+  const handleExport = async (format: ExportFormat) => {
+    if (!onExport) {
+      return;
+    }
+
+    setExportError(null);
+    setExportResult(null);
+    setIsExporting(true);
+    try {
+      const path = await onExport(format);
+      setExportResult({ path });
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : 'Export failed');
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const onConfirmClear = async () => {
     if (!onClearAll) {
@@ -175,6 +200,28 @@ export function HistoryPanel({ entries, onCopy, onClearAll }: HistoryPanelProps)
           >
             {summaryLabel}
           </span>
+          {onExport ? (
+            <span className="inline-flex rounded-md shadow-sm" role="group" aria-label="Export history">
+              <button
+                type="button"
+                data-testid="history-export-md-button"
+                disabled={exportDisabled}
+                onClick={() => void handleExport('markdown')}
+                className="rounded-l-md border border-gray-300 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+              >
+                {isExporting ? 'Exporting…' : 'Export MD'}
+              </button>
+              <button
+                type="button"
+                data-testid="history-export-csv-button"
+                disabled={exportDisabled}
+                onClick={() => void handleExport('csv')}
+                className="-ml-px rounded-r-md border border-gray-300 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+              >
+                CSV
+              </button>
+            </span>
+          ) : null}
           <button
             type="button"
             data-testid="history-clear-all-button"
@@ -211,6 +258,37 @@ export function HistoryPanel({ entries, onCopy, onClearAll }: HistoryPanelProps)
           </button>
         ) : null}
       </div>
+
+      {exportResult ? (
+        <div
+          role="status"
+          data-testid="history-export-success"
+          className="rounded-md border border-emerald-600/40 bg-emerald-50 p-2.5 text-xs text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-900/20 dark:text-emerald-300"
+        >
+          Exported to{' '}
+          <code className="break-all rounded bg-emerald-100 px-1 py-0.5 dark:bg-emerald-800/40">
+            {exportResult.path}
+          </code>
+          <button
+            type="button"
+            data-testid="history-export-dismiss"
+            onClick={() => setExportResult(null)}
+            className="ml-2 text-emerald-600 underline hover:text-emerald-500 dark:text-emerald-400"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      {exportError ? (
+        <div
+          role="alert"
+          data-testid="history-export-error"
+          className="rounded-md border border-red-600/40 bg-red-50 p-2.5 text-xs text-red-700 dark:border-red-500/30 dark:bg-red-900/20 dark:text-red-300"
+        >
+          Export failed: {exportError}
+        </div>
+      ) : null}
 
       {entries.length === 0 ? (
         <div className="flex h-full min-h-0 items-center justify-center rounded-lg bg-gray-50 p-8 text-center text-gray-500 dark:bg-gray-800 dark:text-gray-400">

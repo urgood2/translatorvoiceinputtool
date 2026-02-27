@@ -33,6 +33,8 @@ interface SettingsPanelProps {
   onStopMicTest?: () => Promise<void>;
   onRefreshDevices?: () => Promise<void> | void;
   onConfigChange: (path: string[], value: any) => Promise<void>;
+  onPurgeHistory?: () => Promise<void>;
+  historyCount?: number;
   isLoading?: boolean;
 }
 
@@ -88,6 +90,8 @@ export function SettingsPanel({
   onStopMicTest,
   onRefreshDevices,
   onConfigChange,
+  onPurgeHistory,
+  historyCount = 0,
   isLoading,
 }: SettingsPanelProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>('audio');
@@ -99,6 +103,10 @@ export function SettingsPanel({
     { id: 'appearance', label: 'Appearance' },
   ];
   const themeOptions = ['system', 'light', 'dark'] as const;
+  const [showPurgeConfirm, setShowPurgeConfirm] = useState(false);
+  const [isPurging, setIsPurging] = useState(false);
+  const [purgeError, setPurgeError] = useState<string | null>(null);
+  const [purgeSuccess, setPurgeSuccess] = useState(false);
 
   // Helper to create path-based config updaters
   const handleAudioChange = async (key: string, value: any) => {
@@ -274,6 +282,92 @@ export function SettingsPanel({
               audioLevel={audioLevel ?? null}
               isRunning={isMeterRunning}
             />
+
+            {/* VAD Auto-Stop settings */}
+            <div className="space-y-4">
+              <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-400">
+                Voice Activity Detection
+              </h3>
+
+              {/* VAD enable toggle */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <label id="vad-enabled-label" htmlFor="vad-enabled" className="font-medium text-gray-900 dark:text-gray-100">
+                    Auto-Stop on Silence
+                  </label>
+                  <p id="vad-enabled-description" className="text-sm text-gray-500 dark:text-gray-400">
+                    Automatically stop recording after a pause in speech
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  id="vad-enabled"
+                  role="switch"
+                  aria-checked={config.audio.vad_enabled}
+                  aria-labelledby="vad-enabled-label"
+                  aria-describedby="vad-enabled-description"
+                  onClick={() => handleAudioChange('vad_enabled', !config.audio.vad_enabled)}
+                  disabled={isLoading}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors
+                             ${config.audio.vad_enabled ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}
+                             disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform
+                               ${config.audio.vad_enabled ? 'translate-x-6' : 'translate-x-1'}`}
+                  />
+                </button>
+              </div>
+
+              {/* VAD parameter sliders (only shown when enabled) */}
+              {config.audio.vad_enabled && (
+                <div className="space-y-4 pl-1">
+                  {/* Silence duration slider */}
+                  <div>
+                    <label htmlFor="vad-silence-ms" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Silence before stop: {(config.audio.vad_silence_ms / 1000).toFixed(1)}s
+                    </label>
+                    <input
+                      id="vad-silence-ms"
+                      type="range"
+                      min={400}
+                      max={5000}
+                      step={100}
+                      value={config.audio.vad_silence_ms}
+                      onChange={(e) => handleAudioChange('vad_silence_ms', Number(e.target.value))}
+                      disabled={isLoading}
+                      className="w-full accent-blue-500"
+                    />
+                    <div className="flex justify-between text-xs text-gray-400">
+                      <span>0.4s</span>
+                      <span>5.0s</span>
+                    </div>
+                  </div>
+
+                  {/* Min speech duration slider */}
+                  <div>
+                    <label htmlFor="vad-min-speech-ms" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Min speech before stop: {(config.audio.vad_min_speech_ms / 1000).toFixed(1)}s
+                    </label>
+                    <input
+                      id="vad-min-speech-ms"
+                      type="range"
+                      min={100}
+                      max={2000}
+                      step={50}
+                      value={config.audio.vad_min_speech_ms}
+                      onChange={(e) => handleAudioChange('vad_min_speech_ms', Number(e.target.value))}
+                      disabled={isLoading}
+                      className="w-full accent-blue-500"
+                    />
+                    <div className="flex justify-between text-xs text-gray-400">
+                      <span>0.1s</span>
+                      <span>2.0s</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -332,6 +426,100 @@ export function SettingsPanel({
             <p className="text-xs text-gray-500 dark:text-gray-400">
               Choose &ldquo;System&rdquo; to follow your OS preference.
             </p>
+
+            {/* Data Management */}
+            {onPurgeHistory ? (
+              <div className="mt-6 space-y-3 border-t border-gray-200 pt-4 dark:border-gray-700">
+                <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-400">
+                  Data
+                </h3>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-gray-900 dark:text-gray-100">Transcript History</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      {historyCount === 0
+                        ? 'No entries stored.'
+                        : `${historyCount} ${historyCount === 1 ? 'entry' : 'entries'} stored.`}
+                      {config.history.persistence_mode === 'disk' ? ' Saved to disk.' : ' In memory only.'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="settings-purge-history-button"
+                    disabled={historyCount === 0 || isPurging}
+                    onClick={() => {
+                      setPurgeError(null);
+                      setPurgeSuccess(false);
+                      setShowPurgeConfirm(true);
+                    }}
+                    className="rounded-md border border-red-300 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-900/20"
+                  >
+                    Purge History
+                  </button>
+                </div>
+
+                {purgeSuccess ? (
+                  <p data-testid="settings-purge-success" className="text-xs text-emerald-600 dark:text-emerald-400">
+                    History purged successfully.
+                  </p>
+                ) : null}
+
+                {purgeError ? (
+                  <p role="alert" data-testid="settings-purge-error" className="text-xs text-red-600 dark:text-red-400">
+                    {purgeError}
+                  </p>
+                ) : null}
+
+                {showPurgeConfirm ? (
+                  <div
+                    data-testid="settings-purge-confirm-dialog"
+                    className="rounded-md border border-red-300 bg-red-50 p-3 dark:border-red-700 dark:bg-red-900/20"
+                  >
+                    <p className="text-sm font-medium text-red-700 dark:text-red-300">
+                      Permanently delete all transcript history?
+                    </p>
+                    <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+                      This removes both in-memory and disk-persisted history. This action cannot be undone.
+                    </p>
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        type="button"
+                        data-testid="settings-purge-confirm"
+                        disabled={isPurging}
+                        onClick={async () => {
+                          setPurgeError(null);
+                          setIsPurging(true);
+                          try {
+                            await onPurgeHistory();
+                            setPurgeSuccess(true);
+                            setShowPurgeConfirm(false);
+                          } catch (error) {
+                            setPurgeError(error instanceof Error ? error.message : 'Purge failed');
+                          } finally {
+                            setIsPurging(false);
+                          }
+                        }}
+                        className="rounded-md bg-red-600 px-3 py-1 text-xs font-semibold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {isPurging ? 'Purging…' : 'Confirm Purge'}
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="settings-purge-cancel"
+                        disabled={isPurging}
+                        onClick={() => {
+                          setShowPurgeConfirm(false);
+                          setPurgeError(null);
+                        }}
+                        className="rounded-md border border-gray-300 px-3 py-1 text-xs text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         )}
       </div>

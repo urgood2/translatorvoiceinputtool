@@ -476,10 +476,198 @@ describe('SettingsPanel', () => {
     );
 
     // Toggle audio cues
-    const toggle = screen.getByRole('switch');
+    const toggle = screen.getByRole('switch', { name: /audio cues/i });
     fireEvent.click(toggle);
 
     expect(onConfigChange).toHaveBeenCalledWith(['audio', 'audio_cues_enabled'], false);
+  });
+
+  it('renders VAD toggle in audio tab', () => {
+    render(
+      <SettingsPanel
+        config={mockConfig}
+        devices={mockDevices}
+        onConfigChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText('Voice Activity Detection')).toBeDefined();
+    expect(screen.getByText('Auto-Stop on Silence')).toBeDefined();
+    const vadToggle = screen.getByRole('switch', { name: /auto-stop on silence/i });
+    expect(vadToggle.getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('does not show VAD sliders when VAD is disabled', () => {
+    render(
+      <SettingsPanel
+        config={mockConfig}
+        devices={mockDevices}
+        onConfigChange={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByLabelText(/silence before stop/i)).toBeNull();
+    expect(screen.queryByLabelText(/min speech before stop/i)).toBeNull();
+  });
+
+  it('shows VAD sliders when VAD is enabled', () => {
+    const vadConfig = {
+      ...mockConfig,
+      audio: { ...mockConfig.audio, vad_enabled: true },
+    };
+    render(
+      <SettingsPanel
+        config={vadConfig}
+        devices={mockDevices}
+        onConfigChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText(/silence before stop/i)).toBeDefined();
+    expect(screen.getByLabelText(/min speech before stop/i)).toBeDefined();
+  });
+
+  it('toggles VAD enabled via onConfigChange', () => {
+    const onConfigChange = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SettingsPanel
+        config={mockConfig}
+        devices={mockDevices}
+        onConfigChange={onConfigChange}
+      />
+    );
+
+    const vadToggle = screen.getByRole('switch', { name: /auto-stop on silence/i });
+    fireEvent.click(vadToggle);
+
+    expect(onConfigChange).toHaveBeenCalledWith(['audio', 'vad_enabled'], true);
+  });
+
+  it('updates VAD silence_ms slider via onConfigChange', () => {
+    const onConfigChange = vi.fn().mockResolvedValue(undefined);
+    const vadConfig = {
+      ...mockConfig,
+      audio: { ...mockConfig.audio, vad_enabled: true },
+    };
+    render(
+      <SettingsPanel
+        config={vadConfig}
+        devices={mockDevices}
+        onConfigChange={onConfigChange}
+      />
+    );
+
+    const silenceSlider = screen.getByLabelText(/silence before stop/i);
+    fireEvent.change(silenceSlider, { target: { value: '2000' } });
+
+    expect(onConfigChange).toHaveBeenCalledWith(['audio', 'vad_silence_ms'], 2000);
+  });
+
+  it('updates VAD min_speech_ms slider via onConfigChange', () => {
+    const onConfigChange = vi.fn().mockResolvedValue(undefined);
+    const vadConfig = {
+      ...mockConfig,
+      audio: { ...mockConfig.audio, vad_enabled: true },
+    };
+    render(
+      <SettingsPanel
+        config={vadConfig}
+        devices={mockDevices}
+        onConfigChange={onConfigChange}
+      />
+    );
+
+    const minSpeechSlider = screen.getByLabelText(/min speech before stop/i);
+    fireEvent.change(minSpeechSlider, { target: { value: '500' } });
+
+    expect(onConfigChange).toHaveBeenCalledWith(['audio', 'vad_min_speech_ms'], 500);
+  });
+
+  it('shows purge button in appearance tab when onPurgeHistory is provided', () => {
+    render(
+      <SettingsPanel
+        config={mockConfig}
+        devices={mockDevices}
+        onConfigChange={vi.fn()}
+        onPurgeHistory={vi.fn().mockResolvedValue(undefined)}
+        historyCount={5}
+      />
+    );
+    fireEvent.click(screen.getByText('Appearance'));
+    expect(screen.getByTestId('settings-purge-history-button')).toBeDefined();
+    expect(screen.getByText(/5 entries stored/)).toBeDefined();
+  });
+
+  it('disables purge button when history is empty', () => {
+    render(
+      <SettingsPanel
+        config={mockConfig}
+        devices={mockDevices}
+        onConfigChange={vi.fn()}
+        onPurgeHistory={vi.fn().mockResolvedValue(undefined)}
+        historyCount={0}
+      />
+    );
+    fireEvent.click(screen.getByText('Appearance'));
+    expect(screen.getByTestId('settings-purge-history-button')).toBeDisabled();
+    expect(screen.getByText(/No entries stored/)).toBeDefined();
+  });
+
+  it('shows purge confirmation and calls handler on confirm', async () => {
+    const onPurgeHistory = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SettingsPanel
+        config={mockConfig}
+        devices={mockDevices}
+        onConfigChange={vi.fn()}
+        onPurgeHistory={onPurgeHistory}
+        historyCount={3}
+      />
+    );
+    fireEvent.click(screen.getByText('Appearance'));
+    fireEvent.click(screen.getByTestId('settings-purge-history-button'));
+    expect(screen.getByTestId('settings-purge-confirm-dialog')).toBeDefined();
+
+    fireEvent.click(screen.getByTestId('settings-purge-confirm'));
+    expect(onPurgeHistory).toHaveBeenCalledTimes(1);
+
+    expect(await screen.findByTestId('settings-purge-success')).toBeDefined();
+  });
+
+  it('cancels purge confirmation without calling handler', () => {
+    const onPurgeHistory = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SettingsPanel
+        config={mockConfig}
+        devices={mockDevices}
+        onConfigChange={vi.fn()}
+        onPurgeHistory={onPurgeHistory}
+        historyCount={3}
+      />
+    );
+    fireEvent.click(screen.getByText('Appearance'));
+    fireEvent.click(screen.getByTestId('settings-purge-history-button'));
+    fireEvent.click(screen.getByTestId('settings-purge-cancel'));
+    expect(screen.queryByTestId('settings-purge-confirm-dialog')).toBeNull();
+    expect(onPurgeHistory).not.toHaveBeenCalled();
+  });
+
+  it('shows persistence mode info for disk mode', () => {
+    const diskConfig = {
+      ...mockConfig,
+      history: { ...mockConfig.history, persistence_mode: 'disk' as const },
+    };
+    render(
+      <SettingsPanel
+        config={diskConfig}
+        devices={mockDevices}
+        onConfigChange={vi.fn()}
+        onPurgeHistory={vi.fn().mockResolvedValue(undefined)}
+        historyCount={2}
+      />
+    );
+    fireEvent.click(screen.getByText('Appearance'));
+    expect(screen.getByText(/Saved to disk/)).toBeDefined();
   });
 
   it('calls onRefreshDevices when refresh is clicked in audio tab', () => {

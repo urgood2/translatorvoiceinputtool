@@ -333,6 +333,48 @@ describe('StatusDashboard', () => {
     });
   });
 
+  it('shows VAD badge when recording with VAD enabled', async () => {
+    useAppStore.setState({
+      appState: 'recording',
+      config: {
+        ...buildConfig(),
+        audio: { ...buildConfig().audio, vad_enabled: true, vad_silence_ms: 1500 },
+      },
+    });
+
+    render(<StatusDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vad-active-badge')).toBeDefined();
+    });
+    expect(screen.getByTestId('vad-active-badge').textContent).toContain('1.5s');
+  });
+
+  it('does not show VAD badge when recording with VAD disabled', () => {
+    useAppStore.setState({
+      appState: 'recording',
+      config: buildConfig(), // vad_enabled: false
+    });
+
+    render(<StatusDashboard />);
+
+    expect(screen.queryByTestId('vad-active-badge')).toBeNull();
+  });
+
+  it('does not show VAD badge when idle even with VAD enabled', () => {
+    useAppStore.setState({
+      appState: 'idle',
+      config: {
+        ...buildConfig(),
+        audio: { ...buildConfig().audio, vad_enabled: true },
+      },
+    });
+
+    render(<StatusDashboard />);
+
+    expect(screen.queryByTestId('vad-active-badge')).toBeNull();
+  });
+
   it('shows error status details for model failures', async () => {
     useAppStore.setState({
       modelStatus: {
