@@ -14,18 +14,36 @@ SOURCE_SCRIPT = REPO_ROOT / "scripts" / "e2e" / "test-packaged-resources.sh"
 
 MOCK_SIDECAR = textwrap.dedent(
     """\
-    #!/usr/bin/env python3
-    import json
-    import os
-    import sys
+#!/usr/bin/env python3
+import json
+import os
+import sys
 
 
-    def response_payload() -> dict:
+def response_payload() -> dict:
         if os.environ.get("MOCK_BAD_SYSTEM_INFO") == "1":
             return {"version": "mock"}
+        if os.environ.get("MOCK_LEGACY_SYSTEM_INFO") == "1":
+            return {
+                "capabilities": {
+                    "cuda_available": False,
+                    "supports_progress": True,
+                },
+                "runtime": {
+                    "python": "3.13.0",
+                    "platform": "linux",
+                },
+                "resource_paths": {},
+            }
 
         shared_root = os.environ["OPENVOICY_SHARED_ROOT"]
         return {
+            "capabilities": ["asr", "replacements", "meter"],
+            "runtime": {
+                "python_version": "3.13.0",
+                "platform": "linux",
+                "cuda_available": False,
+            },
             "resource_paths": {
                 "shared_root": shared_root,
                 "presets": os.path.join(shared_root, "replacements", "PRESETS.json"),
@@ -36,19 +54,19 @@ MOCK_SIDECAR = textwrap.dedent(
         }
 
 
-    raw = sys.stdin.read().strip()
-    req = {"id": 1}
-    if raw:
-        req = json.loads(raw.splitlines()[0])
+raw = sys.stdin.read().strip()
+req = {"id": 1}
+if raw:
+    req = json.loads(raw.splitlines()[0])
 
-    out = {
-        "jsonrpc": "2.0",
-        "id": req.get("id", 1),
-        "result": response_payload(),
-    }
-    sys.stdout.write(json.dumps(out) + "\\n")
-    sys.stdout.flush()
-    """
+out = {
+    "jsonrpc": "2.0",
+    "id": req.get("id", 1),
+    "result": response_payload(),
+}
+sys.stdout.write(json.dumps(out) + "\\n")
+sys.stdout.flush()
+"""
 )
 
 MOCK_SELF_TEST = textwrap.dedent(
@@ -145,6 +163,7 @@ class PackagedResourcesRuntimeTests(unittest.TestCase):
                 "system.info resource path validation: OK",
                 completed.stdout + completed.stderr,
             )
+            self.assertIn("system.info schema preflight: OK", completed.stdout + completed.stderr)
             self.assertIn("packaged sidecar self-test passed", completed.stdout + completed.stderr)
             self.assertIn("mock packaged self_test: OK", completed.stdout + completed.stderr)
             self.assertIn("packaged resource smoke test passed", completed.stdout + completed.stderr)
@@ -165,7 +184,31 @@ class PackagedResourcesRuntimeTests(unittest.TestCase):
                 msg=f"stdout={completed.stdout}\\nstderr={completed.stderr}",
             )
             self.assertIn(
-                "system.info.resource_paths missing",
+                "system.info schema preflight failed",
+                completed.stdout + completed.stderr,
+            )
+            self.assertIn(
+                "result.capabilities must be string[]",
+                completed.stdout + completed.stderr,
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_runtime_legacy_system_info_schema_exits_nonzero(self) -> None:
+        root = self._build_fixture_project()
+        try:
+            completed = self._run_script(
+                root,
+                self.target,
+                extra_env={"MOCK_LEGACY_SYSTEM_INFO": "1"},
+            )
+            self.assertEqual(
+                completed.returncode,
+                1,
+                msg=f"stdout={completed.stdout}\\nstderr={completed.stderr}",
+            )
+            self.assertIn(
+                "bundled sidecar appears stale",
                 completed.stdout + completed.stderr,
             )
         finally:

@@ -67,6 +67,11 @@ def rpc_timeout_seconds() -> float:
     return value
 
 
+def accept_legacy_system_info_shape() -> bool:
+    raw = os.environ.get("OPENVOICY_SELF_TEST_ACCEPT_LEGACY_SYSTEM_INFO", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def build_sidecar_command() -> tuple[list[str], dict[str, str]]:
     """Build the sidecar launch command for dev and packaged environments."""
     env = os.environ.copy()
@@ -252,12 +257,31 @@ def validate_ping_result(result: dict[str, Any]) -> None:
 
 def validate_system_info_result(result: dict[str, Any]) -> None:
     capabilities = result.get("capabilities")
-    if not isinstance(capabilities, list) or not all(isinstance(cap, str) for cap in capabilities):
+    legacy_allowed = accept_legacy_system_info_shape()
+    if isinstance(capabilities, list):
+        if not all(isinstance(cap, str) for cap in capabilities):
+            raise SelfTestError("system.info result.capabilities must be string[]")
+    elif legacy_allowed and isinstance(capabilities, dict):
+        if not all(isinstance(key, str) and isinstance(value, bool) for key, value in capabilities.items()):
+            raise SelfTestError(
+                "legacy system.info capabilities map must be {string:boolean} when compatibility mode is enabled"
+            )
+    else:
         raise SelfTestError("system.info result.capabilities must be string[]")
 
     runtime = result.get("runtime")
     if not isinstance(runtime, dict):
         raise SelfTestError("system.info result.runtime must be an object")
+
+    if legacy_allowed and isinstance(runtime.get("python"), str):
+        # Legacy packaged binaries exposed runtime.python instead of
+        # runtime.python_version/cuda_available.
+        if not isinstance(runtime.get("platform"), str):
+            raise SelfTestError("system.info runtime.platform must be a string")
+        cuda_available = runtime.get("cuda_available")
+        if cuda_available is not None and not isinstance(cuda_available, bool):
+            raise SelfTestError("system.info runtime.cuda_available must be a boolean when present")
+        return
 
     if not isinstance(runtime.get("python_version"), str):
         raise SelfTestError("system.info runtime.python_version must be a string")

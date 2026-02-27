@@ -155,6 +155,60 @@ export OPENVOICY_SIDECAR_COMMAND="$SIDECAR_BIN"
 
 echo "[PACKAGED_RESOURCES] target=$TARGET"
 echo "[PACKAGED_RESOURCES] sidecar=$SIDECAR_BIN"
+
+SYSTEM_INFO_PREFLIGHT_RAW="$(
+    echo '{"jsonrpc":"2.0","id":1,"method":"system.info","params":{}}' \
+    | run_with_timeout 10 "$SIDECAR_BIN" 2>/dev/null
+)"
+
+if [[ -z "$SYSTEM_INFO_PREFLIGHT_RAW" ]]; then
+    echo "[PACKAGED_RESOURCES][ERROR] system.info returned no output during schema preflight" >&2
+    exit 1
+fi
+
+python3 - "$SYSTEM_INFO_PREFLIGHT_RAW" <<'PY'
+import json
+import sys
+
+raw = sys.argv[1].strip().splitlines()[0]
+payload = json.loads(raw)
+result = payload.get("result")
+if not isinstance(result, dict):
+    raise SystemExit(
+        "[PACKAGED_RESOURCES][ERROR] system.info schema preflight failed: result missing"
+    )
+
+capabilities = result.get("capabilities")
+if not isinstance(capabilities, list) or not all(isinstance(item, str) for item in capabilities):
+    raise SystemExit(
+        "[PACKAGED_RESOURCES][ERROR] system.info schema preflight failed: "
+        "result.capabilities must be string[] (bundled sidecar appears stale)"
+    )
+
+runtime = result.get("runtime")
+if not isinstance(runtime, dict):
+    raise SystemExit(
+        "[PACKAGED_RESOURCES][ERROR] system.info schema preflight failed: "
+        "result.runtime must be an object"
+    )
+if not isinstance(runtime.get("python_version"), str):
+    raise SystemExit(
+        "[PACKAGED_RESOURCES][ERROR] system.info schema preflight failed: "
+        "runtime.python_version must be a string (bundled sidecar appears stale)"
+    )
+if not isinstance(runtime.get("platform"), str):
+    raise SystemExit(
+        "[PACKAGED_RESOURCES][ERROR] system.info schema preflight failed: "
+        "runtime.platform must be a string"
+    )
+if not isinstance(runtime.get("cuda_available"), bool):
+    raise SystemExit(
+        "[PACKAGED_RESOURCES][ERROR] system.info schema preflight failed: "
+        "runtime.cuda_available must be a boolean"
+    )
+print("[PACKAGED_RESOURCES] system.info schema preflight: OK", flush=True)
+PY
+
 echo "[PACKAGED_RESOURCES] running packaged sidecar self-test via openvoicy_sidecar.self_test"
 python3 -m openvoicy_sidecar.self_test
 echo "[PACKAGED_RESOURCES] packaged sidecar self-test passed"

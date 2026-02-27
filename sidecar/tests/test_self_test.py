@@ -51,6 +51,31 @@ class TestSystemInfoValidation:
                 }
             )
 
+    def test_accepts_legacy_system_info_shape_when_compat_enabled(self, monkeypatch):
+        monkeypatch.setenv("OPENVOICY_SELF_TEST_ACCEPT_LEGACY_SYSTEM_INFO", "1")
+        validate_system_info_result(
+            {
+                "capabilities": {"asr": True, "replacements": True, "meter": True},
+                "runtime": {
+                    "python": "3.11.0",
+                    "platform": "linux",
+                },
+            }
+        )
+
+    def test_rejects_legacy_system_info_shape_when_compat_disabled(self, monkeypatch):
+        monkeypatch.delenv("OPENVOICY_SELF_TEST_ACCEPT_LEGACY_SYSTEM_INFO", raising=False)
+        with pytest.raises(SelfTestError, match="capabilities"):
+            validate_system_info_result(
+                {
+                    "capabilities": {"asr": True},
+                    "runtime": {
+                        "python": "3.11.0",
+                        "platform": "linux",
+                    },
+                }
+            )
+
 
 class TestStatusGetValidation:
     """Tests for status.get response validation."""
