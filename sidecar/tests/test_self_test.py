@@ -8,10 +8,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from openvoicy_sidecar.self_test import (
+    DEFAULT_RPC_TIMEOUT_SECONDS,
+    INITIAL_PING_BACKOFF_SECONDS,
     SelfTestError,
     SidecarRpcProcess,
+    _call_initial_ping_with_retry,
     build_sidecar_command,
     main,
+    rpc_timeout_seconds,
     validate_clean_exit_code,
     validate_replacements_get_rules_result,
     validate_status_get_result,
@@ -123,6 +127,63 @@ class TestBuildCommand:
 
         command, _ = build_sidecar_command()
         assert command == ["/tmp/openvoicy-sidecar", "--mode", "smoke"]
+
+
+class TestTimeoutConfiguration:
+    def test_uses_default_when_env_not_set(self, monkeypatch):
+        monkeypatch.delenv("OPENVOICY_SELF_TEST_TIMEOUT_S", raising=False)
+        assert rpc_timeout_seconds() == DEFAULT_RPC_TIMEOUT_SECONDS
+
+    def test_accepts_env_override(self, monkeypatch):
+        monkeypatch.setenv("OPENVOICY_SELF_TEST_TIMEOUT_S", "22.5")
+        assert rpc_timeout_seconds() == pytest.approx(22.5)
+
+    def test_invalid_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("OPENVOICY_SELF_TEST_TIMEOUT_S", "not-a-number")
+        assert rpc_timeout_seconds() == DEFAULT_RPC_TIMEOUT_SECONDS
+
+    def test_non_positive_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("OPENVOICY_SELF_TEST_TIMEOUT_S", "0")
+        assert rpc_timeout_seconds() == DEFAULT_RPC_TIMEOUT_SECONDS
+
+
+class TestInitialPingRetry:
+    def test_retries_timeout_then_succeeds(self):
+        sidecar = MagicMock()
+        sidecar.call.side_effect = [
+            SelfTestError("Timed out waiting for response to system.ping"),
+            {"version": "0.1.0", "protocol": "v1"},
+        ]
+
+        with patch("openvoicy_sidecar.self_test.time.sleep") as mock_sleep:
+            result = _call_initial_ping_with_retry(sidecar)
+
+        assert result["protocol"] == "v1"
+        assert sidecar.call.call_count == 2
+        sidecar.call.assert_any_call("system.ping")
+        mock_sleep.assert_called_once_with(INITIAL_PING_BACKOFF_SECONDS)
+
+    def test_fails_fast_when_sidecar_exits(self):
+        sidecar = MagicMock()
+        sidecar.call.side_effect = SelfTestError("Sidecar exited before request system.ping")
+
+        with patch("openvoicy_sidecar.self_test.time.sleep") as mock_sleep:
+            with pytest.raises(SelfTestError, match="exited before request system.ping"):
+                _call_initial_ping_with_retry(sidecar)
+
+        assert sidecar.call.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_fails_fast_for_non_timeout_error(self):
+        sidecar = MagicMock()
+        sidecar.call.side_effect = SelfTestError("system.ping returned error: {'code': -32603}")
+
+        with patch("openvoicy_sidecar.self_test.time.sleep") as mock_sleep:
+            with pytest.raises(SelfTestError, match="returned error"):
+                _call_initial_ping_with_retry(sidecar)
+
+        assert sidecar.call.call_count == 1
+        mock_sleep.assert_not_called()
 
 
 class TestShutdownExitCode:

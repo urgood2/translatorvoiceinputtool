@@ -23,7 +23,9 @@ from .resources import (
     resolve_shared_path_optional,
 )
 
-RPC_TIMEOUT_SECONDS = 5.0
+DEFAULT_RPC_TIMEOUT_SECONDS = 15.0
+INITIAL_PING_MAX_ATTEMPTS = 3
+INITIAL_PING_BACKOFF_SECONDS = 1.0
 VALID_STATUS_STATES = {"idle", "loading_model", "recording", "transcribing", "error"}
 VALID_STATUS_MODEL_STATES = {"missing", "downloading", "verifying", "ready", "error"}
 
@@ -41,6 +43,28 @@ def _format_tail(lines: list[str], max_lines: int = 12) -> str:
         return ""
     tail = "\n".join(lines[-max_lines:])
     return f"\n--- sidecar stderr tail ---\n{tail}"
+
+
+def rpc_timeout_seconds() -> float:
+    """Resolve RPC timeout from env with validation and safe fallback."""
+    raw = os.environ.get("OPENVOICY_SELF_TEST_TIMEOUT_S", "").strip()
+    if not raw:
+        return DEFAULT_RPC_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        _log(
+            "Invalid OPENVOICY_SELF_TEST_TIMEOUT_S value "
+            f"{raw!r}; using default {DEFAULT_RPC_TIMEOUT_SECONDS:.1f}s"
+        )
+        return DEFAULT_RPC_TIMEOUT_SECONDS
+    if value <= 0:
+        _log(
+            "OPENVOICY_SELF_TEST_TIMEOUT_S must be > 0; "
+            f"using default {DEFAULT_RPC_TIMEOUT_SECONDS:.1f}s"
+        )
+        return DEFAULT_RPC_TIMEOUT_SECONDS
+    return value
 
 
 def build_sidecar_command() -> tuple[list[str], dict[str, str]]:
@@ -141,7 +165,7 @@ class SidecarRpcProcess:
         self._proc.stdin.write(json.dumps(request) + "\n")
         self._proc.stdin.flush()
 
-        deadline = time.monotonic() + RPC_TIMEOUT_SECONDS
+        deadline = time.monotonic() + rpc_timeout_seconds()
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -367,6 +391,30 @@ def _run_step(label: str, fn) -> None:
     _log(f"Testing {label}... OK")
 
 
+def _call_initial_ping_with_retry(sidecar: SidecarRpcProcess) -> dict[str, Any]:
+    """Retry initial ping on cold-start timeout with bounded backoff."""
+    for attempt in range(1, INITIAL_PING_MAX_ATTEMPTS + 1):
+        try:
+            return sidecar.call("system.ping")
+        except SelfTestError as exc:
+            error_text = str(exc)
+            # True startup failures should fail fast.
+            if "Sidecar exited before request system.ping" in error_text:
+                raise
+            if "Timed out waiting for response to system.ping" not in error_text:
+                raise
+            if attempt >= INITIAL_PING_MAX_ATTEMPTS:
+                raise
+            delay_s = INITIAL_PING_BACKOFF_SECONDS * attempt
+            _log(
+                "system.ping startup attempt "
+                f"{attempt}/{INITIAL_PING_MAX_ATTEMPTS} failed ({exc}); "
+                f"retrying in {delay_s:.1f}s"
+            )
+            time.sleep(delay_s)
+    raise SelfTestError("initial system.ping failed unexpectedly")
+
+
 def run_self_test() -> None:
     # Phase 1: Static resource resolution (no subprocess needed)
     _run_step("shared resource resolution", validate_shared_resources)
@@ -382,7 +430,7 @@ def run_self_test() -> None:
     sidecar.start()
 
     try:
-        _run_step("system.ping", lambda: validate_ping_result(sidecar.call("system.ping")))
+        _run_step("system.ping", lambda: validate_ping_result(_call_initial_ping_with_retry(sidecar)))
         _run_step("system.info", lambda: validate_system_info_result(sidecar.call("system.info")))
         _run_step("status.get", lambda: validate_status_get_result(sidecar.call("status.get")))
         _run_step(
