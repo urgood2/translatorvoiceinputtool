@@ -255,6 +255,13 @@ describe('Accessibility Regression Coverage', () => {
     expect(tab.className.includes('focus:outline-none')).toBe(false);
   });
 
+  it('color-scheme follows explicit root theme class', () => {
+    expect(CSS_SOURCE).toContain(':root.dark {');
+    expect(CSS_SOURCE).toContain('color-scheme: light;');
+    expect(CSS_SOURCE).toContain('color-scheme: dark;');
+    expect(CSS_SOURCE).not.toContain('color-scheme: light dark;');
+  });
+
   it('announces recording state changes for screen readers', () => {
     const { rerender } = render(
       <StatusIndicator state="idle" enabled={true} detail={undefined} />

@@ -39,14 +39,25 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
   }, [currentStep]);
 
   const handleSkip = useCallback(async () => {
-    if (!config) return;
+    if (!config) {
+      onComplete();
+      return;
+    }
+
     const updated = {
       ...config,
       ui: { ...config.ui, onboarding_completed: true },
     };
-    await invoke('update_config', { config: updated });
-    useAppStore.setState({ config: updated });
-    onComplete();
+
+    try {
+      await invoke('update_config', { config: updated });
+    } catch (error) {
+      console.error('Failed to persist onboarding completion, continuing anyway:', error);
+    } finally {
+      // Keep current session unblocked even if persistence fails.
+      useAppStore.setState({ config: updated });
+      onComplete();
+    }
   }, [config, onComplete]);
 
   const handleFinish = useCallback(async () => {

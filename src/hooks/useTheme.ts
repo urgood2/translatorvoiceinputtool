@@ -26,6 +26,8 @@ function applyTheme(resolved: ResolvedTheme): void {
   } else {
     root.classList.remove('dark');
   }
+  // Keep native form controls and scrollbars aligned with explicit app theme.
+  root.style.colorScheme = resolved;
 }
 
 export function resolveTheme(preference: ThemePreference): ResolvedTheme {

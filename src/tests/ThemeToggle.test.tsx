@@ -9,6 +9,9 @@ describe('Theme toggle persistence', () => {
   let currentConfig: any;
 
   beforeEach(() => {
+    document.documentElement.classList.remove('dark');
+    document.documentElement.style.colorScheme = '';
+
     currentConfig = {
       schema_version: 1,
       audio: {
@@ -136,6 +139,25 @@ describe('Theme toggle persistence', () => {
     fireEvent.click(await screen.findByRole('tab', { name: 'Settings' }));
     fireEvent.click(screen.getByRole('tab', { name: 'Appearance' }));
 
+    fireEvent.click(screen.getByRole('radio', { name: 'dark' }));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith(
+        'update_config',
+        expect.objectContaining({
+          config: expect.objectContaining({
+            ui: expect.objectContaining({
+              theme: 'dark',
+            }),
+          }),
+        })
+      );
+    });
+    expect(currentConfig.ui.theme).toBe('dark');
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    expect(document.documentElement.style.colorScheme).toBe('dark');
+    expect(screen.getByRole('radio', { name: 'dark' })).toHaveAttribute('aria-checked', 'true');
+
     fireEvent.click(screen.getByRole('radio', { name: 'light' }));
 
     await waitFor(() => {
@@ -151,6 +173,8 @@ describe('Theme toggle persistence', () => {
       );
     });
     expect(currentConfig.ui.theme).toBe('light');
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
+    expect(document.documentElement.style.colorScheme).toBe('light');
     expect(screen.getByRole('radio', { name: 'light' })).toHaveAttribute('aria-checked', 'true');
   });
 });

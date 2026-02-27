@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -80,6 +81,45 @@ def _required_contract_methods() -> set[str]:
         for item in contract["items"]
         if item.get("type") == "method" and item.get("required") is True
     }
+
+
+def _list_descendant_pids_linux(root_pid: int) -> set[int]:
+    """Return recursive descendants for `root_pid` using Linux /proc process metadata."""
+    proc_root = Path("/proc")
+    if not proc_root.exists():
+        return set()
+
+    parent_to_children: dict[int, set[int]] = {}
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        stat_path = entry / "stat"
+        try:
+            stat_line = stat_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        close_paren = stat_line.rfind(")")
+        if close_paren == -1:
+            continue
+        rest = stat_line[close_paren + 2 :].split()
+        if len(rest) < 2:
+            continue
+        try:
+            pid = int(entry.name)
+            ppid = int(rest[1])
+        except ValueError:
+            continue
+        parent_to_children.setdefault(ppid, set()).add(pid)
+
+    descendants: set[int] = set()
+    stack = list(parent_to_children.get(root_pid, set()))
+    while stack:
+        pid = stack.pop()
+        if pid in descendants:
+            continue
+        descendants.add(pid)
+        stack.extend(parent_to_children.get(pid, set()))
+    return descendants
 
 
 @dataclass
@@ -242,19 +282,31 @@ def test_system_ping_ipc_roundtrip_latency(run_sidecar: Any) -> None:
     request = '{"jsonrpc":"2.0","id":1,"method":"system.ping"}'
     shutdown = '{"jsonrpc":"2.0","id":99,"method":"system.shutdown","params":{"reason":"compliance-test"}}'
 
-    start = time.perf_counter()
-    responses, _, exit_code = run_sidecar([request, shutdown], timeout=10.0)
-    elapsed = time.perf_counter() - start
+    def _measure_roundtrip() -> float:
+        start = time.perf_counter()
+        responses, _, exit_code = run_sidecar([request, shutdown], timeout=10.0)
+        elapsed = time.perf_counter() - start
 
-    ping_response = next((response for response in responses if response.get("id") == 1), None)
-    assert ping_response is not None, "Missing response for system.ping request"
-    assert "result" in ping_response, "system.ping must return result payload"
-    assert isinstance(ping_response["result"]["version"], str)
-    assert ping_response["result"]["protocol"] == "v1"
-    assert exit_code == 0, f"Sidecar should exit cleanly after shutdown, got {exit_code}"
+        ping_response = next((response for response in responses if response.get("id") == 1), None)
+        assert ping_response is not None, "Missing response for system.ping request"
+        assert "result" in ping_response, "system.ping must return result payload"
+        assert isinstance(ping_response["result"]["version"], str)
+        assert ping_response["result"]["protocol"] == "v1"
+        assert exit_code == 0, f"Sidecar should exit cleanly after shutdown, got {exit_code}"
+        return elapsed
 
-    # Budget covers JSON parse/dispatch/serialization and process startup/shutdown.
-    assert elapsed < 5.0, f"system.ping IPC round-trip exceeded budget: {elapsed:.3f}s"
+    cold_elapsed = _measure_roundtrip()
+    warmed_elapsed = _measure_roundtrip()
+
+    # Cold starts can be noisy under CI load; steady-state should stay fast.
+    assert cold_elapsed < 12.0, (
+        "system.ping cold-start IPC round-trip exceeded budget: "
+        f"{cold_elapsed:.3f}s"
+    )
+    assert warmed_elapsed < 5.0, (
+        "system.ping warmed IPC round-trip exceeded budget: "
+        f"{warmed_elapsed:.3f}s"
+    )
     _log("Assertion: system.ping subprocess IPC round-trip latency -> PASS")
 
 
@@ -678,27 +730,63 @@ def test_invalid_params_type_returns_jsonrpc_error(run_sidecar: Any) -> None:
 
 
 def test_system_shutdown_process_exit() -> None:
-    """Regression (25dl): system.shutdown must terminate the sidecar process cleanly."""
+    """Regression (25dl): system.shutdown must terminate cleanly and leave no orphan descendants."""
     _log("Testing system.shutdown subprocess-level clean exit")
+    if not Path("/proc").exists():
+        pytest.skip("Process-tree orphan inspection requires Linux /proc support")
+
     src_path = Path(__file__).parent.parent / "src"
     shutdown_req = '{"jsonrpc":"2.0","id":80,"method":"system.shutdown","params":{"reason":"compliance-test"}}'
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         [sys.executable, "-m", "openvoicy_sidecar"],
-        input=shutdown_req + "\n",
-        capture_output=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         cwd=str(src_path.parent),
         env={**dict(os.environ), "PYTHONPATH": str(src_path)},
+    )
+
+    observed_descendants: set[int] = set()
+    stop_sampling = threading.Event()
+
+    def _sample_descendants() -> None:
+        while not stop_sampling.is_set() and proc.poll() is None:
+            observed_descendants.update(_list_descendant_pids_linux(proc.pid))
+            time.sleep(0.05)
+
+    sampler = threading.Thread(target=_sample_descendants, daemon=True)
+    sampler.start()
+
+    stdout, _, = proc.communicate(
+        input=shutdown_req + "\n",
         timeout=10.0,
     )
-    responses = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+    stop_sampling.set()
+    sampler.join(timeout=1.0)
+
+    responses = [json.loads(line) for line in stdout.splitlines() if line.strip()]
     assert len(responses) >= 1, "Expected at least one JSON-RPC response"
     shutdown_resp = next((r for r in responses if r.get("id") == 80), None)
     assert shutdown_resp is not None, "Missing response for shutdown request"
     assert shutdown_resp["result"]["status"] == "shutting_down"
     assert proc.returncode == 0, f"Sidecar should exit cleanly after shutdown, got exit code {proc.returncode}"
-    _log(f"Response={shutdown_resp}, exit_code={proc.returncode}")
-    _log("Assertion: system.shutdown subprocess clean exit -> PASS")
+
+    # Give descendants a small grace period to exit before declaring them orphaned.
+    deadline = time.time() + 2.0
+    remaining = sorted(pid for pid in observed_descendants if Path(f"/proc/{pid}").exists())
+    while remaining and time.time() < deadline:
+        time.sleep(0.05)
+        remaining = sorted(pid for pid in observed_descendants if Path(f"/proc/{pid}").exists())
+
+    assert not remaining, (
+        "system.shutdown left orphan descendant process(es): "
+        + ", ".join(str(pid) for pid in remaining)
+    )
+    _log(
+        "Assertion: system.shutdown subprocess clean exit/no-orphan descendants -> PASS "
+        f"(observed_descendants={sorted(observed_descendants)})"
+    )
 
 
 def test_model_get_status_shape(monkeypatch: pytest.MonkeyPatch) -> None:

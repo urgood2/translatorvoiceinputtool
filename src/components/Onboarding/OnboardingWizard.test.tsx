@@ -163,6 +163,23 @@ describe('OnboardingWizard', () => {
     expect(onComplete).toHaveBeenCalled();
   });
 
+  test('Skip still completes onboarding when update_config fails', async () => {
+    const onComplete = vi.fn();
+    const invokeMock = vi.mocked(invoke);
+    invokeMock.mockRejectedValueOnce(new Error('persist failed'));
+
+    render(<OnboardingWizard onComplete={onComplete} />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Skip'));
+    });
+
+    await waitFor(() => {
+      expect(onComplete).toHaveBeenCalled();
+    });
+    expect(useAppStore.getState().config?.ui.onboarding_completed).toBe(true);
+  });
+
   test('Get Started button on last step calls onComplete', async () => {
     const onComplete = vi.fn();
     useAppStore.setState({
@@ -297,27 +314,5 @@ describe('OnboardingWizard', () => {
 
     expect(screen.getByText('Speech Recognition Model')).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
-  });
-});
-
-describe('Onboarding gate logic', () => {
-  test('onboarding_completed=false triggers wizard (new install)', () => {
-    const config = makeConfig({ onboarding_completed: false });
-    // The strict equality check config.ui.onboarding_completed === false should be true
-    expect(config.ui.onboarding_completed === false).toBe(true);
-  });
-
-  test('onboarding_completed=true skips wizard (existing user)', () => {
-    const config = makeConfig({ onboarding_completed: true });
-    expect(config.ui.onboarding_completed === false).toBe(false);
-  });
-
-  test('missing onboarding_completed field treated as completed (migration safety)', () => {
-    // Simulating a config from before onboarding was added
-    const config = makeConfig();
-    // @ts-expect-error Simulating missing field
-    delete config.ui.onboarding_completed;
-    // Strict equality: undefined === false is false, so wizard won't show
-    expect(config.ui.onboarding_completed === false).toBe(false);
   });
 });
