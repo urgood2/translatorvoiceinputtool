@@ -1,6 +1,7 @@
 {
   "schema_version": "1",
   "model_id": "parakeet-tdt-0.6b-v3",
+  "model_family": "parakeet",
   "display_name": "NVIDIA Parakeet TDT 0.6B v3",
   "source": "nvidia/parakeet-tdt-0.6b-v3",
   "source_url": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",

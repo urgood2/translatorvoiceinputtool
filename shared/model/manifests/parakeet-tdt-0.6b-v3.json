@@ -1,5 +1,6 @@
 {
   "model_id": "nvidia/parakeet-tdt-0.6b-v3",
+  "model_family": "parakeet",
   "version": "3.0",
   "revision": "6d590f77001d318fb17a0b5bf7ee329a91b52598",
   "files": [

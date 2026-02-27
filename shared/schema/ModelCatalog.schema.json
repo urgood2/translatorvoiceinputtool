@@ -47,8 +47,8 @@
         "family": {
           "type": "string",
           "description": "Model family for grouping in the UI.",
-          "minLength": 1,
-          "examples": ["parakeet", "whisper", "canary"]
+          "enum": ["parakeet", "whisper"],
+          "examples": ["parakeet", "whisper"]
         },
         "display_name": {
           "type": "string",

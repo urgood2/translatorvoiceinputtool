@@ -4,7 +4,7 @@
   "title": "ModelManifest",
   "description": "Per-model manifest with download URLs, file sizes, and integrity checksums.",
   "type": "object",
-  "required": ["model_id", "version", "files"],
+  "required": ["model_id", "model_family", "version", "files"],
   "additionalProperties": false,
   "properties": {
     "model_id": {
@@ -13,6 +13,12 @@
       "minLength": 1,
       "pattern": "^[a-z0-9_-]+/[a-z0-9._-]+$",
       "examples": ["nvidia/parakeet-tdt-0.6b-v3"]
+    },
+    "model_family": {
+      "type": "string",
+      "description": "Backend family expected to load this model.",
+      "enum": ["parakeet", "whisper"],
+      "examples": ["parakeet", "whisper"]
     },
     "version": {
       "type": "string",
@@ -61,7 +67,7 @@
         "size_bytes": {
           "type": "integer",
           "description": "Expected file size in bytes, verified after download.",
-          "minimum": 0
+          "minimum": 1
         },
         "sha256": {
           "type": "string",

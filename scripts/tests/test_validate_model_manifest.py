@@ -18,6 +18,7 @@ class ValidateModelManifestTests(unittest.TestCase):
         return {
             "schema_version": "1",
             "model_id": "parakeet-tdt-0.6b-v3",
+            "model_family": "parakeet",
             "source": "nvidia/parakeet-tdt-0.6b-v3",
             "revision": "6d590f77001d318fb17a0b5bf7ee329a91b52598",
             "license": {"spdx_id": "CC-BY-4.0", "redistribution_allowed": True},
@@ -43,6 +44,18 @@ class ValidateModelManifestTests(unittest.TestCase):
         manifest["verification"]["sha256_verified"] = False
         errors = MODULE.validate_manifest_schema(manifest)
         self.assertTrue(any("verification.sha256_verified must be true" in err for err in errors))
+
+    def test_validate_manifest_schema_rejects_non_positive_file_size(self) -> None:
+        manifest = self._minimal_manifest()
+        manifest["files"][0]["size_bytes"] = 0
+        errors = MODULE.validate_manifest_schema(manifest)
+        self.assertTrue(any("size_bytes must be positive" in err for err in errors))
+
+    def test_validate_manifest_schema_requires_model_family(self) -> None:
+        manifest = self._minimal_manifest()
+        manifest.pop("model_family")
+        errors = MODULE.validate_manifest_schema(manifest)
+        self.assertTrue(any("Missing required field: model_family" in err for err in errors))
 
     def test_validate_ipc_model_ids_fails_on_mismatch(self) -> None:
         manifest = {"model_id": "parakeet-tdt-0.6b-v3"}
@@ -311,6 +324,75 @@ class ValidateModelManifestTests(unittest.TestCase):
         errors = MODULE.validate_document_against_schema(catalog, schema, "catalog")
         self.assertTrue(any("minItems" in err or "too short" in err for err in errors))
 
+    def test_catalog_schema_rejects_unknown_family_enum(self) -> None:
+        """family must stay aligned with supported backend allowlist."""
+        schema_path = Path(__file__).resolve().parents[2] / "shared" / "schema" / "ModelCatalog.schema.json"
+        schema = json.loads(schema_path.read_text())
+        catalog = {
+            "schema_version": 1,
+            "models": [
+                {
+                    "model_id": "nvidia/parakeet-tdt-0.6b-v3",
+                    "family": "canary",
+                    "display_name": "Test",
+                    "description": "Test",
+                    "supported_languages": ["en"],
+                    "default_language": "en",
+                    "size_bytes": 1,
+                    "manifest_path": "manifests/test.json",
+                }
+            ],
+        }
+        errors = MODULE.validate_document_against_schema(catalog, schema, "catalog")
+        self.assertTrue(
+            any("is not one of" in err or "enum" in err.lower() for err in errors),
+            f"expected enum validation error, got: {errors}",
+        )
+
+    def test_catalog_schema_rejects_unsupported_family(self) -> None:
+        """family must stay aligned with supported backend allowlist."""
+        schema_path = Path(__file__).resolve().parents[2] / "shared" / "schema" / "ModelCatalog.schema.json"
+        schema = json.loads(schema_path.read_text())
+        catalog = {
+            "schema_version": 1,
+            "models": [
+                {
+                    "model_id": "nvidia/parakeet-tdt-0.6b-v3",
+                    "family": "canary",
+                    "display_name": "Test",
+                    "description": "Test",
+                    "supported_languages": ["en"],
+                    "default_language": "en",
+                    "size_bytes": 1,
+                    "manifest_path": "manifests/test.json",
+                }
+            ],
+        }
+        errors = MODULE.validate_document_against_schema(catalog, schema, "catalog")
+        self.assertTrue(any("is not one of" in err for err in errors))
+
+    def test_catalog_schema_accepts_whisper_family(self) -> None:
+        """whisper remains a valid family enum value."""
+        schema_path = Path(__file__).resolve().parents[2] / "shared" / "schema" / "ModelCatalog.schema.json"
+        schema = json.loads(schema_path.read_text())
+        catalog = {
+            "schema_version": 1,
+            "models": [
+                {
+                    "model_id": "openai/whisper-base",
+                    "family": "whisper",
+                    "display_name": "Whisper Base",
+                    "description": "Test whisper model",
+                    "supported_languages": ["en"],
+                    "default_language": "en",
+                    "size_bytes": 1,
+                    "manifest_path": "manifests/whisper-base.json",
+                }
+            ],
+        }
+        errors = MODULE.validate_document_against_schema(catalog, schema, "catalog")
+        self.assertEqual(errors, [])
+
     # ── Per-model manifest schema validation ───────────────────────
 
     def test_manifest_schema_validates_valid_manifest(self) -> None:
@@ -319,6 +401,7 @@ class ValidateModelManifestTests(unittest.TestCase):
         schema = json.loads(schema_path.read_text())
         manifest = {
             "model_id": "nvidia/parakeet-tdt-0.6b-v3",
+            "model_family": "parakeet",
             "version": "3.0",
             "revision": "6d590f77001d318fb17a0b5bf7ee329a91b52598",
             "files": [
@@ -339,6 +422,7 @@ class ValidateModelManifestTests(unittest.TestCase):
         schema = json.loads(schema_path.read_text())
         manifest = {
             "model_id": "nvidia/parakeet-tdt-0.6b-v3",
+            "model_family": "parakeet",
             "version": "1.0",
             "files": [
                 {
@@ -358,10 +442,50 @@ class ValidateModelManifestTests(unittest.TestCase):
         schema = json.loads(schema_path.read_text())
         manifest = {
             "model_id": "nvidia/parakeet-tdt-0.6b-v3",
+            "model_family": "parakeet",
             "version": "1.0",
         }
         errors = MODULE.validate_document_against_schema(manifest, schema, "manifest")
         self.assertTrue(any("files" in err for err in errors))
+
+    def test_manifest_schema_requires_model_family(self) -> None:
+        """model_family is required for backend dispatch alignment."""
+        schema_path = Path(__file__).resolve().parents[2] / "shared" / "schema" / "ModelManifest.schema.json"
+        schema = json.loads(schema_path.read_text())
+        manifest = {
+            "model_id": "nvidia/parakeet-tdt-0.6b-v3",
+            "version": "1.0",
+            "files": [
+                {
+                    "path": "model.bin",
+                    "urls": ["https://example.com/model.bin"],
+                    "size_bytes": 100,
+                    "sha256": "a" * 64,
+                }
+            ],
+        }
+        errors = MODULE.validate_document_against_schema(manifest, schema, "manifest")
+        self.assertTrue(any("model_family" in err and "required" in err for err in errors))
+
+    def test_manifest_schema_rejects_non_positive_size_bytes(self) -> None:
+        """size_bytes must be strictly positive."""
+        schema_path = Path(__file__).resolve().parents[2] / "shared" / "schema" / "ModelManifest.schema.json"
+        schema = json.loads(schema_path.read_text())
+        manifest = {
+            "model_id": "nvidia/parakeet-tdt-0.6b-v3",
+            "model_family": "parakeet",
+            "version": "1.0",
+            "files": [
+                {
+                    "path": "model.bin",
+                    "urls": ["https://example.com/model.bin"],
+                    "size_bytes": 0,
+                    "sha256": "a" * 64,
+                }
+            ],
+        }
+        errors = MODULE.validate_document_against_schema(manifest, schema, "manifest")
+        self.assertTrue(any("size_bytes" in err for err in errors))
 
     # ── Manifests directory validation ─────────────────────────────
 
@@ -375,6 +499,7 @@ class ValidateModelManifestTests(unittest.TestCase):
                 json.dumps(
                     {
                         "model_id": "nvidia/parakeet-tdt-0.6b-v3",
+                        "model_family": "parakeet",
                         "version": "1.0",
                         "files": [
                             {

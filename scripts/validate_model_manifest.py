@@ -35,6 +35,7 @@ except ImportError:
 REQUIRED_MANIFEST_FIELDS = {
     "schema_version",
     "model_id",
+    "model_family",
     "source",
     "revision",
     "license",
@@ -56,6 +57,7 @@ REQUIRED_FILE_FIELDS = {
 }
 
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+SUPPORTED_MODEL_FAMILIES = {"parakeet", "whisper"}
 
 MANIFEST_MODEL_INCLUDE_SNIPPET = 'include_str!("../../shared/model/MODEL_MANIFEST.json")'
 DEFAULT_MODEL_CALL_SNIPPET = "model_defaults::default_model_id()"
@@ -148,6 +150,11 @@ def validate_manifest_schema(manifest: dict[str, Any]) -> list[str]:
                 for field in REQUIRED_FILE_FIELDS:
                     if field not in file_obj:
                         errors.append(f"files[{i}] missing required field: {field}")
+                size_bytes = file_obj.get("size_bytes")
+                if not isinstance(size_bytes, int):
+                    errors.append(f"files[{i}].size_bytes must be an integer")
+                elif size_bytes <= 0:
+                    errors.append(f"files[{i}].size_bytes must be positive")
                 sha256 = file_obj.get("sha256")
                 if not isinstance(sha256, str):
                     errors.append(f"files[{i}].sha256 must be a string")
@@ -172,6 +179,16 @@ def validate_manifest_schema(manifest: dict[str, Any]) -> list[str]:
             errors.append("model_id must be a string")
         elif not manifest["model_id"]:
             errors.append("model_id cannot be empty")
+
+    if "model_family" in manifest:
+        model_family = manifest["model_family"]
+        if not isinstance(model_family, str):
+            errors.append("model_family must be a string")
+        elif not model_family:
+            errors.append("model_family cannot be empty")
+        elif model_family not in SUPPORTED_MODEL_FAMILIES:
+            allowed = ", ".join(sorted(SUPPORTED_MODEL_FAMILIES))
+            errors.append(f"model_family must be one of: {allowed}")
 
     if "revision" in manifest:
         if not isinstance(manifest["revision"], str):

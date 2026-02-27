@@ -263,7 +263,8 @@ export interface LegacyModelStatus {
 export type ModelStatusPayload = ModelStatus | LegacyModelStatus;
 
 /** Model family for grouping in the UI (matches ModelCatalog.schema.json). */
-export type ModelFamily = 'parakeet' | 'whisper' | 'canary';
+export const SUPPORTED_MODEL_FAMILIES = ['parakeet', 'whisper'] as const;
+export type ModelFamily = (typeof SUPPORTED_MODEL_FAMILIES)[number];
 
 /** Catalog entry for a single model (matches shared/model/MODEL_CATALOG.json). */
 export interface ModelCatalogEntry {
