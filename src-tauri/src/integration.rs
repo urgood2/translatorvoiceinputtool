@@ -300,6 +300,28 @@ fn model_download_params(model_id: Option<String>, force: Option<bool>) -> Optio
     }
 }
 
+fn emit_missing_model_status_for_purged_models_with_broadcaster<B: AppEventBroadcaster>(
+    handle: &B,
+    event_seq: &Arc<AtomicU64>,
+    status_model_ids: &[String],
+) {
+    for status_model_id in status_model_ids {
+        let payload = model_status_event_payload(
+            ModelStatus::Missing,
+            Some(status_model_id.clone()),
+            None,
+            None,
+            None,
+        );
+        emit_with_shared_seq_for_broadcaster(
+            handle,
+            &[EVENT_MODEL_STATUS],
+            json!(payload),
+            event_seq,
+        );
+    }
+}
+
 fn configured_model_language_hint(config: &config::AppConfig) -> Option<String> {
     config
         .model
@@ -2314,15 +2336,11 @@ impl IntegrationManager {
 
         // Emit model:status Missing for each purged model so UI consumers
         // can track cache state for all models, not just the configured one.
-        for status_model_id in status_model_ids {
-            Self::emit_model_status_with_details(
-                &self.app_handle,
-                ModelStatus::Missing,
+        if let Some(app_handle) = &self.app_handle {
+            emit_missing_model_status_for_purged_models_with_broadcaster(
+                app_handle,
                 &self.event_seq,
-                Some(status_model_id),
-                None,
-                None,
-                None,
+                &status_model_ids,
             );
         }
 
@@ -5672,6 +5690,44 @@ for raw in sys.stdin:
         );
         assert_eq!(payload.model_id, purged);
         assert_eq!(payload.status, "missing");
+    }
+
+    #[test]
+    fn test_purge_success_path_emits_model_status_for_non_configured_model() {
+        let configured = "nvidia/parakeet-tdt-0.6b-v3";
+        let purged = "openai/whisper-large";
+        let status_model_ids = purge_status_model_ids(
+            Some(purged),
+            configured,
+            &[purged.to_string(), "".to_string()],
+        );
+
+        assert_eq!(status_model_ids, vec![purged.to_string()]);
+        assert!(
+            !purge_affects_configured_model(configured, &status_model_ids),
+            "targeted purge for a different model must not mutate configured-model state"
+        );
+
+        let broadcaster = MockBroadcaster::with_windows(&["main"]);
+        let seq_counter = Arc::new(AtomicU64::new(1));
+
+        emit_missing_model_status_for_purged_models_with_broadcaster(
+            &broadcaster,
+            &seq_counter,
+            &status_model_ids,
+        );
+
+        let events = broadcaster.received_event_names("main");
+        assert_eq!(events, vec![EVENT_MODEL_STATUS.to_string()]);
+
+        let payloads = broadcaster.received_payloads("main");
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(
+            payloads[0].get("model_id").and_then(Value::as_str),
+            Some("openai/whisper-large")
+        );
+        assert_eq!(payloads[0].get("status").and_then(Value::as_str), Some("missing"));
+        assert_eq!(payloads[0].get("seq").and_then(Value::as_u64), Some(1));
     }
 
     #[test]
