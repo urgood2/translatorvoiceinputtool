@@ -24,7 +24,7 @@ def _reference_doc_text() -> str:
             "| `src-tauri/src/watchdog.rs` | Evolved into supervisor | No rewrite. |",
             "| `src-tauri/src/injection.rs` | Minor updates | Preserve flow. |",
             "| `src-tauri/src/tray.rs` | Dynamic menu builder | Extend behavior. |",
-            "| `src/hooks/useTauriEvents.ts` | Listen to canonical + legacy | Compatibility window. |",
+            "| `src/hooks/useTauriEvents.ts` | Listen to canonical events only | Legacy aliases retired; keep canonical listener set in sync with `tauri.events.v1.json`. |",
             "| `src/types.ts` | Extended with new types | Backward compatible. |",
             "| `shared/ipc/IPC_PROTOCOL_V1.md` | Additive only | IPC v1 locked. |",
             "| `shared/schema/AppConfig.schema.json` | Additive fields only | Explicit additions only. |",

@@ -15,7 +15,7 @@ Use it before touching any existing module to avoid greenfield rewrites and prot
 | `src-tauri/src/watchdog.rs` | Evolved into supervisor | Same crate; enhanced with circuit breaker behavior. |
 | `src-tauri/src/injection.rs` | Minor: `app_overrides` support | Existing injection flow preserved. |
 | `src-tauri/src/tray.rs` | Dynamic menu builder | Extends existing tray behavior. |
-| `src/hooks/useTauriEvents.ts` | Listen to `state:changed` + legacy | Keep `state_changed` alias during compatibility window. |
+| `src/hooks/useTauriEvents.ts` | Listen to canonical events only | Legacy aliases retired; keep canonical listener set in sync with `tauri.events.v1.json`. |
 | `src/types.ts` | Extended with new types | Existing types remain stable and backward compatible. |
 | `shared/ipc/IPC_PROTOCOL_V1.md` | Additive only | IPC v1 stays locked; only additive optional fields/params. |
 | `shared/schema/AppConfig.schema.json` | Additive fields only | `additionalProperties: false` requires explicit schema additions. |

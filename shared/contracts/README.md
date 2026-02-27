@@ -43,6 +43,7 @@ CI/build validation enforces this via:
 
 Legacy aliases are controlled by `shared/contracts/MIGRATION.md`.
 
-- Do not remove legacy aliases silently.
-- Remove aliases only when documented criteria are met.
-- CI enforces compatibility-window guards via `scripts/check_contract_aliases.py`.
+- Legacy alias compatibility is currently retired (`compat_window_active: false`).
+- Use canonical event names only; legacy alias names are unsupported.
+- Document any future compatibility-window reactivation in `MIGRATION.md`.
+- CI enforces compatibility-window guards via `scripts/check_contract_aliases.py` when active.
