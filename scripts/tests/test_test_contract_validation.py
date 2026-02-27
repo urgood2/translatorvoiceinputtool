@@ -34,11 +34,36 @@ class TestContractValidationTests(unittest.TestCase):
     @staticmethod
     def _write_events_contract(path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('{"detail":"present"}\n', encoding="utf-8")
+        path.write_text(
+            json.dumps(
+                {
+                    "items": [
+                        {
+                            "type": "event",
+                            "name": "state:changed",
+                            "payload_schema": {"$ref": "#/$defs/state_changed_payload"},
+                        }
+                    ],
+                    "$defs": {
+                        "state_changed_payload": {
+                            "type": "object",
+                            "properties": {"detail": {"type": ["string", "null"]}},
+                        }
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
     # Minimal contract items matching the real tauri.events.v1.json (aliases retired)
     _DEFAULT_EVENT_ITEMS: list[dict] = [
-        {"type": "event", "name": "state:changed", "deprecated_aliases": []},
+        {
+            "type": "event",
+            "name": "state:changed",
+            "deprecated_aliases": [],
+            "payload_schema": {"$ref": "#/$defs/state_changed_payload"},
+        },
         {"type": "event", "name": "transcript:complete", "deprecated_aliases": []},
         {"type": "event", "name": "transcript:error", "deprecated_aliases": []},
         {"type": "event", "name": "sidecar:status", "deprecated_aliases": []},
@@ -46,18 +71,40 @@ class TestContractValidationTests(unittest.TestCase):
         {"type": "event", "name": "recording:status"},
     ]
 
+    @staticmethod
+    def _default_tauri_events_contract(items: list[dict]) -> dict:
+        return {
+            "items": items,
+            "$defs": {
+                "state_changed_payload": {
+                    "type": "object",
+                    "properties": {
+                        "seq": {"type": "integer"},
+                        "state": {"type": "string"},
+                        "enabled": {"type": "boolean"},
+                        "detail": {"type": ["string", "null"]},
+                        "timestamp": {"type": "string"},
+                    },
+                }
+            },
+        }
+
     def _validate_fixture_category(
         self,
         root: Path,
         *,
         examples_rows: list[dict],
         event_items: list[dict] | None = None,
+        events_contract: dict | None = None,
     ) -> tuple[list[str], list[str]]:
         examples_path = root / "shared" / "ipc" / "examples" / "IPC_V1_EXAMPLES.jsonl"
         self._write_jsonl(examples_path, examples_rows)
         self._write_events_contract(root / "shared" / "contracts" / "tauri.events.v1.json")
         items = event_items if event_items is not None else self._DEFAULT_EVENT_ITEMS
-        contracts = {"sidecar.rpc": {"items": []}, "tauri.events": {"items": items}}
+        tauri_events_contract = (
+            events_contract if events_contract is not None else self._default_tauri_events_contract(items)
+        )
+        contracts = {"sidecar.rpc": {"items": []}, "tauri.events": tauri_events_contract}
 
         with (
             patch.object(MODULE.vc, "EXAMPLES_PATH", examples_path),
@@ -147,6 +194,103 @@ class TestContractValidationTests(unittest.TestCase):
                 msg=str(errors),
             )
 
+    def test_validate_fixture_category_requires_state_detail_in_state_payload_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            tauri_events_contract = {
+                "items": [
+                    {
+                        "type": "event",
+                        "name": "state:changed",
+                        "payload_schema": {"$ref": "#/$defs/state_changed_payload"},
+                    },
+                    {"type": "event", "name": "model:status"},
+                ],
+                "$defs": {
+                    # Include an unrelated "detail" elsewhere to ensure checks target state payload path.
+                    "unrelated_payload": {"type": "object", "properties": {"detail": {"type": "string"}}},
+                    "state_changed_payload": {
+                        "type": "object",
+                        "properties": {
+                            "seq": {"type": "integer"},
+                            "state": {"type": "string"},
+                            "enabled": {"type": "boolean"},
+                            "timestamp": {"type": "string"},
+                        },
+                    },
+                },
+            }
+            _summaries, errors = self._validate_fixture_category(
+                root,
+                examples_rows=[
+                    {
+                        "type": "notification",
+                        "data": {
+                            "jsonrpc": "2.0",
+                            "method": "event.model_status",
+                            "params": {
+                                "mapped_tauri_event": "model:status",
+                                "mapped_tauri_payload_canonical": {"status": "ready"},
+                            },
+                        },
+                    },
+                ],
+                events_contract=tauri_events_contract,
+            )
+
+            self.assertTrue(
+                any("state:changed payload schema must include canonical 'detail' field" in err for err in errors),
+                msg=str(errors),
+            )
+
+    def test_validate_fixture_category_rejects_legacy_error_detail_in_state_payload_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            tauri_events_contract = {
+                "items": [
+                    {
+                        "type": "event",
+                        "name": "state:changed",
+                        "payload_schema": {"$ref": "#/$defs/state_changed_payload"},
+                    },
+                    {"type": "event", "name": "model:status"},
+                ],
+                "$defs": {
+                    "state_changed_payload": {
+                        "type": "object",
+                        "properties": {
+                            "seq": {"type": "integer"},
+                            "state": {"type": "string"},
+                            "enabled": {"type": "boolean"},
+                            "detail": {"type": "string"},
+                            "error_detail": {"type": "string"},
+                            "timestamp": {"type": "string"},
+                        },
+                    }
+                },
+            }
+            _summaries, errors = self._validate_fixture_category(
+                root,
+                examples_rows=[
+                    {
+                        "type": "notification",
+                        "data": {
+                            "jsonrpc": "2.0",
+                            "method": "event.model_status",
+                            "params": {
+                                "mapped_tauri_event": "model:status",
+                                "mapped_tauri_payload_canonical": {"status": "ready"},
+                            },
+                        },
+                    },
+                ],
+                events_contract=tauri_events_contract,
+            )
+
+            self.assertTrue(
+                any("state:changed payload schema should not include legacy 'error_detail' field" in err for err in errors),
+                msg=str(errors),
+            )
 
     def test_fixture_alias_coverage_derived_from_contract_not_hardcoded(self) -> None:
         """Regression (kex5): required fixture set must be driven by contract deprecated_aliases."""

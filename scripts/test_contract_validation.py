@@ -185,13 +185,43 @@ def validate_fixture_category(
             "shared/ipc/examples/IPC_V1_EXAMPLES.jsonl: model:status mapped payload fixtures must include 'status' field"
         )
 
-    events_contract_text = (repo_root / "shared" / "contracts" / "tauri.events.v1.json").read_text(
-        encoding="utf-8"
+    state_changed_contract = next(
+        (
+            item
+            for item in events_contract.get("items", [])
+            if isinstance(item, dict) and item.get("name") == "state:changed"
+        ),
+        None,
     )
-    if '"error_detail"' in events_contract_text:
-        errors.append("tauri.events contract should not include legacy 'error_detail' field")
-    if '"detail"' not in events_contract_text:
-        errors.append("tauri.events contract must include canonical 'detail' field")
+    if not isinstance(state_changed_contract, dict):
+        errors.append("tauri.events contract must declare state:changed event")
+    else:
+        payload_schema = state_changed_contract.get("payload_schema")
+        payload_ref = payload_schema.get("$ref") if isinstance(payload_schema, dict) else None
+        if not isinstance(payload_ref, str) or not payload_ref.startswith("#/$defs/"):
+            errors.append("tauri.events state:changed payload_schema must reference a local $defs schema")
+        else:
+            payload_def_name = payload_ref.rsplit("/", 1)[-1]
+            payload_def = events_contract.get("$defs", {}).get(payload_def_name)
+            if not isinstance(payload_def, dict):
+                errors.append(
+                    f"tauri.events contract missing state:changed payload schema definition '{payload_def_name}'"
+                )
+            else:
+                properties = payload_def.get("properties")
+                if not isinstance(properties, dict):
+                    errors.append(
+                        f"tauri.events state:changed payload schema '{payload_def_name}' must define object properties"
+                    )
+                else:
+                    if "error_detail" in properties:
+                        errors.append(
+                            "tauri.events state:changed payload schema should not include legacy 'error_detail' field"
+                        )
+                    if "detail" not in properties:
+                        errors.append(
+                            "tauri.events state:changed payload schema must include canonical 'detail' field"
+                        )
 
     summaries.append(f"canonical mapped tauri fixtures: {len(mapped_event_names)} event names")
     summaries.append(f"legacy mapped tauri aliases declared: {len(alias_to_canonical)}")
