@@ -37,6 +37,7 @@ TARGET_DTYPE = np.float32
 DEFAULT_SILENCE_THRESHOLD_DB = -40.0
 DEFAULT_SILENCE_WINDOW_MS = 20
 DEFAULT_SILENCE_PADDING_MS = 100
+DEFAULT_MIN_AUDIO_MS = 200  # Don't trim below this duration
 
 
 @dataclass
@@ -284,10 +285,14 @@ def trim_silence(
     threshold_db: float = DEFAULT_SILENCE_THRESHOLD_DB,
     window_ms: float = DEFAULT_SILENCE_WINDOW_MS,
     padding_ms: float = DEFAULT_SILENCE_PADDING_MS,
+    min_audio_ms: float = DEFAULT_MIN_AUDIO_MS,
 ) -> np.ndarray:
     """Trim leading and trailing silence from audio.
 
     Uses RMS energy in sliding windows to detect speech boundaries.
+    If the result after trimming is shorter than *min_audio_ms* the
+    original audio is returned untouched so that very quiet recordings
+    are not destroyed.
 
     Args:
         audio: Input audio array.
@@ -295,12 +300,16 @@ def trim_silence(
         threshold_db: Energy threshold in dB below peak (negative value).
         window_ms: Analysis window size in milliseconds.
         padding_ms: Padding to keep around detected speech.
+        min_audio_ms: Minimum output duration in milliseconds. If the
+            trimmed result is shorter, the original audio is returned.
 
     Returns:
         Audio with silence trimmed.
     """
     if len(audio) == 0:
         return audio
+
+    min_samples = int(sample_rate * min_audio_ms / 1000)
 
     # Convert parameters to samples
     window_samples = int(sample_rate * window_ms / 1000)
@@ -316,7 +325,9 @@ def trim_silence(
         return audio  # Empty input
 
     if rms.max() == 0:
-        # All silence - return empty array
+        # All silence — honour the minimum length guard.
+        if len(audio) <= min_samples:
+            return audio.astype(TARGET_DTYPE)
         return np.array([], dtype=TARGET_DTYPE)
 
     # Convert threshold from dB below peak to absolute
@@ -327,7 +338,8 @@ def trim_silence(
     above_threshold = rms > threshold_linear
 
     if not above_threshold.any():
-        # All silence - return very short array
+        if len(audio) <= min_samples:
+            return audio.astype(TARGET_DTYPE)
         return np.array([], dtype=TARGET_DTYPE)
 
     first_window = np.argmax(above_threshold)
@@ -337,7 +349,14 @@ def trim_silence(
     start_sample = max(0, first_window * window_samples - padding_samples)
     end_sample = min(len(audio), (last_window + 1) * window_samples + padding_samples)
 
-    return audio[start_sample:end_sample].astype(TARGET_DTYPE)
+    trimmed = audio[start_sample:end_sample].astype(TARGET_DTYPE)
+
+    # If trimmed result is too short, return original to preserve
+    # very quiet recordings.
+    if len(trimmed) < min_samples and len(audio) >= min_samples:
+        return audio.astype(TARGET_DTYPE)
+
+    return trimmed
 
 
 def preprocess(

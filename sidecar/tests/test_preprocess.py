@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from openvoicy_sidecar.preprocess import (
+    DEFAULT_MIN_AUDIO_MS,
     DEFAULT_SILENCE_THRESHOLD_DB,
     TARGET_DTYPE,
     TARGET_SAMPLE_RATE,
@@ -337,12 +338,35 @@ class TestSilenceTrimming:
         # (100ms padding = 1600 samples at 16kHz)
         assert len(result) > 16000  # Speech duration
 
-    def test_all_silence_returns_empty(self):
-        """Should return empty array for all-silence input."""
-        silence = np.zeros(16000, dtype=np.float32)
+    def test_all_silence_returns_empty_when_long(self):
+        """Should return empty array for long all-silence input."""
+        silence = np.zeros(16000, dtype=np.float32)  # 1 second
         result = trim_silence(silence, 16000)
 
         assert len(result) == 0
+
+    def test_all_silence_preserved_when_short(self):
+        """Very short all-silence audio stays intact (min_audio_ms guard)."""
+        min_samples = int(16000 * DEFAULT_MIN_AUDIO_MS / 1000)
+        silence = np.zeros(min_samples, dtype=np.float32)
+        result = trim_silence(silence, 16000)
+
+        assert len(result) == min_samples
+
+    def test_min_audio_ms_prevents_over_trimming(self):
+        """Quiet speech shorter than min_audio_ms should not be trimmed away."""
+        # Create quiet speech of 150ms (below default 200ms min)
+        # surrounded by long silence.
+        quiet_speech = np.sin(
+            2 * np.pi * 440 * np.linspace(0, 0.15, int(16000 * 0.15), dtype=np.float32)
+        ) * 0.001  # very quiet
+        silence = np.zeros(16000, dtype=np.float32)
+        audio = np.concatenate([silence, quiet_speech, silence])
+
+        # With a very aggressive threshold the speech may get trimmed to
+        # below min_audio_ms; the guard returns original in that case.
+        result = trim_silence(audio, 16000, threshold_db=-10.0, min_audio_ms=500)
+        assert len(result) == len(audio)
 
     def test_no_silence_unchanged(self, sine_wave_16k):
         """Should not trim if no silence to remove."""
