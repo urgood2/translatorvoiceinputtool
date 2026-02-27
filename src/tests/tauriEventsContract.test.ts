@@ -51,16 +51,18 @@ describe('tauri.events.v1 contract', () => {
       'transcript:error',
       'app:error',
       'sidecar:status',
+      'overlay:toggle',
     ];
 
     requiredNames.forEach((name) => {
       expect(byName.has(name)).toBe(true);
     });
 
-    expect(byName.get('state:changed')?.deprecated_aliases).toContain('state_changed');
-    expect(byName.get('transcript:complete')?.deprecated_aliases).toContain('transcription:complete');
-    expect(byName.get('transcript:error')?.deprecated_aliases).toContain('transcription:error');
-    expect(byName.get('sidecar:status')?.deprecated_aliases).toContain('status:changed');
+    expect(byName.get('state:changed')?.deprecated_aliases).toEqual([]);
+    expect(byName.get('transcript:complete')?.deprecated_aliases).toEqual([]);
+    expect(byName.get('transcript:error')?.deprecated_aliases).toEqual([]);
+    expect(byName.get('sidecar:status')?.deprecated_aliases).toEqual([]);
+    expect(byName.get('overlay:toggle')?.deprecated_aliases).toEqual([]);
     expect(byName.get('recording:status')?.deprecated_aliases).toEqual([]);
   });
 

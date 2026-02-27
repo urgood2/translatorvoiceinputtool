@@ -181,6 +181,12 @@ pub struct TauriEventDefModelStatusProgress {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TauriEventDefOverlayTogglePayload {
+    pub enabled: bool,
+    pub seq: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct TauriEventDefRecordingStatusPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_ms: Option<i64>,
@@ -601,6 +607,7 @@ pub const EVENT_APP_ERROR: &str = "app:error";
 pub const EVENT_AUDIO_LEVEL: &str = "audio:level";
 pub const EVENT_MODEL_PROGRESS: &str = "model:progress";
 pub const EVENT_MODEL_STATUS: &str = "model:status";
+pub const EVENT_OVERLAY_TOGGLE: &str = "overlay:toggle";
 pub const EVENT_RECORDING_STATUS: &str = "recording:status";
 pub const EVENT_SIDECAR_STATUS: &str = "sidecar:status";
 pub const EVENT_STATE_CHANGED: &str = "state:changed";
@@ -612,6 +619,7 @@ pub const TAURI_EVENT_NAMES: &[&str] = &[
     "audio:level",
     "model:progress",
     "model:status",
+    "overlay:toggle",
     "recording:status",
     "sidecar:status",
     "state:changed",
@@ -626,6 +634,8 @@ pub type EventAudioLevelPayload = TauriEventDefAudioLevelPayload;
 pub type EventModelProgressPayload = TauriEventDefModelProgressPayload;
 
 pub type EventModelStatusPayload = TauriEventDefModelStatusPayload;
+
+pub type EventOverlayTogglePayload = TauriEventDefOverlayTogglePayload;
 
 pub type EventRecordingStatusPayload = TauriEventDefRecordingStatusPayload;
 

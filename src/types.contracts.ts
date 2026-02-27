@@ -156,6 +156,11 @@ export type TauriEventDefModelStatusProgress = {
   unit: string;
 };
 
+export type TauriEventDefOverlayTogglePayload = {
+  enabled: boolean;
+  seq: number;
+};
+
 export type TauriEventDefRecordingStatusPayload = {
   audio_ms?: number;
   phase: "idle" | "recording" | "transcribing";
@@ -483,6 +488,8 @@ export type TauriEventModelProgressPayload = TauriEventDefModelProgressPayload;
 
 export type TauriEventModelStatusPayload = TauriEventDefModelStatusPayload;
 
+export type TauriEventOverlayTogglePayload = TauriEventDefOverlayTogglePayload;
+
 export type TauriEventRecordingStatusPayload = TauriEventDefRecordingStatusPayload;
 
 export type TauriEventSidecarStatusPayload = TauriEventDefSidecarStatusPayload;
@@ -493,12 +500,13 @@ export type TauriEventTranscriptCompletePayload = TauriEventDefTranscriptComplet
 
 export type TauriEventTranscriptErrorPayload = TauriEventDefTranscriptErrorPayload;
 
-export type TauriEventName = "app:error" | "audio:level" | "model:progress" | "model:status" | "recording:status" | "sidecar:status" | "state:changed" | "transcript:complete" | "transcript:error";
+export type TauriEventName = "app:error" | "audio:level" | "model:progress" | "model:status" | "overlay:toggle" | "recording:status" | "sidecar:status" | "state:changed" | "transcript:complete" | "transcript:error";
 export interface TauriEventPayloadMap {
   "app:error": TauriEventAppErrorPayload;
   "audio:level": TauriEventAudioLevelPayload;
   "model:progress": TauriEventModelProgressPayload;
   "model:status": TauriEventModelStatusPayload;
+  "overlay:toggle": TauriEventOverlayTogglePayload;
   "recording:status": TauriEventRecordingStatusPayload;
   "sidecar:status": TauriEventSidecarStatusPayload;
   "state:changed": TauriEventStateChangedPayload;
@@ -925,6 +933,7 @@ export const EVENT_APP_ERROR = "app:error" as const;
 export const EVENT_AUDIO_LEVEL = "audio:level" as const;
 export const EVENT_MODEL_PROGRESS = "model:progress" as const;
 export const EVENT_MODEL_STATUS = "model:status" as const;
+export const EVENT_OVERLAY_TOGGLE = "overlay:toggle" as const;
 export const EVENT_RECORDING_STATUS = "recording:status" as const;
 export const EVENT_SIDECAR_STATUS = "sidecar:status" as const;
 export const EVENT_STATE_CHANGED = "state:changed" as const;

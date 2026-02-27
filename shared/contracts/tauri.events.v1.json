@@ -57,6 +57,12 @@
       "name": "sidecar:status",
       "deprecated_aliases": [],
       "payload_schema": { "$ref": "#/$defs/sidecar_status_payload" }
+    },
+    {
+      "type": "event",
+      "name": "overlay:toggle",
+      "deprecated_aliases": [],
+      "payload_schema": { "$ref": "#/$defs/overlay_toggle_payload" }
     }
   ],
   "$defs": {
@@ -288,6 +294,16 @@
         "state": { "enum": ["starting", "ready", "failed", "restarting", "stopped"] },
         "restart_count": { "type": "integer", "minimum": 0 },
         "message": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "overlay_toggle_payload": {
+      "$id": "./tauri.events.v1.json#/$defs/overlay_toggle_payload",
+      "type": "object",
+      "required": ["seq", "enabled"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "enabled": { "type": "boolean" }
       },
       "additionalProperties": false
     }

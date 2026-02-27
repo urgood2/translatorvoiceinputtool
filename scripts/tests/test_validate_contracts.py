@@ -283,6 +283,35 @@ listen('sidecar:status', () => {});
             self.assertIn("without canonical listener 'state:changed'", output)
             self.assertIn("1 listeners checked, 1 valid, 1 using legacy aliases", output)
 
+    def test_validate_frontend_listener_events_accepts_overlay_toggle_listener(self) -> None:
+        """Regression: declared overlay listener should validate cleanly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            overlay_file = root / "src" / "overlay" / "OverlayApp.tsx"
+            overlay_file.parent.mkdir(parents=True, exist_ok=True)
+            overlay_file.write_text(
+                "\n".join(
+                    [
+                        "import { listen } from '@tauri-apps/api/event';",
+                        "void listen('overlay:toggle', () => {});",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            events_contract = {
+                "items": [
+                    {
+                        "type": "event",
+                        "name": "overlay:toggle",
+                        "payload_schema": {"type": "object"},
+                    }
+                ]
+            }
+
+            errors = MODULE.validate_frontend_listener_events(root, events_contract)
+            self.assertEqual(errors, [])
+
     def test_validate_rust_event_payloads_accepts_matching_payload_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
