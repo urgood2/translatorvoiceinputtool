@@ -122,6 +122,206 @@ def _list_descendant_pids_linux(root_pid: int) -> set[int]:
     return descendants
 
 
+def _list_descendant_pids_posix(root_pid: int) -> set[int]:
+    """Return recursive descendants for `root_pid` on POSIX platforms via `ps`."""
+    try:
+        proc = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+
+    parent_to_children: dict[int, set[int]] = {}
+    for line in proc.stdout.splitlines():
+        parts = line.strip().split()
+        if len(parts) != 2:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+        except ValueError:
+            continue
+        parent_to_children.setdefault(ppid, set()).add(pid)
+
+    descendants: set[int] = set()
+    stack = list(parent_to_children.get(root_pid, set()))
+    while stack:
+        pid = stack.pop()
+        if pid in descendants:
+            continue
+        descendants.add(pid)
+        stack.extend(parent_to_children.get(pid, set()))
+    return descendants
+
+
+def _list_descendant_pids_windows(root_pid: int) -> set[int]:
+    """Return recursive descendants for `root_pid` on Windows via PowerShell CIM."""
+    try:
+        proc = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "Get-CimInstance Win32_Process | "
+                    "Select-Object ProcessId,ParentProcessId | "
+                    "ConvertTo-Json -Compress"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+
+    try:
+        rows = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return set()
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list):
+        return set()
+
+    parent_to_children: dict[int, set[int]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            pid = int(row.get("ProcessId"))
+            ppid = int(row.get("ParentProcessId"))
+        except (TypeError, ValueError):
+            continue
+        parent_to_children.setdefault(ppid, set()).add(pid)
+
+    descendants: set[int] = set()
+    stack = list(parent_to_children.get(root_pid, set()))
+    while stack:
+        pid = stack.pop()
+        if pid in descendants:
+            continue
+        descendants.add(pid)
+        stack.extend(parent_to_children.get(pid, set()))
+    return descendants
+
+
+def _list_descendant_pids(root_pid: int) -> set[int]:
+    """Best-effort descendant PID enumeration across Linux/macOS/Windows."""
+    if sys.platform.startswith("linux"):
+        return _list_descendant_pids_linux(root_pid)
+    if os.name == "nt":
+        return _list_descendant_pids_windows(root_pid)
+    return _list_descendant_pids_posix(root_pid)
+
+
+def _pid_exists(pid: int) -> bool:
+    """Best-effort process existence probe across platforms."""
+    if pid <= 0:
+        return False
+    if sys.platform.startswith("linux"):
+        return Path(f"/proc/{pid}").exists()
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    (
+                        f"if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) "
+                        "{ exit 0 } else { exit 1 }"
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return True
+        except (OSError, subprocess.SubprocessError):
+            return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def test_descendant_pid_enumeration_windows_parser_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (1yda): validate Windows descendant parsing path on non-Windows hosts."""
+    rows = [
+        {"ProcessId": 200, "ParentProcessId": 100},
+        {"ProcessId": 201, "ParentProcessId": 100},
+        {"ProcessId": 300, "ParentProcessId": 200},
+    ]
+
+    def _fake_run(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["powershell"],
+            returncode=0,
+            stdout=json.dumps(rows),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    descendants = _list_descendant_pids_windows(100)
+    assert descendants == {200, 201, 300}
+
+
+def test_descendant_pid_enumeration_posix_parser_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (1yda): validate macOS/POSIX descendant parsing path on Linux CI."""
+    ps_output = "\n".join(
+        [
+            "200 100",
+            "201 100",
+            "300 200",
+            "400 999",
+        ]
+    )
+
+    def _fake_run(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["ps"],
+            returncode=0,
+            stdout=ps_output,
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    descendants = _list_descendant_pids_posix(100)
+    assert descendants == {200, 201, 300}
+
+
+def test_descendant_pid_enumeration_dispatch_covers_windows_and_macos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (1yda): ensure dispatcher routes orphan checks for Windows/macOS paths."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_list_descendant_pids_windows",
+        lambda root_pid: {root_pid + 1},
+    )
+    assert _list_descendant_pids(10) == {11}
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_list_descendant_pids_posix",
+        lambda root_pid: {root_pid + 2},
+    )
+    assert _list_descendant_pids(10) == {12}
+
+
 @dataclass
 class _StateStub:
     value: str
@@ -732,8 +932,6 @@ def test_invalid_params_type_returns_jsonrpc_error(run_sidecar: Any) -> None:
 def test_system_shutdown_process_exit() -> None:
     """Regression (25dl): system.shutdown must terminate cleanly and leave no orphan descendants."""
     _log("Testing system.shutdown subprocess-level clean exit")
-    if not Path("/proc").exists():
-        pytest.skip("Process-tree orphan inspection requires Linux /proc support")
 
     src_path = Path(__file__).parent.parent / "src"
     shutdown_req = '{"jsonrpc":"2.0","id":80,"method":"system.shutdown","params":{"reason":"compliance-test"}}'
@@ -752,7 +950,7 @@ def test_system_shutdown_process_exit() -> None:
 
     def _sample_descendants() -> None:
         while not stop_sampling.is_set() and proc.poll() is None:
-            observed_descendants.update(_list_descendant_pids_linux(proc.pid))
+            observed_descendants.update(_list_descendant_pids(proc.pid))
             time.sleep(0.05)
 
     sampler = threading.Thread(target=_sample_descendants, daemon=True)
@@ -774,10 +972,10 @@ def test_system_shutdown_process_exit() -> None:
 
     # Give descendants a small grace period to exit before declaring them orphaned.
     deadline = time.time() + 2.0
-    remaining = sorted(pid for pid in observed_descendants if Path(f"/proc/{pid}").exists())
+    remaining = sorted(pid for pid in observed_descendants if _pid_exists(pid))
     while remaining and time.time() < deadline:
         time.sleep(0.05)
-        remaining = sorted(pid for pid in observed_descendants if Path(f"/proc/{pid}").exists())
+        remaining = sorted(pid for pid in observed_descendants if _pid_exists(pid))
 
     assert not remaining, (
         "system.shutdown left orphan descendant process(es): "
