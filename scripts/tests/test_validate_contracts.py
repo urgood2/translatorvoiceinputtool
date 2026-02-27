@@ -616,7 +616,7 @@ listen('sidecar:status', () => {});
             errors = MODULE.validate_sidecar_examples_against_contract(root, sidecar_contract)
             self.assertTrue(any("missing request fixture for required sidecar method 'status.get'" in err for err in errors))
 
-    def test_validate_sidecar_examples_warns_unknown_fixture_method_name(self) -> None:
+    def test_validate_sidecar_examples_fails_unknown_fixture_method_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             examples_path = root / "shared" / "ipc" / "examples" / "IPC_V1_EXAMPLES.jsonl"
@@ -652,16 +652,9 @@ listen('sidecar:status', () => {});
                 ],
             }
 
-            stream = io.StringIO()
-            with redirect_stdout(stream):
-                errors = MODULE.validate_sidecar_examples_against_contract(root, sidecar_contract)
-
-            # Unknown fixture methods are warnings, not hard failures.
-            self.assertEqual(errors, [])
-
-            output = stream.getvalue()
-            self.assertIn("unknown request method 'status.get_typo'", output)
-            self.assertIn("unknown notification method 'status.changed_typo'", output)
+            errors = MODULE.validate_sidecar_examples_against_contract(root, sidecar_contract)
+            self.assertTrue(any("unknown request method 'status.get_typo'" in err for err in errors))
+            self.assertTrue(any("unknown notification method 'status.changed_typo'" in err for err in errors))
 
     def test_validate_sidecar_handler_dispatch_accepts_required_methods_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

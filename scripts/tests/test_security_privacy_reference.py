@@ -36,9 +36,9 @@ class SecurityPrivacyReferenceTests(unittest.TestCase):
 
     def test_diagnostics_environment_redacts_sensitive_values(self) -> None:
         self.assertIn('upper_key.contains("TOKEN")', self.commands_text)
+        self.assertIn('upper_key.contains("KEY")', self.commands_text)
         self.assertIn('upper_key.contains("SECRET")', self.commands_text)
         self.assertIn('upper_key.contains("PASSWORD")', self.commands_text)
-        self.assertIn('upper_key.contains("API_KEY")', self.commands_text)
         self.assertIn('"[REDACTED]"', self.commands_text)
 
 
