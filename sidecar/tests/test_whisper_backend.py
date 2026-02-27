@@ -221,6 +221,52 @@ def test_handle_asr_initialize_whisper_model_id_loads_backend_and_logs_selection
     assert "Family=whisper -> WhisperBackend" in stderr_output
 
 
+def test_handle_asr_initialize_explicit_auto_language_sets_detection_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeWhisperBackend()
+    _patch_fast_initialize_path(monkeypatch)
+    monkeypatch.setattr(asr_module, "resolve_model_family", lambda _model_id: "whisper")
+    monkeypatch.setattr(asr_module, "create_backend", lambda _family, _config=None: backend)
+
+    result = asr_module.handle_asr_initialize(
+        _initialize_request(
+            {
+                "model_id": "openai/whisper-small",
+                "device_pref": "cpu",
+                "language": "auto",
+            }
+        )
+    )
+
+    assert result["status"] == "ready"
+    assert backend.initialized
+    assert backend.language is None
+
+
+def test_handle_asr_initialize_without_language_uses_model_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeWhisperBackend()
+    _patch_fast_initialize_path(monkeypatch)
+    monkeypatch.setattr(asr_module, "resolve_model_family", lambda _model_id: "whisper")
+    monkeypatch.setattr(asr_module, "resolve_default_language", lambda _model_id: "de")
+    monkeypatch.setattr(asr_module, "create_backend", lambda _family, _config=None: backend)
+
+    result = asr_module.handle_asr_initialize(
+        _initialize_request(
+            {
+                "model_id": "openai/whisper-small",
+                "device_pref": "cpu",
+            }
+        )
+    )
+
+    assert result["status"] == "ready"
+    assert backend.initialized
+    assert backend.language == "de"
+
+
 def test_asr_initialize_invalid_language_returns_clear_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
