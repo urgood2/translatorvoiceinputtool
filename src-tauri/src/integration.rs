@@ -2168,6 +2168,19 @@ impl IntegrationManager {
             );
         }
 
+        let purge_model_id = match model_id {
+            Some(id) => {
+                let trimmed = id.trim().to_string();
+                if trimmed.is_empty() {
+                    return Err(
+                        "Invalid model_id: blank or whitespace-only value".to_string(),
+                    );
+                }
+                Some(trimmed)
+            }
+            None => None,
+        };
+
         let client = self.rpc_client.read().await;
         let client = client
             .as_ref()
@@ -2178,15 +2191,6 @@ impl IntegrationManager {
             #[allow(dead_code)]
             purged: bool,
         }
-
-        let purge_model_id = model_id.and_then(|id| {
-            let trimmed = id.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        });
 
         let params = purge_model_id
             .as_ref()
@@ -3494,7 +3498,7 @@ impl IntegrationManager {
                             );
                         }
 
-                        // Emit canonical + legacy events with identical payload and shared seq.
+                        // Emit canonical transcript event payload with shared seq.
                         if let Some(ref handle) = app_handle {
                             emit_with_shared_seq(
                                 handle,
@@ -3865,7 +3869,7 @@ impl IntegrationManager {
                             );
                         }
 
-                        // Emit canonical sidecar status and keep forwarding legacy raw payload.
+                        // Emit canonical sidecar status payload with shared seq.
                         if let Some(ref handle) = app_handle {
                             let seq = next_seq(&event_seq);
                             emit_with_existing_seq_to_all_windows(
@@ -4692,7 +4696,7 @@ for raw in sys.stdin:
     }
 
     #[test]
-    fn test_state_changed_emits_canonical_and_legacy_with_shared_seq() {
+    fn test_state_changed_emits_canonical_only_with_shared_seq() {
         let broadcaster = MockBroadcaster::with_windows(&["main"]);
         let seq_counter = Arc::new(AtomicU64::new(1));
         let event = StateEvent {
@@ -4716,6 +4720,10 @@ for raw in sys.stdin:
             main_events,
             vec![EVENT_STATE_CHANGED.to_string()]
         );
+        assert!(
+            !main_events.contains(&"state_changed".to_string()),
+            "legacy state_changed alias must not be emitted"
+        );
 
         let payloads = broadcaster.received_payloads("main");
         assert_eq!(payloads.len(), 1);
@@ -4728,7 +4736,7 @@ for raw in sys.stdin:
     }
 
     #[test]
-    fn test_transcript_events_emit_canonical_and_legacy_with_shared_seq() {
+    fn test_transcript_events_emit_canonical_only_with_shared_seq() {
         let broadcaster = MockBroadcaster::with_windows(&["main"]);
         let seq_counter = Arc::new(AtomicU64::new(1));
         let session_id = Uuid::new_v4();
@@ -4770,6 +4778,14 @@ for raw in sys.stdin:
                 EVENT_TRANSCRIPT_COMPLETE.to_string(),
                 EVENT_TRANSCRIPT_ERROR.to_string(),
             ]
+        );
+        assert!(
+            !events.contains(&"transcription:complete".to_string()),
+            "legacy transcription:complete alias must not be emitted"
+        );
+        assert!(
+            !events.contains(&"transcription:error".to_string()),
+            "legacy transcription:error alias must not be emitted"
         );
 
         let payloads = broadcaster.received_payloads("main");
@@ -5709,8 +5725,8 @@ for raw in sys.stdin:
 
     #[test]
     fn test_sidecar_status_bridge_emits_canonical_event_with_seq() {
-        // Regression (qf3m): the event.status_changed bridge must emit both
-        // sidecar:status (canonical) and status:changed (legacy) with the same seq.
+        // Regression (qf3m): the event.status_changed bridge emits only
+        // canonical sidecar:status with a sequence marker.
         let broadcaster = MockBroadcaster::with_windows(&["main"]);
         let seq_counter = Arc::new(AtomicU64::new(100));
 
@@ -7199,6 +7215,28 @@ for raw in sys.stdin:
         assert!(
             error.contains("Cannot purge model while download or initialization is in progress")
         );
+    }
+
+    #[tokio::test]
+    async fn test_purge_model_cache_rejects_blank_model_id() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(state_manager);
+
+        for blank in ["", " ", "  ", "\t", "\n", " \t\n "] {
+            let error = manager
+                .purge_model_cache(Some(blank.to_string()))
+                .await
+                .expect_err(&format!(
+                    "purge_model_cache should reject blank model_id {:?}",
+                    blank
+                ));
+            assert!(
+                error.contains("Invalid model_id"),
+                "expected validation error for blank model_id {:?}, got: {}",
+                blank,
+                error,
+            );
+        }
     }
 
     #[tokio::test]
