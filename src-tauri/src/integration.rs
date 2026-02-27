@@ -4183,6 +4183,7 @@ impl PingCallback for RpcPinger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use regex::Regex;
     use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
@@ -5119,8 +5120,16 @@ for raw in sys.stdin:
     #[test]
     fn test_no_window_specific_emit_calls_for_app_events() {
         let source = include_str!("integration.rs");
-        let forbidden = [".emit", "_to("].concat();
-        assert!(!source.contains(&forbidden));
+        let runtime_source = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let forbidden_emit_to = Regex::new(r"\.emit_to\s*\(").expect("valid emit_to detector regex");
+        assert!(
+            !forbidden_emit_to.is_match(runtime_source),
+            "window-specific emit_to usage is forbidden for app events"
+        );
+
+        // Regression: whitespace/newline variants must still be detected.
+        assert!(forbidden_emit_to.is_match("window.emit_to (\"main\", \"state:changed\", payload)"));
+        assert!(forbidden_emit_to.is_match("window.emit_to\n(\"main\", \"state:changed\", payload)"));
     }
 
     #[test]
