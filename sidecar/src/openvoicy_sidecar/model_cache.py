@@ -1252,14 +1252,14 @@ class ModelCacheManager:
                 self._error = str(e)
             raise ModelCacheError(str(e))
 
-    def purge_cache(self, model_id: Optional[str] = None) -> bool:
+    def purge_cache(self, model_id: Optional[str] = None) -> list[str]:
         """Purge model cache.
 
         Args:
             model_id: Specific model to purge, or None for all.
 
         Returns:
-            True if cache was purged.
+            List of model IDs that were actually purged.
 
         Raises:
             ModelInUseError: If model is currently in use.
@@ -1269,24 +1269,27 @@ class ModelCacheManager:
                 raise ModelInUseError()
 
         cache_dir = get_cache_directory()
+        purged_ids: list[str] = []
 
         with CacheLock():
             if model_id:
                 model_dir = cache_dir / model_id
                 if model_dir.exists():
                     shutil.rmtree(model_dir)
+                    purged_ids.append(model_id)
                     log(f"Purged cache for {model_id}")
             else:
                 # Purge all models
                 if cache_dir.exists():
-                    for item in cache_dir.iterdir():
+                    for item in sorted(cache_dir.iterdir(), key=lambda path: path.name):
                         if item.is_dir() and not item.name.startswith("."):
+                            purged_ids.append(item.name)
                             shutil.rmtree(item)
-                    log("Purged all model caches")
+                    log(f"Purged all model caches ({len(purged_ids)} models)")
 
         with self._state_lock:
             self._status = ModelStatus.MISSING
-        return True
+        return purged_ids
 
 
 # === Global Instance ===
@@ -1669,13 +1672,14 @@ def handle_model_purge_cache(request: Request) -> dict[str, Any]:
 
     Returns:
         purged: True if successful.
+        purged_model_ids: List of model IDs that were actually removed.
     """
     model_id = request.params.get("model_id")
 
     manager = get_cache_manager()
 
     try:
-        manager.purge_cache(model_id)
-        return {"purged": True}
+        purged_ids = manager.purge_cache(model_id)
+        return {"purged": True, "purged_model_ids": purged_ids}
     except ModelInUseError:
         raise

@@ -720,7 +720,7 @@ def test_model_purge_cache_success_and_in_use_error(monkeypatch: pytest.MonkeyPa
 
     class _PurgeableStub:
         def purge_cache(self, model_id=None):
-            return True
+            return ["model-a", "model-b"] if model_id is None else [model_id]
 
     monkeypatch.setattr(
         "openvoicy_sidecar.model_cache.get_cache_manager",
@@ -728,7 +728,9 @@ def test_model_purge_cache_success_and_in_use_error(monkeypatch: pytest.MonkeyPa
     )
     result = handle_model_purge_cache(_request("model.purge_cache", 91))
     _log(f"Response(success)={result}")
-    assert result == {"purged": True}
+    assert result["purged"] is True
+    assert isinstance(result["purged_model_ids"], list)
+    assert len(result["purged_model_ids"]) == 2
 
     class _InUseStub:
         def purge_cache(self, model_id=None):
@@ -751,3 +753,42 @@ def test_asr_initialize_rejects_invalid_device_pref() -> None:
             _request("asr.initialize", 93, {"device_pref": "tpu"})
         )
     _log("Assertion: asr.initialize rejects invalid device_pref -> PASS")
+
+
+def test_asr_initialize_success_response_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: asr.initialize success response must include required contract fields."""
+    _log("Testing asr.initialize success response shape")
+
+    class _InitializeEngineStub:
+        def initialize(
+            self,
+            model_id: str,
+            device_pref: str,
+            language: str | None = None,
+            progress_callback: Any | None = None,
+        ) -> dict[str, Any]:
+            assert model_id == "test-model"
+            assert device_pref == "cpu"
+            assert language == "en"
+            assert callable(progress_callback)
+            return {"status": "ready", "model_id": model_id, "device": "cpu"}
+
+    monkeypatch.setattr(
+        "openvoicy_sidecar.asr.get_engine",
+        lambda: _InitializeEngineStub(),
+    )
+
+    result = handle_asr_initialize(
+        _request(
+            "asr.initialize",
+            94,
+            {"model_id": "test-model", "device_pref": "cpu", "language": "en"},
+        )
+    )
+
+    assert isinstance(result, dict)
+    assert set(result.keys()) >= {"status", "model_id", "device"}
+    assert result["status"] == "ready"
+    assert isinstance(result["model_id"], str)
+    assert isinstance(result["device"], str)
+    _log("Assertion: asr.initialize success shape -> PASS")

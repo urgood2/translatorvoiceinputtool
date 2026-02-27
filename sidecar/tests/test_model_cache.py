@@ -829,7 +829,7 @@ class TestModelCacheManager:
         assert manager.status == ModelStatus.DOWNLOADING
 
     def test_purge_cache(self, temp_cache_dir, sample_manifest):
-        """Should purge cache directory."""
+        """Should purge cache directory and return purged model IDs."""
         manager = ModelCacheManager()
 
         # Create some cached data
@@ -839,9 +839,24 @@ class TestModelCacheManager:
 
         assert model_dir.exists()
 
-        manager.purge_cache(sample_manifest.model_id)
+        purged = manager.purge_cache(sample_manifest.model_id)
 
         assert not model_dir.exists()
+        assert manager.status == ModelStatus.MISSING
+        assert purged == [sample_manifest.model_id]
+
+    def test_purge_cache_all_returns_all_ids(self, temp_cache_dir):
+        """Should return all purged model IDs when purging all."""
+        manager = ModelCacheManager()
+
+        for name in ["model-a", "model-b", "model-c"]:
+            d = temp_cache_dir / name
+            d.mkdir()
+            (d / "data.bin").write_text("x")
+
+        purged = manager.purge_cache(None)
+
+        assert sorted(purged) == ["model-a", "model-b", "model-c"]
         assert manager.status == ModelStatus.MISSING
 
     def test_purge_cache_model_in_use(self, temp_cache_dir):
