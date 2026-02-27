@@ -117,6 +117,25 @@ describe('HotkeySetupStep', () => {
     expect(updateHotkeyConfigSpy).toHaveBeenCalledWith({ primary: 'Ctrl+A' });
   });
 
+  test('records Space key as "Space" label instead of blank', async () => {
+    render(<HotkeySetupStep onReady={vi.fn()} />);
+    const recorder = screen.getByRole('button', { name: 'Recording hotkey' });
+
+    fireEvent.click(recorder);
+
+    await act(async () => {
+      fireEvent.keyDown(recorder, {
+        key: ' ',
+        ctrlKey: true,
+        shiftKey: false,
+        altKey: false,
+        metaKey: false,
+      });
+    });
+
+    expect(updateHotkeyConfigSpy).toHaveBeenCalledWith({ primary: 'Ctrl+Space' });
+  });
+
   test('ignores modifier-only key presses', () => {
     render(<HotkeySetupStep onReady={vi.fn()} />);
     const recorder = screen.getByRole('button', { name: 'Recording hotkey' });

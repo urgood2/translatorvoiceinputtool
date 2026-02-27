@@ -32,6 +32,7 @@ beforeEach(() => {
   useAppStore.setState({
     modelStatus: null,
     downloadProgress: null,
+    refreshModelStatus: vi.fn().mockResolvedValue(undefined),
   });
 });
 

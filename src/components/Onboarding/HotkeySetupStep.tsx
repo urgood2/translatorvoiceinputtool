@@ -48,7 +48,13 @@ export function HotkeySetupStep({ onReady: _onReady }: HotkeySetupStepProps) {
       // Wait for a non-modifier key
       if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;
 
-      parts.push(e.key.length === 1 ? e.key.toUpperCase() : e.key);
+      const keyLabel =
+        e.key === ' ' || e.key === 'Spacebar'
+          ? 'Space'
+          : e.key.length === 1
+            ? e.key.toUpperCase()
+            : e.key;
+      parts.push(keyLabel);
 
       const newHotkey = parts.join('+');
       setIsRecording(false);
