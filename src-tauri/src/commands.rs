@@ -1105,10 +1105,9 @@ fn redact_diagnostics_env_value(key: &str, value: &str) -> String {
 
 fn is_sensitive_env_key(upper_key: &str) -> bool {
     upper_key.contains("TOKEN")
+        || upper_key.contains("KEY")
         || upper_key.contains("SECRET")
         || upper_key.contains("PASSWORD")
-        || upper_key.contains("API_KEY")
-        || upper_key.ends_with("_KEY")
 }
 
 /// Get recent log entries from the ring buffer.
@@ -1540,6 +1539,8 @@ mod tests {
         let env = diagnostics_environment_from_iter(vec![
             ("HF_TOKEN".to_string(), "hf_secret_token".to_string()),
             ("SERVICE_API_KEY".to_string(), "api_secret".to_string()),
+            ("SERVICE_KEY_ID".to_string(), "service-key-id".to_string()),
+            ("OPENVOICY_KEYCHAIN_PATH".to_string(), "/tmp/keychain".to_string()),
             ("OPENVOICY_LOG_LEVEL".to_string(), "debug".to_string()),
             ("PATH".to_string(), "/usr/bin".to_string()),
         ]);
@@ -1547,6 +1548,14 @@ mod tests {
         assert_eq!(env.get("HF_TOKEN").map(String::as_str), Some("[REDACTED]"));
         assert_eq!(
             env.get("SERVICE_API_KEY").map(String::as_str),
+            Some("[REDACTED]")
+        );
+        assert_eq!(
+            env.get("SERVICE_KEY_ID").map(String::as_str),
+            Some("[REDACTED]")
+        );
+        assert_eq!(
+            env.get("OPENVOICY_KEYCHAIN_PATH").map(String::as_str),
             Some("[REDACTED]")
         );
         assert_eq!(
