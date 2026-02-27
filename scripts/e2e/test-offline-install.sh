@@ -66,6 +66,13 @@ OFFLINE_MODEL_ID="offline-e2e-model"
 OFFLINE_MODEL_FILE="offline.bin"
 OFFLINE_MODEL_DIR=""
 OFFLINE_PARTIAL_DIR=""
+OFFLINE_MANIFEST_ACTIVE=""
+OFFLINE_MANIFEST_CACHED=""
+OFFLINE_MANIFEST_DOWNLOAD=""
+SIDECAR_SESSION_PID=""
+SIDECAR_SESSION_IN_FD=""
+SIDECAR_SESSION_OUT_FD=""
+RPC_COUNTER=1000
 
 declare -a ERROR_CHAIN=()
 declare -a RPC_RESPONSES=()
@@ -168,13 +175,18 @@ restore_network() {
 
 set_offline_network() {
     NETWORK_STATE="offline-mocked"
-    apply_mock_network
+    # In a persistent sidecar session, env var proxy flips do not apply after
+    # process start. Simulate offline deterministically by stopping the local
+    # fixture server while keeping sidecar alive.
+    restore_network
+    stop_fixture_server
     log_network_state "network_mocked"
 }
 
 set_online_network() {
     NETWORK_STATE="online"
     restore_network
+    start_fixture_server
     log_network_state "network_restored"
 }
 
@@ -210,6 +222,7 @@ run_rpc_once() {
     local step="$1"
     local method="$2"
     local params="$3"
+    [[ -z "$params" ]] && params='{}'
     local timeout="${4:-20}"
 
     local request_id
@@ -222,34 +235,48 @@ run_rpc_once() {
         --argjson id "$request_id" \
         '{jsonrpc:"2.0",id:$id,method:$method,params:$params}')
 
-    log_line "INFO" "$step" "[RPC][REQ] $request"
-
-    local raw_output
-    raw_output=$(printf '%s\n' "$request" | e2e_timeout_run "$timeout" "$E2E_SIDECAR_BIN" 2>&1 || true)
+    log_line "INFO" "$step" "[RPC][REQ] $request" >&2
 
     local response=""
+    local deadline=$((SECONDS + timeout))
     local line=""
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        log_line "INFO" "$step" "[RPC][STREAM] $line"
-        local line_id
-        line_id=$(echo "$line" | jq -r '.id // empty' 2>/dev/null || true)
-        if [[ "$line_id" == "$request_id" ]]; then
-            response="$line"
+    printf '%s\n' "$request" >&3
+
+    while (( SECONDS < deadline )); do
+        local wait_s=$((deadline - SECONDS))
+        if (( wait_s <= 0 )); then
+            break
         fi
-    done <<< "$raw_output"
+
+        if IFS= read -r -u 4 -t "$wait_s" line; then
+            [[ -z "$line" ]] && continue
+            log_line "INFO" "$step" "[RPC][STREAM] $line" >&2
+
+            if [[ "$line" != *'"jsonrpc"'* ]]; then
+                continue
+            fi
+
+            local line_id
+            line_id=$(echo "$line" | jq -r '.id // empty' 2>/dev/null || true)
+            if [[ "$line_id" == "$request_id" ]]; then
+                response="$line"
+                break
+            fi
+            continue
+        fi
+        break
+    done
 
     if [[ -z "$response" ]]; then
         response='{"error":{"message":"timeout_or_invalid_response"}}'
         append_error "$step: no json-rpc response for id=$request_id"
-        append_error "$step: raw_output=$raw_output"
-        log_line "ERROR" "$step" "rpc_response_missing id=$request_id"
+        log_line "ERROR" "$step" "rpc_response_missing id=$request_id" >&2
         echo "$response"
         return 1
     fi
 
     RPC_RESPONSES+=("$response")
-    log_line "INFO" "$step" "[RPC][RES] $response"
+    log_line "INFO" "$step" "[RPC][RES] $response" >&2
     echo "$response"
 }
 
@@ -372,9 +399,24 @@ PY
                 }
             ]
         }' > "$OFFLINE_SHARED_ROOT/model/MODEL_MANIFEST.json"
+
+    mkdir -p "$OFFLINE_MODEL_DIR"
+    cp "$payload_path" "$OFFLINE_MODEL_DIR/$OFFLINE_MODEL_FILE"
+    jq -nc \
+        --arg model_id "$OFFLINE_MODEL_ID" \
+        --arg source_url "$fixture_url" \
+        '{
+            model_id: $model_id,
+            source_url: $source_url,
+            revision: "offline-fixture-v1"
+        }' > "$OFFLINE_MODEL_DIR/manifest.json"
 }
 
 start_fixture_server() {
+    if [[ -n "$OFFLINE_SERVER_PID" ]] && kill -0 "$OFFLINE_SERVER_PID" 2>/dev/null; then
+        return 0
+    fi
+
     python3 -m http.server "$OFFLINE_SERVER_PORT" \
         --bind 127.0.0.1 \
         --directory "$OFFLINE_SERVER_DIR" \
@@ -449,6 +491,8 @@ dump_failure_context() {
 
 cleanup() {
     local exit_code=$?
+    stop_sidecar
+    exec 4<&- 2>/dev/null || true
     stop_fixture_server
     restore_environment
 
@@ -488,14 +532,15 @@ main() {
 
     snapshot_dir "cache_before_default" "$DEFAULT_MODEL_DIR"
     prepare_fixture_assets
-    start_fixture_server
     snapshot_dir "cache_before_offline" "$OFFLINE_CACHE_ROOT"
 
     step_log 1 "Start sidecar with network disabled/mocked and verify system.ping"
     set_offline_network
+    use_offline_fixture_env
+    start_sidecar || return 1
+    exec 4<"$E2E_SIDECAR_STDOUT"
 
     # Step 1: Sidecar responsive with network mocked.
-    use_default_runtime_env
     local ping_response
     ping_response=$(run_rpc_once "step1_system_ping" "system.ping" "{}" 10) || return 1
     expect_jq_true "step1_system_ping" "$ping_response" '.result.protocol == "v1"' \
@@ -509,8 +554,12 @@ main() {
         "asr.initialize succeeds from cache while offline" || return 1
 
     step_log 3 "Attempt model.download offline and verify actionable E_NETWORK response"
-    # Step 3: Download fails offline with E_NETWORK.
-    use_offline_fixture_env
+    # Step 3: Purge fixture cache first, then download fails offline with E_NETWORK.
+    local purge_response
+    purge_response=$(run_rpc_once "step3a_purge_fixture_cache" "model.purge_cache" "{}" 15) || return 1
+    expect_jq_true "step3a_purge_fixture_cache" "$purge_response" '.result.purged == true' \
+        "model.purge_cache succeeds before offline download attempt" || return 1
+
     local download_offline_response
     download_offline_response=$(run_rpc_once "step3_model_download_offline" "model.download" "{}" 20) || true
     assert_network_error_actionable "$download_offline_response" "step3_model_download_offline" || return 1
@@ -522,7 +571,7 @@ main() {
 
     step_log 5 "Re-enable network and verify retry succeeds"
     # Step 5: Re-enable network and verify retry succeeds.
-    set_online_network
+    set_online_network || return 1
     local download_retry_response
     download_retry_response=$(run_rpc_once "step5_model_download_retry" "model.download" "{}" 20) || return 1
     expect_jq_true "step5_model_download_retry" "$download_retry_response" '.result.status == "ready"' \
@@ -544,6 +593,8 @@ main() {
     ping_after_retry=$(run_rpc_once "step6b_ping_after_retry" "system.ping" "{}" 10) || return 1
     expect_jq_true "step6b_ping_after_retry" "$ping_after_retry" '.result.protocol == "v1"' \
         "sidecar remains functional after retry" || return 1
+
+    run_rpc_once "step6c_shutdown" "system.shutdown" "{}" 10 >/dev/null 2>&1 || true
 
     snapshot_dir "cache_after_retry" "$OFFLINE_MODEL_DIR"
     use_default_runtime_env

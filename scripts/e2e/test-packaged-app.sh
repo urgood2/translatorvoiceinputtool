@@ -19,8 +19,103 @@ fi
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TAURI_BINARIES="$REPO_ROOT/src-tauri/binaries"
+BUNDLE_ROOT="$REPO_ROOT/src-tauri/target/release/bundle"
 
 TARGET=""
+
+find_bundle_artifact() {
+    if [[ ! -d "$BUNDLE_ROOT" ]]; then
+        return 1
+    fi
+
+    if [[ "$TARGET" == *"apple-darwin"* ]]; then
+        local app_dir
+        app_dir="$(find "$BUNDLE_ROOT" -maxdepth 4 -type d -name "*.app" | sort | head -n 1)"
+        if [[ -n "$app_dir" ]]; then
+            echo "$app_dir"
+            return 0
+        fi
+
+        find "$BUNDLE_ROOT" -maxdepth 4 -type f -name "*.dmg" | sort | head -n 1
+        return 0
+    fi
+
+    if [[ "$TARGET" == *"linux"* ]]; then
+        local linux_artifact
+        linux_artifact="$(
+            find "$BUNDLE_ROOT" -maxdepth 4 -type f \
+                \( -name "*.AppImage" -o -name "*.deb" -o -name "*.rpm" \) \
+                | sort \
+                | head -n 1
+        )"
+        if [[ -n "$linux_artifact" ]]; then
+            echo "$linux_artifact"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+detect_timeout_runner() {
+    if command -v timeout >/dev/null 2>&1; then
+        echo "timeout"
+        return 0
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+        echo "gtimeout"
+        return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        echo "python3"
+        return 0
+    fi
+    return 1
+}
+
+run_with_timeout() {
+    local seconds="$1"
+    shift
+
+    local runner
+    runner="$(detect_timeout_runner)" || {
+        echo "[PACKAGED_APP][ERROR] No supported timeout runner found (timeout/gtimeout/python3)" >&2
+        return 127
+    }
+
+    case "$runner" in
+        timeout|gtimeout)
+            "$runner" "$seconds" "$@"
+            ;;
+        python3)
+            python3 - "$seconds" "$@" <<'PY'
+import subprocess
+import sys
+
+timeout_s = float(sys.argv[1])
+cmd = sys.argv[2:]
+
+try:
+    completed = subprocess.run(
+        cmd,
+        stdin=sys.stdin.buffer,
+        stdout=sys.stdout.buffer,
+        stderr=sys.stderr.buffer,
+        timeout=timeout_s,
+        check=False,
+    )
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+
+sys.exit(completed.returncode)
+PY
+            ;;
+        *)
+            echo "[PACKAGED_APP][ERROR] Unsupported timeout runner: $runner" >&2
+            return 127
+            ;;
+    esac
+}
 
 detect_target_triple() {
     local os arch
@@ -73,6 +168,19 @@ if [[ "$TARGET" == *"windows"* ]]; then
     exit 77
 fi
 
+if [[ ! -d "$BUNDLE_ROOT" ]]; then
+    echo "[PACKAGED_APP][ERROR] Missing packaged app bundle output directory: $BUNDLE_ROOT" >&2
+    echo "[PACKAGED_APP][ERROR] Run npm run tauri build first to generate real bundle artifacts" >&2
+    exit 2
+fi
+
+BUNDLE_ARTIFACT="$(find_bundle_artifact || true)"
+if [[ -z "$BUNDLE_ARTIFACT" ]]; then
+    echo "[PACKAGED_APP][ERROR] No packaged app artifact found under $BUNDLE_ROOT for target $TARGET" >&2
+    echo "[PACKAGED_APP][ERROR] Expected at least one platform artifact (.AppImage/.deb/.rpm/.app/.dmg)" >&2
+    exit 1
+fi
+
 SIDECAR_BIN="$TAURI_BINARIES/openvoicy-sidecar-$TARGET"
 if [[ ! -f "$SIDECAR_BIN" ]]; then
     echo "[PACKAGED_APP][ERROR] Missing packaged sidecar binary: $SIDECAR_BIN" >&2
@@ -87,8 +195,12 @@ if [[ ! -d "$SHARED_ROOT" ]]; then
 fi
 
 echo "[PACKAGED_APP] target=$TARGET"
+echo "[PACKAGED_APP] bundle_root=$BUNDLE_ROOT"
+echo "[PACKAGED_APP] bundle_artifact=$BUNDLE_ARTIFACT"
 echo "[PACKAGED_APP] sidecar=$SIDECAR_BIN"
 echo "[PACKAGED_APP] shared_root=$SHARED_ROOT"
+echo "[PACKAGED_APP] Real bundle output summary:"
+find "$BUNDLE_ROOT" -maxdepth 4 -print | sort | sed 's#^#[PACKAGED_APP]   #'
 echo "[PACKAGED_APP] Bundle contents summary:"
 find "$TAURI_BINARIES" -maxdepth 4 -type f | sort | sed 's#^#[PACKAGED_APP]   #'
 
@@ -129,7 +241,7 @@ python3 -m openvoicy_sidecar.self_test
 echo "[PACKAGED_APP] Querying system.info from packaged sidecar..."
 SYSTEM_INFO_RAW="$(
     echo '{"jsonrpc":"2.0","id":1,"method":"system.info","params":{}}' \
-    | timeout 10 "$SIDECAR_BIN" 2>/dev/null
+    | run_with_timeout 10 "$SIDECAR_BIN" 2>/dev/null
 )"
 
 if [[ -z "$SYSTEM_INFO_RAW" ]]; then

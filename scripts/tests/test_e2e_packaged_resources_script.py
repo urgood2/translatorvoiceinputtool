@@ -14,6 +14,10 @@ class PackagedResourcesScriptTests(unittest.TestCase):
     ) -> None:
         content = PACKAGED_RESOURCES_SCRIPT.read_text()
 
+        self.assertIn("detect_target_triple()", content)
+        self.assertIn("openvoicy-sidecar-$TARGET", content)
+        self.assertIn("OPENVOICY_SIDECAR_COMMAND", content)
+        self.assertIn("--target TARGET_TRIPLE", content)
         self.assertIn("OPENVOICY_SHARED_ROOT", content)
         self.assertIn("python3 -m openvoicy_sidecar.self_test", content)
         self.assertIn("shared/contracts", content)

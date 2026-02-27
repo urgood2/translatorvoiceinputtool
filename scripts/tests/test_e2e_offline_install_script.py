@@ -41,6 +41,25 @@ class OfflineInstallScriptTests(unittest.TestCase):
         self.assertIn("[RPC][RES]", content)
         self.assertIn("dump_failure_context", content)
 
+    def test_offline_install_uses_single_persistent_sidecar_session(self) -> None:
+        content = OFFLINE_INSTALL_SCRIPT.read_text()
+
+        self.assertIn("start_sidecar || return 1", content)
+        self.assertIn('exec 4<"$E2E_SIDECAR_STDOUT"', content)
+        self.assertIn("printf '%s\\n' \"$request\" >&3", content)
+        self.assertIn("read -r -u 4 -t", content)
+        self.assertNotIn("e2e_timeout_run \"$timeout\" \"$E2E_SIDECAR_BIN\"", content)
+
+    def test_offline_install_uses_single_persistent_sidecar_session(self) -> None:
+        content = OFFLINE_INSTALL_SCRIPT.read_text()
+
+        self.assertIn("start_sidecar || return 1", content)
+        self.assertIn('exec 4<"$E2E_SIDECAR_STDOUT"', content)
+        self.assertIn("printf '%s\\n' \"$request\" >&3", content)
+        self.assertIn("read -r -u 4 -t", content)
+        self.assertIn("set_offline_network", content)
+        self.assertIn("set_online_network || return 1", content)
+
 
 if __name__ == "__main__":
     unittest.main()
