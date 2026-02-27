@@ -1168,6 +1168,34 @@ mod tests {
     }
 
     #[test]
+    fn idle_overlay_cpu_budget_proxy_keeps_emit_rate_near_zero() {
+        let mut limiter = OverlayRateLimiter::default();
+        limiter.set_enabled(true);
+        limiter.set_visible(false);
+        let t0 = Instant::now();
+
+        let mut meter_count = 0_u32;
+        let mut timer_count = 0_u32;
+        for offset in 0..1_000 {
+            let t = t0 + Duration::from_millis(offset);
+            if limiter.allow_meter_emit(t) {
+                meter_count += 1;
+            }
+            if limiter.allow_timer_emit(t, false) {
+                timer_count += 1;
+            }
+        }
+
+        let total_emits = meter_count + timer_count;
+        let emit_rate_hz = total_emits as f64;
+        assert_eq!(total_emits, 0, "idle overlay must not emit updates");
+        assert!(
+            emit_rate_hz <= 1.0,
+            "idle overlay emit rate should be ≤1Hz CPU-budget proxy, got {emit_rate_hz}"
+        );
+    }
+
+    #[test]
     fn manager_handles_recording_state_show_then_hide() {
         let config = MockConfigStore::new(true);
         let backend = MockWindowBackend::new();
