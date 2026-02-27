@@ -39,6 +39,14 @@ class DeviceRemovalScriptTests(unittest.TestCase):
         self.assertIn("Device state history", content)
         self.assertIn("[STEP ${step}/${STEPS_TOTAL}]", content)
 
+    def test_step8_requires_final_idle_not_loading_model(self) -> None:
+        content = SCRIPT.read_text()
+
+        self.assertIn("Waiting for status.get idle", content)
+        self.assertIn('if [[ "$status_state" != "idle" ]]; then', content)
+        self.assertIn("status.get did not return idle after recovery", content)
+        self.assertNotIn('.result.state == "idle" or .result.state == "loading_model"', content)
+
 
 if __name__ == "__main__":
     unittest.main()

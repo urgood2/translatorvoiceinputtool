@@ -29,13 +29,13 @@ class LatencyBenchmarkScriptTests(unittest.TestCase):
         self.assertIn("ipc_ms", content)
         self.assertIn("transcribe_ms", content)
         self.assertIn("postprocess_ms", content)
-        self.assertIn("inject_ms", content)
-        self.assertIn("total_ms", content)
+        self.assertIn("measured_ms", content)
+        self.assertIn("inject_budget_ms", content)
+        self.assertIn("projected_total_ms", content)
         self.assertIn("return 77", content)
-        self.assertIn("timings.inject_ms", content)
-        self.assertIn("cannot measure real T4", content)
         self.assertNotIn("inject_delay_ms", content)
         self.assertNotIn("simulated host injection delay", content)
+        self.assertNotIn("time.sleep(inject", content)
         self.assertIn("numpy unavailable; cannot synthesize benchmark waveform", content)
         self.assertIn("except ModuleNotFoundError as exc", content)
         self.assertIn("raise BenchmarkSkip", content)
@@ -54,13 +54,16 @@ class LatencyBenchmarkScriptTests(unittest.TestCase):
         self.assertIn("--strict", result.stdout)
         self.assertIn("--json-out", result.stdout)
         self.assertNotIn("--inject-delay-ms", result.stdout)
+        self.assertIn("--inject-budget-ms", result.stdout)
 
     def test_run_iteration_skips_when_numpy_missing_for_audio_generation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             with mock.patch.object(
                 latency_benchmark,
                 "generate_sine_wav",
-                side_effect=ModuleNotFoundError("No module named 'numpy'"),
+                side_effect=latency_benchmark.BenchmarkSkip(
+                    "numpy unavailable; cannot synthesize benchmark waveform"
+                ),
             ):
                 with self.assertRaises(latency_benchmark.BenchmarkSkip) as ctx:
                     latency_benchmark.run_iteration(
@@ -68,9 +71,10 @@ class LatencyBenchmarkScriptTests(unittest.TestCase):
                         temp_dir=Path(tmp_dir),
                         index=1,
                         duration_s=1.0,
+                        inject_budget_ms=50,
                         playback_required=True,
                     )
-        self.assertIn("install numpy", str(ctx.exception))
+        self.assertIn("numpy unavailable", str(ctx.exception))
 
 
 if __name__ == "__main__":

@@ -442,12 +442,26 @@ main() {
     # Step 8
     step_log 8 "Verify UI/recording state returns to Idle"
     local status_result
-    status_result=$(sidecar_rpc_session "status.get" "{}" 8) || {
-        fail_test "status.get failed"
-        return 1
-    }
-    if ! echo "$status_result" | jq -e '.result.state == "idle" or .result.state == "loading_model"' >/dev/null 2>&1; then
-        fail_test "status.get did not return idle/loading_model after recovery"
+    local status_state=""
+    local idle_deadline=$((SECONDS + 12))
+    while (( SECONDS < idle_deadline )); do
+        status_result=$(sidecar_rpc_session "status.get" "{}" 8) || {
+            fail_test "status.get failed"
+            return 1
+        }
+        status_state=$(echo "$status_result" | jq -r '.result.state // ""')
+        if [[ "$status_state" == "idle" ]]; then
+            break
+        fi
+        if [[ "$status_state" != "loading_model" ]]; then
+            fail_test "status.get returned unexpected state while waiting for idle (state=${status_state})"
+            return 1
+        fi
+        emit_line "[$(ts_human)] [INFO] Waiting for status.get idle (current=${status_state})"
+        sleep 1
+    done
+    if [[ "$status_state" != "idle" ]]; then
+        fail_test "status.get did not return idle after recovery (last_state=${status_state})"
         return 1
     fi
 

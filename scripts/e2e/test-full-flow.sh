@@ -17,7 +17,7 @@
 #
 # Output:
 # - Human log to stdout and logs/e2e/test-full-flow-TIMESTAMP.log
-# - Exit 0 success, 1 failure, 77 skipped (no model available)
+# - Exit 0 success, 1 failure, 77 skipped (no model or playback unavailable)
 
 set -euo pipefail
 
@@ -417,6 +417,28 @@ main() {
         return 1
     }
 
+    if echo "$start_response" | jq -e '.error' >/dev/null 2>&1; then
+        local start_kind
+        start_kind=$(echo "$start_response" | jq -r '.error.data.kind // "unknown"')
+        if [[ "$start_kind" == "E_AUDIO_IO" ]] || [[ "$start_kind" == "E_DEVICE_NOT_FOUND" ]] || [[ "$start_kind" == "E_DEVICE_UNAVAILABLE" ]]; then
+            emit_line "[$(timestamp_human)] [SKIP] recording.start unavailable on host audio stack (kind=${start_kind}); skipping full dictation flow"
+            step_log 6 "Skipped: synthetic audio playback (recording unavailable)"
+            step_log 7 "Skipped: recording.stop + wait transcription_complete (recording unavailable)"
+            step_log 8 "Skipped: session_id verification (recording unavailable)"
+            step_log 9 "Skipped: transcript non-empty verification (recording unavailable)"
+            step_log 10 "Skipped: duration budget check (recording unavailable)"
+
+            # STEP 11/11: system.shutdown
+            step_log 11 "Sending system.shutdown"
+            SHUTDOWN_ATTEMPTED=1
+            sidecar_rpc_session "system.shutdown" "{}" 8 >/dev/null || true
+            emit_line "[$(timestamp_human)] [RESULT] SKIPPED (exit 77)"
+            return 77
+        fi
+        fail_test "recording.start returned non-skip error kind (${start_kind})"
+        return 1
+    fi
+
     if ! echo "$start_response" | jq -e --arg sid "$SESSION_ID" '.result.session_id == $sid' >/dev/null 2>&1; then
         fail_test "recording.start response missing expected session_id"
         return 1
@@ -425,8 +447,32 @@ main() {
     # STEP 6/11: provide synthetic audio
     step_log 6 "Generating and playing synthetic sine-wave audio"
     SYNTH_AUDIO_FILE="$E2E_PROJECT_ROOT/logs/e2e/test-full-flow-${SESSION_ID}.wav"
-    if ! generate_and_play_synthetic_audio "$SYNTH_AUDIO_FILE" >/dev/null; then
-        fail_test "failed to generate/play synthetic audio"
+    local synth_output=""
+    local synth_status=0
+    set +e
+    synth_output=$(generate_and_play_synthetic_audio "$SYNTH_AUDIO_FILE" 2>&1 >/dev/null)
+    synth_status=$?
+    set -e
+    if [[ "$synth_status" -ne 0 ]]; then
+        if [[ "$synth_status" -eq 2 ]] || [[ "$synth_status" -eq 3 ]]; then
+            emit_line "[$(timestamp_human)] [SKIP] Synthetic audio playback unavailable on this host (code=${synth_status}): $(truncate_text "$synth_output" 300)"
+            local cancel_params
+            cancel_params=$(jq -nc --arg sid "$SESSION_ID" '{session_id:$sid}')
+            sidecar_rpc_session "recording.cancel" "$cancel_params" 8 >/dev/null || true
+
+            step_log 7 "Skipped: recording.stop + wait transcription_complete (playback unavailable)"
+            step_log 8 "Skipped: session_id verification (playback unavailable)"
+            step_log 9 "Skipped: transcript non-empty verification (playback unavailable)"
+            step_log 10 "Skipped: duration budget check (playback unavailable)"
+
+            # STEP 11/11: system.shutdown
+            step_log 11 "Sending system.shutdown"
+            SHUTDOWN_ATTEMPTED=1
+            sidecar_rpc_session "system.shutdown" "{}" 8 >/dev/null || true
+            emit_line "[$(timestamp_human)] [RESULT] SKIPPED (exit 77)"
+            return 77
+        fi
+        fail_test "failed to generate/play synthetic audio: $(truncate_text "$synth_output" 300)"
         return 1
     fi
 

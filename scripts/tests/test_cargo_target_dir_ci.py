@@ -35,12 +35,26 @@ class CargoTargetDirWorkflowTests(unittest.TestCase):
     def test_python_workflow_runs_sidecar_self_test_after_pytest(self) -> None:
         test_workflow = TEST_WORKFLOW.read_text()
 
-        self.assertIn("Sidecar Self-Test", test_workflow)
+        self.assertIn("Sidecar Self-Test (dev mode)", test_workflow)
         self.assertIn("python -m openvoicy_sidecar.self_test", test_workflow)
 
         pytest_index = test_workflow.index("Run pytest")
-        self_test_index = test_workflow.index("Sidecar Self-Test")
+        self_test_index = test_workflow.index("Sidecar Self-Test (dev mode)")
         self.assertGreater(self_test_index, pytest_index)
+
+    def test_python_workflow_runs_packaged_resource_simulation_after_self_test(self) -> None:
+        test_workflow = TEST_WORKFLOW.read_text()
+
+        self.assertIn(
+            "Sidecar Self-Test (packaged resource simulation)", test_workflow
+        )
+        self.assertIn("scripts/e2e/test-packaged-resources.sh", test_workflow)
+
+        dev_mode_index = test_workflow.index("Sidecar Self-Test (dev mode)")
+        packaged_index = test_workflow.index(
+            "Sidecar Self-Test (packaged resource simulation)"
+        )
+        self.assertGreater(packaged_index, dev_mode_index)
 
 
 if __name__ == "__main__":
