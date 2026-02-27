@@ -20,52 +20,84 @@ import os
 import sys
 
 
-def response_payload() -> dict:
-        if os.environ.get("MOCK_BAD_SYSTEM_INFO") == "1":
-            return {"version": "mock"}
-        if os.environ.get("MOCK_LEGACY_SYSTEM_INFO") == "1":
-            return {
-                "capabilities": {
-                    "cuda_available": False,
-                    "supports_progress": True,
-                },
-                "runtime": {
-                    "python": "3.13.0",
-                    "platform": "linux",
-                },
-                "resource_paths": {},
-            }
-
-        shared_root = os.environ["OPENVOICY_SHARED_ROOT"]
+def system_info_payload() -> dict:
+    if os.environ.get("MOCK_BAD_SYSTEM_INFO") == "1":
+        return {"version": "mock"}
+    if os.environ.get("MOCK_LEGACY_SYSTEM_INFO") == "1":
         return {
-            "capabilities": ["asr", "replacements", "meter"],
-            "runtime": {
-                "python_version": "3.13.0",
-                "platform": "linux",
+            "capabilities": {
                 "cuda_available": False,
+                "supports_progress": True,
             },
-            "resource_paths": {
-                "shared_root": shared_root,
-                "presets": os.path.join(shared_root, "replacements", "PRESETS.json"),
-                "model_manifest": os.path.join(shared_root, "model", "MODEL_MANIFEST.json"),
-                "model_catalog": os.path.join(shared_root, "model", "MODEL_CATALOG.json"),
-                "contracts_dir": os.path.join(shared_root, "contracts"),
-            }
+            "runtime": {
+                "python": "3.13.0",
+                "platform": "linux",
+            },
+            "resource_paths": {},
         }
 
+    shared_root = os.environ["OPENVOICY_SHARED_ROOT"]
+    return {
+        "capabilities": ["asr", "replacements", "meter"],
+        "runtime": {
+            "python_version": "3.13.0",
+            "platform": "linux",
+            "cuda_available": False,
+        },
+        "resource_paths": {
+            "shared_root": shared_root,
+            "presets": os.path.join(shared_root, "replacements", "PRESETS.json"),
+            "model_manifest": os.path.join(shared_root, "model", "MODEL_MANIFEST.json"),
+            "model_catalog": os.path.join(shared_root, "model", "MODEL_CATALOG.json"),
+            "contracts_dir": os.path.join(shared_root, "contracts"),
+        },
+    }
 
-raw = sys.stdin.read().strip()
-req = {"id": 1}
-if raw:
-    req = json.loads(raw.splitlines()[0])
 
-out = {
-    "jsonrpc": "2.0",
-    "id": req.get("id", 1),
-    "result": response_payload(),
-}
-sys.stdout.write(json.dumps(out) + "\\n")
-sys.stdout.flush()
+def rpc_result(method: str) -> dict:
+    if method == "system.info":
+        return system_info_payload()
+    if method == "system.ping":
+        return {"version": "0.0.0-mock", "protocol": "v1"}
+    if method == "status.get":
+        return {
+            "state": "idle",
+            "detail": "mock idle",
+            "model": {"model_id": "mock-model", "status": "ready"},
+        }
+    if method == "replacements.get_rules":
+        return {"rules": []}
+    if method == "system.shutdown":
+        return {"accepted": True}
+    raise KeyError(method)
+
+
+for raw_line in sys.stdin:
+    raw_line = raw_line.strip()
+    if not raw_line:
+        continue
+
+    try:
+        req = json.loads(raw_line)
+    except json.JSONDecodeError:
+        continue
+
+    req_id = req.get("id", 1)
+    method = req.get("method", "")
+    try:
+        out = {"jsonrpc": "2.0", "id": req_id, "result": rpc_result(method)}
+    except KeyError:
+        out = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32601, "message": f"method not found: {method}"},
+        }
+
+    sys.stdout.write(json.dumps(out) + "\\n")
+    sys.stdout.flush()
+
+    if method == "system.shutdown":
+        break
 """
 )
 
@@ -96,7 +128,7 @@ class PackagedResourcesRuntimeTests(unittest.TestCase):
     macos_target = "x86_64-apple-darwin"
     windows_target = "x86_64-pc-windows-msvc"
 
-    def _build_fixture_project(self, target: str) -> Path:
+    def _build_fixture_project(self, target: str, use_real_self_test: bool = False) -> Path:
         root = Path(tempfile.mkdtemp(prefix="packaged-resources-runtime-"))
         (root / "scripts" / "e2e").mkdir(parents=True, exist_ok=True)
         (root / "src-tauri" / "binaries").mkdir(parents=True, exist_ok=True)
@@ -115,17 +147,33 @@ class PackagedResourcesRuntimeTests(unittest.TestCase):
         sidecar_bin.chmod(sidecar_bin.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
         (root / "shared" / "replacements" / "PRESETS.json").write_text("{}", encoding="utf-8")
-        (root / "shared" / "model" / "MODEL_MANIFEST.json").write_text("{}", encoding="utf-8")
-        (root / "shared" / "model" / "MODEL_CATALOG.json").write_text("{}", encoding="utf-8")
+        (root / "shared" / "model" / "MODEL_MANIFEST.json").write_text(
+            '{"model_id":"fixture-model"}',
+            encoding="utf-8",
+        )
+        (root / "shared" / "model" / "MODEL_CATALOG.json").write_text(
+            '{"models":[{"model_id":"fixture-model"}]}',
+            encoding="utf-8",
+        )
         (root / "shared" / "model" / "manifests" / "fixture.json").write_text("{}", encoding="utf-8")
         (root / "shared" / "contracts" / "tauri.events.v1.json").write_text("{}", encoding="utf-8")
         (root / "sidecar" / "src" / "openvoicy_sidecar" / "__init__.py").write_text(
             "", encoding="utf-8"
         )
-        (root / "sidecar" / "src" / "openvoicy_sidecar" / "self_test.py").write_text(
-            MOCK_SELF_TEST,
-            encoding="utf-8",
-        )
+        if use_real_self_test:
+            shutil.copy2(
+                REPO_ROOT / "sidecar" / "src" / "openvoicy_sidecar" / "self_test.py",
+                root / "sidecar" / "src" / "openvoicy_sidecar" / "self_test.py",
+            )
+            shutil.copy2(
+                REPO_ROOT / "sidecar" / "src" / "openvoicy_sidecar" / "resources.py",
+                root / "sidecar" / "src" / "openvoicy_sidecar" / "resources.py",
+            )
+        else:
+            (root / "sidecar" / "src" / "openvoicy_sidecar" / "self_test.py").write_text(
+                MOCK_SELF_TEST,
+                encoding="utf-8",
+            )
 
         return root
 
@@ -172,6 +220,25 @@ class PackagedResourcesRuntimeTests(unittest.TestCase):
             self.assertIn("packaged sidecar self-test passed", completed.stdout + completed.stderr)
             self.assertIn("mock packaged self_test: OK", completed.stdout + completed.stderr)
             self.assertIn("packaged resource smoke test passed", completed.stdout + completed.stderr)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_runtime_pass_path_exits_zero_with_real_self_test_module(self) -> None:
+        root = self._build_fixture_project(self.target, use_real_self_test=True)
+        try:
+            completed = self._run_script(root, self.target)
+            self.assertEqual(
+                completed.returncode,
+                0,
+                msg=f"stdout={completed.stdout}\\nstderr={completed.stderr}",
+            )
+            output = completed.stdout + completed.stderr
+            self.assertIn("system.info schema preflight: OK", output)
+            self.assertIn("[SELF_TEST] Testing system.ping... OK", output)
+            self.assertIn("[SELF_TEST] PASS: All checks passed", output)
+            self.assertIn("packaged sidecar self-test passed", output)
+            self.assertIn("packaged resource smoke test passed", output)
+            self.assertNotIn("mock packaged self_test: OK", output)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

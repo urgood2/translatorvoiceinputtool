@@ -68,7 +68,9 @@ CONTRACT_PATH = (
 
 # Keep subprocess timeout above cold-start budget to avoid masking SLA failures
 # as subprocess.TimeoutExpired exceptions.
-PING_COLD_BUDGET_SECONDS = 12.0
+# Keep cold-start envelope tight enough to catch startup regressions while
+# allowing CI/process-launch jitter.
+PING_COLD_BUDGET_SECONDS = 10.0
 PING_WARM_BUDGET_SECONDS = 1.0
 PING_SUBPROCESS_TIMEOUT_SECONDS = 15.0
 
@@ -551,7 +553,7 @@ def test_system_ping_ipc_roundtrip_latency(run_sidecar: Any) -> None:
         assert exit_code == 0, f"Sidecar should exit cleanly after shutdown, got {exit_code}"
         return elapsed
 
-    # Warmed SLA: send multiple ping requests in one running sidecar process.
+    # In-process SLA: send multiple ping requests in one running sidecar process.
     src_path = Path(__file__).parent.parent / "src"
     proc = subprocess.Popen(
         [sys.executable, "-m", "openvoicy_sidecar"],
@@ -624,13 +626,18 @@ def test_system_ping_ipc_roundtrip_latency(run_sidecar: Any) -> None:
     finally:
         _cleanup_persistent_sidecar_process(proc, shutdown, stop_reader, reader)
 
-    # Cold starts can be noisy under CI load; warmed in-process ping must meet protocol SLA.
+    # Cold starts can be noisy under CI load; once running, both first and steady-state
+    # in-process ping requests must meet protocol SLA.
     assert cold_elapsed < PING_COLD_BUDGET_SECONDS, (
         "system.ping cold-start IPC round-trip exceeded budget: "
         f"{cold_elapsed:.3f}s"
     )
+    assert warm_first_elapsed < PING_WARM_BUDGET_SECONDS, (
+        "system.ping first in-process latency exceeded protocol SLA: "
+        f"{warm_first_elapsed:.3f}s"
+    )
     assert warmed_elapsed < PING_WARM_BUDGET_SECONDS, (
-        "system.ping warmed in-process latency exceeded protocol SLA: "
+        "system.ping steady-state in-process latency exceeded protocol SLA: "
         f"{warmed_elapsed:.3f}s"
     )
     _log(
