@@ -978,6 +978,36 @@ describe('useTauriEvents', () => {
     unmount();
   });
 
+  test('model status and progress with same seq are deduped independently', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await waitForCanonicalListeners();
+
+    const statusPayload = {
+      seq: 2200,
+      model_id: 'parakeet-rnnt-1.1b',
+      status: 'downloading' as const,
+      progress: { current: 10, total: 100, unit: 'bytes' },
+    };
+    const progressPayload = { seq: 2200, current: 20, total: 100, unit: 'bytes' };
+
+    act(() => {
+      fireMockEventWithLog('model:status', statusPayload);
+      fireMockEventWithLog('model:progress', progressPayload);
+    });
+
+    const state = useAppStore.getState();
+    expect(state.modelStatus).toMatchObject({
+      seq: 2200,
+      model_id: 'parakeet-rnnt-1.1b',
+      status: 'downloading',
+      progress: { current: 20, total: 100, unit: 'bytes' },
+    });
+    expect(state.downloadProgress).toEqual(progressPayload);
+
+    unmount();
+  });
+
   test('sidecar failed payload updates sidecar slice with restart metadata', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 

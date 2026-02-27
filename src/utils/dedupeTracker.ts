@@ -3,7 +3,8 @@ export type DedupeStreamKey =
   | 'transcript'
   | 'transcriptError'
   | 'sidecar'
-  | 'model'
+  | 'modelStatus'
+  | 'modelProgress'
   | 'recording'
   | 'audio'
   | 'error';

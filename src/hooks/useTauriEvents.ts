@@ -53,7 +53,8 @@ const STREAM_KEYS: Record<string, DedupeStreamKey> = {
   TRANSCRIPT: 'transcript',
   TRANSCRIPT_ERROR: 'transcriptError',
   SIDECAR: 'sidecar',
-  MODEL: 'model',
+  MODEL_STATUS: 'modelStatus',
+  MODEL_PROGRESS: 'modelProgress',
   RECORDING: 'recording',
   AUDIO: 'audio',
   ERROR: 'error',
@@ -341,7 +342,7 @@ export function useTauriEvents(): void {
       // Subscribe to model status changes
       const modelStatusRegistered = await registerListener<ModelStatusPayload>(
         EVENTS.MODEL_STATUS,
-        dedupeHandler(STREAM_KEYS.MODEL, (payload) => {
+        dedupeHandler(STREAM_KEYS.MODEL_STATUS, (payload) => {
           console.debug('Event: model:status', payload);
           store._setModelStatus(payload);
         })
@@ -351,7 +352,7 @@ export function useTauriEvents(): void {
       // Subscribe to model download progress
       const modelProgressRegistered = await registerListener<Progress>(
         EVENTS.MODEL_PROGRESS,
-        dedupeHandler(STREAM_KEYS.MODEL, (payload) => {
+        dedupeHandler(STREAM_KEYS.MODEL_PROGRESS, (payload) => {
           console.debug('Event: model:progress', payload);
           store._setDownloadProgress(payload);
         })
