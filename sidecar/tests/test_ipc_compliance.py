@@ -31,7 +31,12 @@ from openvoicy_sidecar.audio_meter import (
     handle_audio_meter_status,
     handle_audio_meter_stop,
 )
-from openvoicy_sidecar.protocol import ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND, Request
+from openvoicy_sidecar.protocol import (
+    ERROR_INVALID_PARAMS,
+    ERROR_METHOD_NOT_FOUND,
+    ERROR_MODEL_LOAD,
+    Request,
+)
 from openvoicy_sidecar.recording import (
     AlreadyRecordingError,
     NotRecordingError,
@@ -586,6 +591,25 @@ def test_asr_status_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     _log("Assertion: asr.status shape -> PASS")
 
 
+def test_asr_status_jsonrpc_envelope_path(run_sidecar: Any) -> None:
+    """Regression (zwmq): asr.status compliance must cover subprocess JSON-RPC path."""
+    _log("Testing asr.status JSON-RPC subprocess envelope path")
+    request = '{"jsonrpc":"2.0","id":61,"method":"asr.status"}'
+    shutdown = '{"jsonrpc":"2.0","id":99,"method":"system.shutdown","params":{"reason":"compliance-test"}}'
+    responses, _, exit_code = run_sidecar([request, shutdown], timeout=10.0)
+
+    asr_status = next((response for response in responses if response.get("id") == 61), None)
+    assert asr_status is not None, "Missing response for asr.status request"
+    assert "result" in asr_status, "asr.status must return a result envelope"
+    result = asr_status["result"]
+    assert isinstance(result, dict)
+    assert isinstance(result.get("state"), str)
+    if "ready" in result:
+        assert isinstance(result["ready"], bool)
+    assert exit_code == 0, f"Sidecar should exit cleanly after shutdown, got {exit_code}"
+    _log("Assertion: asr.status subprocess envelope -> PASS")
+
+
 def test_unknown_method_returns_jsonrpc_method_not_found(run_sidecar: Any) -> None:
     _log("Testing unknown method JSON-RPC error")
     request = '{"jsonrpc":"2.0","id":70,"method":"unknown.method"}'
@@ -713,6 +737,25 @@ def test_model_get_status_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     _log("Assertion: model.get_status shape -> PASS")
 
 
+def test_model_get_status_jsonrpc_envelope_path(run_sidecar: Any) -> None:
+    """Regression (zwmq): model.get_status compliance must cover subprocess JSON-RPC path."""
+    _log("Testing model.get_status JSON-RPC subprocess envelope path")
+    request = '{"jsonrpc":"2.0","id":95,"method":"model.get_status"}'
+    shutdown = '{"jsonrpc":"2.0","id":99,"method":"system.shutdown","params":{"reason":"compliance-test"}}'
+    responses, _, exit_code = run_sidecar([request, shutdown], timeout=10.0)
+
+    model_status = next((response for response in responses if response.get("id") == 95), None)
+    assert model_status is not None, "Missing response for model.get_status request"
+    assert "result" in model_status, "model.get_status must return a result envelope"
+    result = model_status["result"]
+    assert isinstance(result, dict)
+    assert isinstance(result.get("status"), str)
+    if "model_id" in result:
+        assert isinstance(result["model_id"], str)
+    assert exit_code == 0, f"Sidecar should exit cleanly after shutdown, got {exit_code}"
+    _log("Assertion: model.get_status subprocess envelope -> PASS")
+
+
 def test_model_purge_cache_success_and_in_use_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression (28gq): model.purge_cache success shape and ModelInUseError path."""
     _log("Testing model.purge_cache success and error paths")
@@ -744,6 +787,26 @@ def test_model_purge_cache_success_and_in_use_error(monkeypatch: pytest.MonkeyPa
     _log("Assertion: model.purge_cache success + ModelInUseError -> PASS")
 
 
+def test_model_purge_cache_jsonrpc_envelope_path(run_sidecar: Any) -> None:
+    """Regression (zwmq): model.purge_cache compliance must cover subprocess JSON-RPC path."""
+    _log("Testing model.purge_cache JSON-RPC subprocess envelope path")
+    request = (
+        '{"jsonrpc":"2.0","id":96,"method":"model.purge_cache",'
+        '"params":{"model_id":"__ipc_compliance_nonexistent_model__"}}'
+    )
+    shutdown = '{"jsonrpc":"2.0","id":99,"method":"system.shutdown","params":{"reason":"compliance-test"}}'
+    responses, _, exit_code = run_sidecar([request, shutdown], timeout=10.0)
+
+    purge_response = next((response for response in responses if response.get("id") == 96), None)
+    assert purge_response is not None, "Missing response for model.purge_cache request"
+    assert "result" in purge_response, "model.purge_cache must return a result envelope"
+    result = purge_response["result"]
+    assert result["purged"] is True
+    assert isinstance(result["purged_model_ids"], list)
+    assert exit_code == 0, f"Sidecar should exit cleanly after shutdown, got {exit_code}"
+    _log("Assertion: model.purge_cache subprocess envelope -> PASS")
+
+
 def test_asr_initialize_rejects_invalid_device_pref() -> None:
     """Regression (28gq): asr.initialize must reject invalid device_pref values."""
     _log("Testing asr.initialize invalid device_pref")
@@ -752,6 +815,23 @@ def test_asr_initialize_rejects_invalid_device_pref() -> None:
             _request("asr.initialize", 93, {"device_pref": "tpu"})
         )
     _log("Assertion: asr.initialize rejects invalid device_pref -> PASS")
+
+
+def test_asr_initialize_invalid_device_jsonrpc_envelope_path(run_sidecar: Any) -> None:
+    """Regression (zwmq): asr.initialize compliance must cover subprocess JSON-RPC path."""
+    _log("Testing asr.initialize invalid device via JSON-RPC subprocess envelope path")
+    request = '{"jsonrpc":"2.0","id":97,"method":"asr.initialize","params":{"device_pref":"tpu"}}'
+    shutdown = '{"jsonrpc":"2.0","id":99,"method":"system.shutdown","params":{"reason":"compliance-test"}}'
+    responses, _, exit_code = run_sidecar([request, shutdown], timeout=10.0)
+
+    init_response = next((response for response in responses if response.get("id") == 97), None)
+    assert init_response is not None, "Missing response for asr.initialize request"
+    assert "error" in init_response, "Invalid asr.initialize params must return error envelope"
+    error = init_response["error"]
+    assert error["code"] == ERROR_MODEL_LOAD
+    assert error["data"]["kind"] == "E_ASR"
+    assert exit_code == 0, f"Sidecar should exit cleanly after shutdown, got {exit_code}"
+    _log("Assertion: asr.initialize invalid-device subprocess envelope -> PASS")
 
 
 def test_asr_initialize_success_response_shape(monkeypatch: pytest.MonkeyPatch) -> None:
