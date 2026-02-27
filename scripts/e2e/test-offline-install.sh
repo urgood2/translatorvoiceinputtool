@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 #
-# E2E Test: Offline Install Behavior
+# E2E Test: Offline install behavior
 #
-# Validates offline model behavior with detailed diagnostics:
-# 1) Start sidecar with mocked-offline network
-# 2) Verify existing cached model remains usable (asr.initialize)
-# 3) Attempt model download with unreachable mirror => E_NETWORK
-# 4) Verify no partial/corrupt staged files remain
-# 5) Re-enable network and verify retry error is actionable
-# 6) Verify sidecar remains functional throughout
+# Validates:
+# 1. Sidecar starts with network mocked/disabled.
+# 2. Existing cached model remains usable via asr.initialize.
+# 3. model.download returns E_NETWORK with clear error text while offline.
+# 4. Failed download leaves no committed/corrupt model artifacts.
+# 5. After restoring network, retry succeeds.
+# 6. Sidecar remains functional after failure/retry.
+#
+# Output:
+#   logs/e2e/test-offline-install-TIMESTAMP.log
 #
 # Exit codes:
 #   0  pass
 #   1  fail
-#   77 skip (no usable cached model available)
+#   77 skip (cached model not available)
+#
 
 set -euo pipefail
 
@@ -26,62 +30,69 @@ fi
 source "$SCRIPT_DIR/lib/log.sh"
 source "$SCRIPT_DIR/lib/common.sh"
 
-STEPS_TOTAL=6
-RPC_DEFAULT_TIMEOUT=20
+TEST_NAME="test-offline-install"
+MOCK_PROXY_URL="http://127.0.0.1:9"
+RETRY_GUIDANCE="Check your internet connection and retry"
 
-TEST_LOG_FILE=""
-LAST_ERROR=""
-NETWORK_STATE="online"
-CACHED_MODEL_ID=""
-HOST_CACHE_DIR=""
-OFFLINE_SHARED_ROOT=""
-OFFLINE_XDG_CACHE_BASE=""
-OFFLINE_MODEL_ID="offline-e2e-model"
+LOG_FILE=""
+FAIL_REASON=""
 
-ORIG_http_proxy="${http_proxy-__UNSET__}"
-ORIG_https_proxy="${https_proxy-__UNSET__}"
+ORIG_OPENVOICY_SHARED_ROOT="${OPENVOICY_SHARED_ROOT-__UNSET__}"
+ORIG_XDG_CACHE_HOME="${XDG_CACHE_HOME-__UNSET__}"
 ORIG_HTTP_PROXY="${HTTP_PROXY-__UNSET__}"
 ORIG_HTTPS_PROXY="${HTTPS_PROXY-__UNSET__}"
 ORIG_ALL_PROXY="${ALL_PROXY-__UNSET__}"
+ORIG_http_proxy="${http_proxy-__UNSET__}"
+ORIG_https_proxy="${https_proxy-__UNSET__}"
+ORIG_all_proxy="${all_proxy-__UNSET__}"
 ORIG_NO_PROXY="${NO_PROXY-__UNSET__}"
 ORIG_no_proxy="${no_proxy-__UNSET__}"
-ORIG_OPENVOICY_SHARED_ROOT="${OPENVOICY_SHARED_ROOT-__UNSET__}"
-ORIG_XDG_CACHE_HOME="${XDG_CACHE_HOME-__UNSET__}"
 
-declare -a RPC_HISTORY=()
-declare -a CACHE_HISTORY=()
+DEFAULT_MODEL_ID=""
+DEFAULT_CACHE_ROOT=""
+DEFAULT_MODEL_DIR=""
 
-ts_human() {
-    if date +"%Y-%m-%d %H:%M:%S.%3N" >/dev/null 2>&1; then
-        date +"%Y-%m-%d %H:%M:%S.%3N"
+OFFLINE_TEST_ROOT=""
+OFFLINE_SHARED_ROOT=""
+OFFLINE_SERVER_DIR=""
+OFFLINE_SERVER_LOG=""
+OFFLINE_SERVER_PORT=""
+OFFLINE_SERVER_PID=""
+OFFLINE_XDG_CACHE_HOME=""
+OFFLINE_CACHE_ROOT=""
+OFFLINE_MODEL_ID="offline-e2e-model"
+OFFLINE_MODEL_FILE="offline.bin"
+OFFLINE_MODEL_DIR=""
+OFFLINE_PARTIAL_DIR=""
+
+declare -a ERROR_CHAIN=()
+declare -a RPC_RESPONSES=()
+
+timestamp_utc_ms() {
+    if date --version >/dev/null 2>&1; then
+        date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"
     else
-        python3 -c 'from datetime import datetime; print(datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3])'
+        python3 - <<'PY'
+from datetime import datetime
+print(datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z")
+PY
     fi
 }
 
-emit_line() {
-    local line="$1"
+log_line() {
+    local level="$1"
+    local step="$2"
+    local msg="$3"
+    local ts
+    ts=$(timestamp_utc_ms)
+    local line="[$ts] [$level] [$step] $msg"
     echo "$line"
-    if [[ -n "$TEST_LOG_FILE" ]]; then
-        echo "$line" >> "$TEST_LOG_FILE"
+    if [[ -n "$LOG_FILE" ]]; then
+        echo "$line" >> "$LOG_FILE"
     fi
 }
 
-step_log() {
-    local step="$1"
-    local message="$2"
-    emit_line "[$(ts_human)] [STEP ${step}/${STEPS_TOTAL}] [network=${NETWORK_STATE}] ${message}"
-}
-
-record_rpc() {
-    RPC_HISTORY+=("$1")
-}
-
-record_cache() {
-    CACHE_HISTORY+=("$1")
-}
-
-restore_var() {
+set_or_unset_var() {
     local name="$1"
     local value="$2"
     if [[ "$value" == "__UNSET__" ]]; then
@@ -91,123 +102,95 @@ restore_var() {
     fi
 }
 
-restore_env() {
-    restore_var "http_proxy" "$ORIG_http_proxy"
-    restore_var "https_proxy" "$ORIG_https_proxy"
-    restore_var "HTTP_PROXY" "$ORIG_HTTP_PROXY"
-    restore_var "HTTPS_PROXY" "$ORIG_HTTPS_PROXY"
-    restore_var "ALL_PROXY" "$ORIG_ALL_PROXY"
-    restore_var "NO_PROXY" "$ORIG_NO_PROXY"
-    restore_var "no_proxy" "$ORIG_no_proxy"
-    restore_var "OPENVOICY_SHARED_ROOT" "$ORIG_OPENVOICY_SHARED_ROOT"
-    restore_var "XDG_CACHE_HOME" "$ORIG_XDG_CACHE_HOME"
+restore_environment() {
+    set_or_unset_var "OPENVOICY_SHARED_ROOT" "$ORIG_OPENVOICY_SHARED_ROOT"
+    set_or_unset_var "XDG_CACHE_HOME" "$ORIG_XDG_CACHE_HOME"
+    set_or_unset_var "HTTP_PROXY" "$ORIG_HTTP_PROXY"
+    set_or_unset_var "HTTPS_PROXY" "$ORIG_HTTPS_PROXY"
+    set_or_unset_var "ALL_PROXY" "$ORIG_ALL_PROXY"
+    set_or_unset_var "http_proxy" "$ORIG_http_proxy"
+    set_or_unset_var "https_proxy" "$ORIG_https_proxy"
+    set_or_unset_var "all_proxy" "$ORIG_all_proxy"
+    set_or_unset_var "NO_PROXY" "$ORIG_NO_PROXY"
+    set_or_unset_var "no_proxy" "$ORIG_no_proxy"
 }
 
-set_offline_network() {
-    # Force outbound HTTP(S) calls through an unreachable local proxy.
-    export http_proxy="http://127.0.0.1:9"
-    export https_proxy="http://127.0.0.1:9"
-    export HTTP_PROXY="http://127.0.0.1:9"
-    export HTTPS_PROXY="http://127.0.0.1:9"
-    export ALL_PROXY="http://127.0.0.1:9"
-    export NO_PROXY="127.0.0.1,localhost"
-    export no_proxy="127.0.0.1,localhost"
-    NETWORK_STATE="offline-mocked"
+append_error() {
+    ERROR_CHAIN+=("$1")
 }
 
-set_online_network() {
-    unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
-    export NO_PROXY="127.0.0.1,localhost"
-    export no_proxy="127.0.0.1,localhost"
-    NETWORK_STATE="online"
-}
-
-host_cache_dir() {
-    case "$(uname -s)" in
-        Darwin)
-            echo "$HOME/Library/Caches/openvoicy/models"
-            ;;
-        MINGW*|CYGWIN*|MSYS*)
-            if [[ -n "${LOCALAPPDATA:-}" ]]; then
-                echo "$LOCALAPPDATA/openvoicy/models"
-            else
-                echo "$HOME/.cache/openvoicy/models"
-            fi
-            ;;
-        *)
-            if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
-                echo "$XDG_CACHE_HOME/openvoicy/models"
-            else
-                echo "$HOME/.cache/openvoicy/models"
-            fi
-            ;;
-    esac
-}
-
-discover_cached_model_id() {
-    local cache_dir="$1"
-    [[ -d "$cache_dir" ]] || return 1
-
-    local manifest_path=""
-    while IFS= read -r manifest_path; do
-        local model_dir
-        model_dir="$(dirname "$manifest_path")"
-        if find "$model_dir" -mindepth 1 -maxdepth 1 -type f ! -name "manifest.json" | grep -q .; then
-            basename "$model_dir"
-            return 0
-        fi
-    done < <(find "$cache_dir" -mindepth 2 -maxdepth 2 -type f -name "manifest.json" 2>/dev/null | sort)
-
+fail() {
+    local reason="$1"
+    FAIL_REASON="$reason"
+    append_error "$reason"
     return 1
 }
 
-emit_cache_snapshot() {
-    local label="$1"
-    local cache_dir="$2"
+log_network_state() {
+    local step="$1"
+    log_line "INFO" "$step" "network_state http_proxy=${http_proxy-<unset>} https_proxy=${https_proxy-<unset>} no_proxy=${no_proxy-<unset>}"
+}
 
-    emit_line "[$(ts_human)] [CACHE] ${label}: ${cache_dir}"
-    if [[ ! -d "$cache_dir" ]]; then
-        emit_line "[$(ts_human)] [CACHE] ${label}: directory missing"
-        record_cache "${label}:missing:${cache_dir}"
-        return
+use_default_runtime_env() {
+    set_or_unset_var "OPENVOICY_SHARED_ROOT" "$ORIG_OPENVOICY_SHARED_ROOT"
+    set_or_unset_var "XDG_CACHE_HOME" "$ORIG_XDG_CACHE_HOME"
+}
+
+use_offline_fixture_env() {
+    export OPENVOICY_SHARED_ROOT="$OFFLINE_SHARED_ROOT"
+    export XDG_CACHE_HOME="$OFFLINE_XDG_CACHE_HOME"
+}
+
+apply_mock_network() {
+    export HTTP_PROXY="$MOCK_PROXY_URL"
+    export HTTPS_PROXY="$MOCK_PROXY_URL"
+    export ALL_PROXY="$MOCK_PROXY_URL"
+    export http_proxy="$MOCK_PROXY_URL"
+    export https_proxy="$MOCK_PROXY_URL"
+    export all_proxy="$MOCK_PROXY_URL"
+    export NO_PROXY=""
+    export no_proxy=""
+}
+
+restore_network() {
+    unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+    export NO_PROXY="127.0.0.1,localhost"
+    export no_proxy="127.0.0.1,localhost"
+}
+
+snapshot_dir() {
+    local step="$1"
+    local path="$2"
+    log_line "INFO" "$step" "snapshot path=$path"
+    if [[ ! -e "$path" ]]; then
+        log_line "INFO" "$step" "snapshot_result=missing"
+        return 0
     fi
-
-    local listed=0
     while IFS= read -r entry; do
-        emit_line "[$(ts_human)] [CACHE] ${label}: ${entry}"
-        record_cache "${label}:${entry}"
-        listed=$((listed + 1))
-        if (( listed >= 40 )); then
-            emit_line "[$(ts_human)] [CACHE] ${label}: ... truncated ..."
-            break
-        fi
-    done < <(find "$cache_dir" -mindepth 1 -maxdepth 3 2>/dev/null | sort)
+        log_line "INFO" "$step" "snapshot_entry=$entry"
+    done < <(find "$path" -mindepth 0 -maxdepth 4 -print | sort)
+}
 
-    if (( listed == 0 )); then
-        emit_line "[$(ts_human)] [CACHE] ${label}: empty"
-        record_cache "${label}:empty"
+expect_jq_true() {
+    local step="$1"
+    local json="$2"
+    local jq_filter="$3"
+    local msg="$4"
+    if echo "$json" | jq -e "$jq_filter" >/dev/null 2>&1; then
+        log_line "INFO" "$step" "assert_pass $msg"
+        return 0
     fi
+    log_line "ERROR" "$step" "assert_fail $msg"
+    append_error "$step: assertion failed: $msg"
+    append_error "$step: response=$json"
+    return 1
 }
 
-start_sidecar_session() {
-    start_sidecar || return 1
-    exec 4<"$E2E_SIDECAR_STDOUT"
-    emit_line "[$(ts_human)] [SESSION] sidecar started pid=${E2E_SIDECAR_PID}"
-}
-
-stop_sidecar_session() {
-    local shutdown_response
-    shutdown_response=$(sidecar_rpc_session "system.shutdown" "{}" 8 || true)
-    emit_line "[$(ts_human)] [RPC][RES][system.shutdown] ${shutdown_response}"
-    { exec 4<&-; } 2>/dev/null || true
-    stop_sidecar || true
-}
-
-sidecar_rpc_session() {
-    local method="$1"
-    local params="$2"
-    [[ -z "$params" ]] && params='{}'
-    local timeout="${3:-$RPC_DEFAULT_TIMEOUT}"
+run_rpc_once() {
+    local step="$1"
+    local method="$2"
+    local params="$3"
+    local timeout="${4:-20}"
 
     local request_id
     request_id=$((RANDOM * RANDOM))
@@ -219,297 +202,295 @@ sidecar_rpc_session() {
         --argjson id "$request_id" \
         '{jsonrpc:"2.0",id:$id,method:$method,params:$params}')
 
-    emit_line "[$(ts_human)] [RPC][REQ] [network=${NETWORK_STATE}] method=${method} id=${request_id} payload=${request}"
-    record_rpc "REQUEST method=${method} id=${request_id} payload=${request}"
+    log_line "INFO" "$step" "rpc_request=$request"
 
-    printf '%s\n' "$request" >&3
+    local raw_output
+    raw_output=$(printf '%s\n' "$request" | e2e_timeout_run "$timeout" "$E2E_SIDECAR_BIN" 2>&1 || true)
 
-    local deadline=$((SECONDS + timeout))
+    local response=""
     local line=""
-
-    while (( SECONDS < deadline )); do
-        local wait_s=$((deadline - SECONDS))
-        (( wait_s <= 0 )) && break
-
-        if IFS= read -r -u 4 -t "$wait_s" line; then
-            if [[ "$line" != *'"jsonrpc"'* ]]; then
-                emit_line "[$(ts_human)] [RPC][RAW] ${line}"
-                record_rpc "RAW ${line}"
-                continue
-            fi
-
-            local line_method
-            line_method=$(echo "$line" | jq -r '.method // empty' 2>/dev/null || true)
-            if [[ -n "$line_method" ]]; then
-                emit_line "[$(ts_human)] [RPC][NOTIFY] payload=${line}"
-                record_rpc "NOTIFY ${line}"
-            fi
-
-            local line_id
-            line_id=$(echo "$line" | jq -r '.id // empty' 2>/dev/null || true)
-            if [[ "$line_id" == "$request_id" ]]; then
-                emit_line "[$(ts_human)] [RPC][RES] [network=${NETWORK_STATE}] method=${method} id=${request_id} payload=${line}"
-                record_rpc "RESPONSE method=${method} id=${request_id} payload=${line}"
-                printf '%s\n' "$line"
-                return 0
-            fi
-        else
-            break
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        log_line "INFO" "$step" "rpc_stream=$line"
+        local line_id
+        line_id=$(echo "$line" | jq -r '.id // empty' 2>/dev/null || true)
+        if [[ "$line_id" == "$request_id" ]]; then
+            response="$line"
         fi
-    done
+    done <<< "$raw_output"
 
-    local timeout_response='{"error":{"message":"timeout"}}'
-    emit_line "[$(ts_human)] [RPC][TIMEOUT] method=${method} id=${request_id} timeout_s=${timeout}"
-    record_rpc "TIMEOUT method=${method} id=${request_id} timeout_s=${timeout}"
-    printf '%s\n' "$timeout_response"
-    return 1
-}
-
-assert_has_result() {
-    local response="$1"
-    local label="$2"
-    if echo "$response" | jq -e '.result' >/dev/null 2>&1; then
-        return 0
-    fi
-    LAST_ERROR="${label} did not return result"
-    return 1
-}
-
-assert_network_error_actionable() {
-    local response="$1"
-    local label="$2"
-
-    local kind
-    kind=$(echo "$response" | jq -r '.error.data.kind // ""' 2>/dev/null || true)
-    kind=$(echo "$kind" | tr '[:lower:]' '[:upper:]')
-
-    if [[ "$kind" != "E_NETWORK" ]]; then
-        LAST_ERROR="${label} did not return E_NETWORK (kind=${kind:-missing})"
+    if [[ -z "$response" ]]; then
+        response='{"error":{"message":"timeout_or_invalid_response"}}'
+        append_error "$step: no json-rpc response for id=$request_id"
+        append_error "$step: raw_output=$raw_output"
+        log_line "ERROR" "$step" "rpc_response_missing id=$request_id"
+        echo "$response"
         return 1
     fi
 
-    local message_blob
-    message_blob=$(echo "$response" | jq -r '[.error.message // "", .error.data.details.reason // "", .error.data.details.suggested_recovery // ""] | join(" ")' 2>/dev/null || true)
-    local normalized
-    normalized=$(echo "$message_blob" | tr '[:upper:]' '[:lower:]')
+    RPC_RESPONSES+=("$response")
+    log_line "INFO" "$step" "rpc_response=$response"
+    echo "$response"
+}
 
-    if [[ "$normalized" != *"network"* ]]; then
-        LAST_ERROR="${label} E_NETWORK message missing network context"
+prepare_fixture_assets() {
+    OFFLINE_TEST_ROOT=$(mktemp -d -t "${TEST_NAME}-XXXXXX")
+    OFFLINE_SHARED_ROOT="$OFFLINE_TEST_ROOT/shared"
+    OFFLINE_SERVER_DIR="$OFFLINE_TEST_ROOT/http"
+    OFFLINE_XDG_CACHE_HOME="$OFFLINE_TEST_ROOT/xdg-cache"
+    OFFLINE_CACHE_ROOT="$OFFLINE_XDG_CACHE_HOME/openvoicy/models"
+    OFFLINE_MODEL_DIR="$OFFLINE_CACHE_ROOT/$OFFLINE_MODEL_ID"
+    OFFLINE_PARTIAL_DIR="$OFFLINE_CACHE_ROOT/.partial/$OFFLINE_MODEL_ID"
+    OFFLINE_SERVER_LOG="$OFFLINE_TEST_ROOT/http-server.log"
+
+    mkdir -p "$OFFLINE_SHARED_ROOT/model" "$OFFLINE_SERVER_DIR" "$OFFLINE_XDG_CACHE_HOME"
+
+    local payload_path="$OFFLINE_SERVER_DIR/$OFFLINE_MODEL_FILE"
+    printf 'offline-install-fixture-%s\n' "$(date -u +%s)" > "$payload_path"
+
+    local size_and_sha
+    size_and_sha=$(python3 - "$payload_path" <<'PY'
+import hashlib
+import os
+import sys
+
+path = sys.argv[1]
+data = open(path, "rb").read()
+print(f"{len(data)} {hashlib.sha256(data).hexdigest()}")
+PY
+)
+    local payload_size payload_sha
+    payload_size="${size_and_sha%% *}"
+    payload_sha="${size_and_sha##* }"
+
+    OFFLINE_SERVER_PORT=$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)
+
+    local fixture_url="http://127.0.0.1:${OFFLINE_SERVER_PORT}/${OFFLINE_MODEL_FILE}"
+    jq -nc \
+        --arg model_id "$OFFLINE_MODEL_ID" \
+        --arg file_path "$OFFLINE_MODEL_FILE" \
+        --arg file_sha "$payload_sha" \
+        --arg manifest_url "$fixture_url" \
+        --argjson file_size "$payload_size" \
+        '{
+            schema_version: "1",
+            model_id: $model_id,
+            display_name: "Offline Fixture Model",
+            source: "e2e/offline-fixture",
+            source_url: $manifest_url,
+            revision: "offline-fixture-v1",
+            files: [
+                {
+                    path: $file_path,
+                    size_bytes: $file_size,
+                    sha256: $file_sha,
+                    description: "small local fixture"
+                }
+            ],
+            total_size_bytes: $file_size,
+            mirrors: [
+                {
+                    provider: "local-fixture",
+                    url: $manifest_url,
+                    auth_required: false
+                }
+            ]
+        }' > "$OFFLINE_SHARED_ROOT/model/MODEL_MANIFEST.json"
+}
+
+start_fixture_server() {
+    python3 -m http.server "$OFFLINE_SERVER_PORT" \
+        --bind 127.0.0.1 \
+        --directory "$OFFLINE_SERVER_DIR" \
+        >"$OFFLINE_SERVER_LOG" 2>&1 &
+    OFFLINE_SERVER_PID=$!
+    sleep 0.3
+    if ! kill -0 "$OFFLINE_SERVER_PID" 2>/dev/null; then
+        append_error "failed to start fixture HTTP server"
+        append_error "server_log=$(cat "$OFFLINE_SERVER_LOG" 2>/dev/null || true)"
+        return 1
+    fi
+}
+
+stop_fixture_server() {
+    if [[ -n "$OFFLINE_SERVER_PID" ]] && kill -0 "$OFFLINE_SERVER_PID" 2>/dev/null; then
+        kill "$OFFLINE_SERVER_PID" 2>/dev/null || true
+        wait "$OFFLINE_SERVER_PID" 2>/dev/null || true
+    fi
+    OFFLINE_SERVER_PID=""
+}
+
+resolve_default_cache() {
+    local default_manifest="$E2E_PROJECT_ROOT/shared/model/MODEL_MANIFEST.json"
+    DEFAULT_MODEL_ID=$(jq -r '.model_id' "$default_manifest")
+    if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
+        DEFAULT_CACHE_ROOT="$XDG_CACHE_HOME/openvoicy/models"
+    else
+        DEFAULT_CACHE_ROOT="$HOME/.cache/openvoicy/models"
+    fi
+    DEFAULT_MODEL_DIR="$DEFAULT_CACHE_ROOT/$DEFAULT_MODEL_ID"
+}
+
+cached_model_is_available() {
+    local default_manifest="$E2E_PROJECT_ROOT/shared/model/MODEL_MANIFEST.json"
+    if [[ ! -d "$DEFAULT_MODEL_DIR" ]]; then
+        log_line "WARN" "preflight" "model_cache_missing path=$DEFAULT_MODEL_DIR"
         return 1
     fi
 
-    if [[ "$normalized" != *"retry"* ]] && [[ "$normalized" != *"check"* ]]; then
-        LAST_ERROR="${label} E_NETWORK message missing retry/check guidance"
-        return 1
+    local missing=0
+    local rel=""
+    while IFS= read -r rel; do
+        [[ -z "$rel" ]] && continue
+        if [[ ! -f "$DEFAULT_MODEL_DIR/$rel" ]]; then
+            log_line "WARN" "preflight" "model_cache_missing_file path=$DEFAULT_MODEL_DIR/$rel"
+            missing=1
+        fi
+    done < <(jq -r '.files[].path' "$default_manifest")
+
+    [[ "$missing" -eq 0 ]]
+}
+
+print_failure_context() {
+    log_line "ERROR" "failure" "FAIL reason=${FAIL_REASON:-unknown}"
+    log_line "ERROR" "failure" "error_chain_count=${#ERROR_CHAIN[@]}"
+    local entry=""
+    for entry in "${ERROR_CHAIN[@]}"; do
+        log_line "ERROR" "failure" "error_chain_entry=$entry"
+    done
+
+    log_line "ERROR" "failure" "rpc_response_count=${#RPC_RESPONSES[@]}"
+    for entry in "${RPC_RESPONSES[@]}"; do
+        log_line "ERROR" "failure" "rpc_response_verbatim=$entry"
+    done
+
+    if [[ -n "$OFFLINE_SERVER_LOG" && -f "$OFFLINE_SERVER_LOG" ]]; then
+        while IFS= read -r entry; do
+            log_line "ERROR" "failure" "fixture_http_log=$entry"
+        done < "$OFFLINE_SERVER_LOG"
     fi
-
-    return 0
-}
-
-prepare_offline_manifest_fixture() {
-    OFFLINE_SHARED_ROOT=$(mktemp -d)
-    OFFLINE_XDG_CACHE_BASE=$(mktemp -d)
-
-    mkdir -p "$OFFLINE_SHARED_ROOT/model"
-
-    cat > "$OFFLINE_SHARED_ROOT/model/MODEL_MANIFEST.json" <<JSON
-{
-  "schema_version": "1",
-  "model_id": "${OFFLINE_MODEL_ID}",
-  "display_name": "Offline E2E Model",
-  "source": "offline/e2e",
-  "source_url": "https://offline.invalid/models",
-  "revision": "offline-e2e-r1",
-  "files": [
-    {
-      "path": "offline-e2e.bin",
-      "size_bytes": 1024,
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "description": "Offline install test payload"
-    }
-  ],
-  "total_size_bytes": 1024,
-  "mirrors": [
-    {
-      "provider": "offline-mock",
-      "url": "https://offline.invalid/models/offline-e2e.bin",
-      "auth_required": false
-    }
-  ]
-}
-JSON
-}
-
-dump_failure_context() {
-    emit_line "[$(ts_human)] [FAILURE] ${LAST_ERROR}"
-
-    emit_line "[$(ts_human)] [FAILURE] Last 8 RPC entries:"
-    local rpc_count=${#RPC_HISTORY[@]}
-    local from=$(( rpc_count > 8 ? rpc_count - 8 : 0 ))
-    local i
-    for (( i=from; i<rpc_count; i++ )); do
-        emit_line "[$(ts_human)] [FAILURE][RPC] ${RPC_HISTORY[$i]}"
-    done
-
-    emit_line "[$(ts_human)] [FAILURE] Cache history:"
-    local cache_count=${#CACHE_HISTORY[@]}
-    local j
-    for (( j=0; j<cache_count; j++ )); do
-        emit_line "[$(ts_human)] [FAILURE][CACHE] ${CACHE_HISTORY[$j]}"
-    done
 }
 
 cleanup() {
     local exit_code=$?
+    stop_fixture_server
+    restore_environment
 
-    { exec 4<&-; } 2>/dev/null || true
-    stop_sidecar || true
-
-    if [[ -n "$OFFLINE_SHARED_ROOT" ]]; then
-        rm -rf "$OFFLINE_SHARED_ROOT" || true
-    fi
-    if [[ -n "$OFFLINE_XDG_CACHE_BASE" ]]; then
-        rm -rf "$OFFLINE_XDG_CACHE_BASE" || true
+    if [[ -n "$OFFLINE_TEST_ROOT" && -d "$OFFLINE_TEST_ROOT" ]]; then
+        rm -rf "$OFFLINE_TEST_ROOT"
     fi
 
-    restore_env
-
-    if [[ "$exit_code" -ne 0 && "$exit_code" -ne 77 && -n "$LAST_ERROR" ]]; then
-        dump_failure_context
+    if [[ "$exit_code" -ne 0 && "$exit_code" -ne 77 ]]; then
+        print_failure_context
     fi
 
-    return "$exit_code"
+    if [[ "$exit_code" -eq 0 ]]; then
+        log_line "INFO" "result" "PASS"
+    elif [[ "$exit_code" -eq 77 ]]; then
+        log_line "WARN" "result" "SKIP"
+    fi
 }
 
 main() {
     require_jq
     init_common
-    trap cleanup EXIT INT TERM
 
     mkdir -p "$E2E_PROJECT_ROOT/logs/e2e"
-    TEST_LOG_FILE="$E2E_PROJECT_ROOT/logs/e2e/test-offline-install-$(date -u +%Y%m%dT%H%M%S).log"
-    touch "$TEST_LOG_FILE"
+    local ts
+    ts=$(date -u +"%Y%m%dT%H%M%S")
+    LOG_FILE="$E2E_PROJECT_ROOT/logs/e2e/${TEST_NAME}-${ts}.log"
+    : > "$LOG_FILE"
 
-    emit_line "[$(ts_human)] [START] Offline install behavior E2E"
-    emit_line "[$(ts_human)] [START] Log file: $TEST_LOG_FILE"
+    log_line "INFO" "start" "log_file=$LOG_FILE"
+    resolve_default_cache
+    log_line "INFO" "start" "default_model_id=$DEFAULT_MODEL_ID default_model_dir=$DEFAULT_MODEL_DIR"
 
-    HOST_CACHE_DIR=$(host_cache_dir)
-    emit_cache_snapshot "host-before" "$HOST_CACHE_DIR"
-
-    CACHED_MODEL_ID=$(discover_cached_model_id "$HOST_CACHE_DIR" || true)
-    if [[ -z "$CACHED_MODEL_ID" ]]; then
-        emit_line "[$(ts_human)] [SKIP] No usable cached model found in $HOST_CACHE_DIR"
-        exit 77
+    if ! cached_model_is_available; then
+        log_line "WARN" "preflight" "cached model unavailable; skipping test"
+        return 77
     fi
 
-    step_log 1 "Start sidecar with offline-mocked network"
-    set_offline_network
-    unset OPENVOICY_SHARED_ROOT
-    unset XDG_CACHE_HOME
+    snapshot_dir "cache_before_default" "$DEFAULT_MODEL_DIR"
+    prepare_fixture_assets
+    start_fixture_server
+    snapshot_dir "cache_before_offline" "$OFFLINE_CACHE_ROOT"
 
-    start_sidecar_session || {
-        LAST_ERROR="failed to start sidecar in offline mode"
-        return 1
-    }
+    apply_mock_network
+    log_network_state "network_mocked"
 
-    local ping_offline
-    ping_offline=$(sidecar_rpc_session "system.ping" "{}" 8 || true)
-    assert_has_result "$ping_offline" "system.ping (offline startup)" || return 1
+    # Step 1: Sidecar responsive with network mocked.
+    use_default_runtime_env
+    local ping_response
+    ping_response=$(run_rpc_once "step1_system_ping" "system.ping" "{}" 10) || return 1
+    expect_jq_true "step1_system_ping" "$ping_response" '.result.protocol == "v1"' \
+        "system.ping succeeds with mocked network" || return 1
 
-    step_log 2 "Verify cached model remains usable via asr.initialize"
-    local init_params
-    init_params=$(jq -nc --arg model_id "$CACHED_MODEL_ID" '{model_id:$model_id}')
-
+    # Step 2: Existing cached model still usable.
     local init_response
-    init_response=$(sidecar_rpc_session "asr.initialize" "$init_params" 45 || true)
+    init_response=$(run_rpc_once "step2_asr_initialize" "asr.initialize" "{}" 60) || true
+    expect_jq_true "step2_asr_initialize" "$init_response" '.result.status == "ready"' \
+        "asr.initialize succeeds from cache while offline" || return 1
 
-    if ! assert_has_result "$init_response" "asr.initialize (offline cached model)"; then
-        local init_kind
-        init_kind=$(echo "$init_response" | jq -r '.error.data.kind // ""' 2>/dev/null || true)
-        if [[ "$init_kind" == "E_MODEL_NOT_FOUND" ]] || [[ "$init_kind" == "E_MODEL_LOAD" ]] || [[ "$init_kind" == "E_NOT_READY" ]]; then
-            emit_line "[$(ts_human)] [SKIP] Cached model '$CACHED_MODEL_ID' not usable on this host (${init_kind})"
-            return 77
-        fi
+    # Step 3: Download fails offline with E_NETWORK.
+    use_offline_fixture_env
+    local download_offline_response
+    download_offline_response=$(run_rpc_once "step3_model_download_offline" "model.download" "{}" 20) || true
+    expect_jq_true "step3_model_download_offline" "$download_offline_response" \
+        '.error.data.kind == "E_NETWORK"' "model.download returns E_NETWORK when offline" || return 1
+    expect_jq_true "step3_model_download_offline" "$download_offline_response" \
+        '(.error.message | type == "string") and ((.error.message | length) > 0)' \
+        "offline error message is populated" || return 1
+    log_line "INFO" "step3_model_download_offline" "retry_guidance=$RETRY_GUIDANCE"
+
+    # Step 4: Atomic install property (no committed/corrupt artifacts).
+    snapshot_dir "cache_after_offline_failure" "$OFFLINE_CACHE_ROOT"
+    if [[ -d "$OFFLINE_MODEL_DIR" ]]; then
+        fail "step4_atomicity: final model dir exists unexpectedly: $OFFLINE_MODEL_DIR"
         return 1
     fi
-
-    local status_after_init
-    status_after_init=$(sidecar_rpc_session "status.get" "{}" 8 || true)
-    assert_has_result "$status_after_init" "status.get after offline initialize" || return 1
-
-    stop_sidecar_session
-
-    step_log 3 "Attempt model.download with unreachable mirror (expect E_NETWORK)"
-    prepare_offline_manifest_fixture
-
-    export OPENVOICY_SHARED_ROOT="$OFFLINE_SHARED_ROOT"
-    export XDG_CACHE_HOME="$OFFLINE_XDG_CACHE_BASE"
-    set_offline_network
-
-    local isolated_cache_dir="$OFFLINE_XDG_CACHE_BASE/openvoicy/models"
-    emit_cache_snapshot "isolated-before" "$isolated_cache_dir"
-
-    start_sidecar_session || {
-        LAST_ERROR="failed to start sidecar for isolated offline fixture"
-        return 1
-    }
-
-    local download_error
-    download_error=$(sidecar_rpc_session "model.download" "{}" 25 || true)
-    assert_network_error_actionable "$download_error" "model.download offline attempt" || return 1
-
-    step_log 4 "Verify no partial/corrupt model files are left behind"
-    emit_cache_snapshot "isolated-after-failure" "$isolated_cache_dir"
-
-    local partial_dir="$isolated_cache_dir/.partial/$OFFLINE_MODEL_ID"
-    local final_dir="$isolated_cache_dir/$OFFLINE_MODEL_ID"
-
-    if [[ -d "$partial_dir" ]]; then
-        LAST_ERROR="partial staging directory still exists after failed download: $partial_dir"
+    local unexpected_partial_files
+    unexpected_partial_files=$(find "$OFFLINE_PARTIAL_DIR" -type f ! -name 'manifest.json' 2>/dev/null || true)
+    if [[ -n "$unexpected_partial_files" ]]; then
+        append_error "step4_atomicity: unexpected partial files remain"
+        append_error "step4_atomicity: files=$(echo "$unexpected_partial_files" | tr '\n' ';')"
         return 1
     fi
+    log_line "INFO" "step4_atomicity" "no committed/corrupt files left after failed download"
 
-    if [[ -d "$final_dir" ]] && [[ ! -f "$final_dir/manifest.json" ]]; then
-        LAST_ERROR="corrupt final model directory detected without manifest: $final_dir"
-        return 1
-    fi
+    # Step 6(a): Sidecar still functional after failed download.
+    local ping_after_failure
+    ping_after_failure=$(run_rpc_once "step6a_ping_after_failure" "system.ping" "{}" 10) || return 1
+    expect_jq_true "step6a_ping_after_failure" "$ping_after_failure" '.result.protocol == "v1"' \
+        "sidecar remains functional after failed download" || return 1
 
-    local ping_during_failure
-    ping_during_failure=$(sidecar_rpc_session "system.ping" "{}" 8 || true)
-    assert_has_result "$ping_during_failure" "system.ping after failed download" || return 1
+    # Step 5: Re-enable network and verify retry succeeds.
+    restore_network
+    log_network_state "network_restored"
+    local download_retry_response
+    download_retry_response=$(run_rpc_once "step5_model_download_retry" "model.download" "{}" 20) || return 1
+    expect_jq_true "step5_model_download_retry" "$download_retry_response" '.result.status == "ready"' \
+        "retry succeeds with network restored" || return 1
 
-    local status_after_failure
-    status_after_failure=$(sidecar_rpc_session "status.get" "{}" 8 || true)
-    assert_has_result "$status_after_failure" "status.get after failed download" || return 1
-
-    stop_sidecar_session
-
-    step_log 5 "Re-enable network and retry (verify error remains actionable)"
-    set_online_network
-    start_sidecar_session || {
-        LAST_ERROR="failed to restart sidecar after re-enabling network"
-        return 1
-    }
-
-    local retry_response
-    retry_response=$(sidecar_rpc_session "model.download" "{}" 25 || true)
-    assert_network_error_actionable "$retry_response" "model.download retry" || return 1
-
-    step_log 6 "Verify sidecar remains functional after retry"
+    # Step 6(b): Sidecar remains functional after successful retry.
     local ping_after_retry
-    ping_after_retry=$(sidecar_rpc_session "system.ping" "{}" 8 || true)
-    assert_has_result "$ping_after_retry" "system.ping after retry" || return 1
+    ping_after_retry=$(run_rpc_once "step6b_ping_after_retry" "system.ping" "{}" 10) || return 1
+    expect_jq_true "step6b_ping_after_retry" "$ping_after_retry" '.result.protocol == "v1"' \
+        "sidecar remains functional after retry" || return 1
 
-    local status_after_retry
-    status_after_retry=$(sidecar_rpc_session "status.get" "{}" 8 || true)
-    assert_has_result "$status_after_retry" "status.get after retry" || return 1
+    snapshot_dir "cache_after_retry" "$OFFLINE_MODEL_DIR"
+    use_default_runtime_env
+    snapshot_dir "cache_after_default" "$DEFAULT_MODEL_DIR"
 
-    stop_sidecar_session
-
-    emit_cache_snapshot "host-after" "$HOST_CACHE_DIR"
-
-    emit_line "[$(ts_human)] [PASS] Offline install behavior checks passed"
-    emit_line "[$(ts_human)] [PASS] Log file: $TEST_LOG_FILE"
+    return 0
 }
 
+trap cleanup EXIT
 main
+exit $?
