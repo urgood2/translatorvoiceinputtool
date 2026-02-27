@@ -412,6 +412,7 @@ fn set_clipboard_linux(text: &str) -> Result<(), InjectionError> {
         // Use wl-copy for Wayland
         let mut child = Command::new("wl-copy")
             .stdin(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| InjectionError::Clipboard(format!("wl-copy failed: {}", e)))?;
 
@@ -429,6 +430,7 @@ fn set_clipboard_linux(text: &str) -> Result<(), InjectionError> {
         let mut child = Command::new("xclip")
             .args(["-selection", "clipboard"])
             .stdin(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| InjectionError::Clipboard(format!("xclip failed: {}", e)))?;
 
@@ -448,18 +450,20 @@ fn set_clipboard_linux(text: &str) -> Result<(), InjectionError> {
 
 #[cfg(target_os = "linux")]
 fn get_clipboard_linux() -> Result<String, InjectionError> {
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     // Check if we're on Wayland
     let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
 
     let output = if is_wayland {
         Command::new("wl-paste")
+            .stderr(Stdio::null())
             .output()
             .map_err(|e| InjectionError::Clipboard(format!("wl-paste failed: {}", e)))?
     } else {
         Command::new("xclip")
             .args(["-selection", "clipboard", "-o"])
+            .stderr(Stdio::null())
             .output()
             .map_err(|e| InjectionError::Clipboard(format!("xclip failed: {}", e)))?
     };
@@ -474,7 +478,7 @@ fn get_clipboard_linux() -> Result<String, InjectionError> {
 
 #[cfg(target_os = "linux")]
 fn synthesize_paste_linux() -> Result<(), InjectionError> {
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     // Check if we're on Wayland
     if std::env::var("WAYLAND_DISPLAY").is_ok() {
@@ -488,6 +492,7 @@ fn synthesize_paste_linux() -> Result<(), InjectionError> {
     // Use xdotool for X11
     let status = Command::new("xdotool")
         .args(["key", "ctrl+v"])
+        .stderr(Stdio::null())
         .status()
         .map_err(|e| InjectionError::PasteFailed(format!("xdotool failed: {}", e)))?;
 

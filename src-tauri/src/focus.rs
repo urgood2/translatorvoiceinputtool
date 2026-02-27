@@ -271,7 +271,7 @@ fn capture_focus_linux() -> FocusSignature {
 
 #[cfg(target_os = "linux")]
 fn get_active_window_id_linux() -> String {
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     // Check if we're on Wayland (can't get window info)
     if std::env::var("WAYLAND_DISPLAY").is_ok() {
@@ -279,7 +279,10 @@ fn get_active_window_id_linux() -> String {
     }
 
     // Use xdotool to get active window
-    let output = Command::new("xdotool").args(["getactivewindow"]).output();
+    let output = Command::new("xdotool")
+        .args(["getactivewindow"])
+        .stderr(Stdio::null())
+        .output();
 
     match output {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
@@ -289,11 +292,12 @@ fn get_active_window_id_linux() -> String {
 
 #[cfg(target_os = "linux")]
 fn get_window_info_linux(window_id: &str) -> (String, String) {
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     // Get process ID for the window
     let pid = Command::new("xdotool")
         .args(["getwindowpid", window_id])
+        .stderr(Stdio::null())
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -312,6 +316,7 @@ fn get_window_info_linux(window_id: &str) -> (String, String) {
     // Get window name
     let app_name = Command::new("xdotool")
         .args(["getwindowname", window_id])
+        .stderr(Stdio::null())
         .output()
         .ok()
         .filter(|o| o.status.success())
