@@ -247,8 +247,10 @@ fn resolve_model_id(model_id: Option<String>) -> String {
         .unwrap_or_else(configured_model_id)
 }
 
-fn purge_affects_configured_model(purge_model_id: Option<&str>, configured_model_id: &str) -> bool {
-    purge_model_id.is_none_or(|requested| requested == configured_model_id)
+fn purge_affects_configured_model(configured_model_id: &str, status_model_ids: &[String]) -> bool {
+    status_model_ids
+        .iter()
+        .any(|status_model_id| status_model_id == configured_model_id)
 }
 
 fn purge_status_model_ids(
@@ -256,10 +258,6 @@ fn purge_status_model_ids(
     configured_model_id: &str,
     purged_model_ids: &[String],
 ) -> Vec<String> {
-    if let Some(requested_model_id) = purge_model_id {
-        return vec![requested_model_id.to_string()];
-    }
-
     let mut resolved_ids: Vec<String> = Vec::new();
     for raw_id in purged_model_ids {
         let trimmed = raw_id.trim();
@@ -273,7 +271,11 @@ fn purge_status_model_ids(
     }
 
     if resolved_ids.is_empty() {
-        vec![configured_model_id.to_string()]
+        if purge_model_id.is_some() {
+            Vec::new()
+        } else {
+            vec![configured_model_id.to_string()]
+        }
     } else {
         resolved_ids
     }
@@ -2303,7 +2305,7 @@ impl IntegrationManager {
         );
         let emitted_model_count = status_model_ids.len();
         let affects_configured_model =
-            purge_affects_configured_model(purge_model_id.as_deref(), configured_model_id.as_str());
+            purge_affects_configured_model(configured_model_id.as_str(), &status_model_ids);
 
         if affects_configured_model {
             *self.model_status.write().await = ModelStatus::Missing;
@@ -5541,30 +5543,62 @@ for raw in sys.stdin:
     }
 
     #[test]
-    fn test_purge_affects_configured_model_for_default_and_matching_target() {
-        assert!(purge_affects_configured_model(None, "configured/model"));
+    fn test_purge_affects_configured_model_when_status_ids_include_configured() {
         assert!(purge_affects_configured_model(
-            Some("configured/model"),
-            "configured/model"
+            "configured/model",
+            &["configured/model".to_string()]
+        ));
+        assert!(purge_affects_configured_model(
+            "configured/model",
+            &[
+                "openai/whisper-large".to_string(),
+                "configured/model".to_string(),
+            ]
         ));
     }
 
     #[test]
-    fn test_purge_affects_configured_model_false_for_unrelated_target() {
+    fn test_purge_affects_configured_model_false_for_empty_or_unrelated_status_ids() {
+        assert!(!purge_affects_configured_model("configured/model", &[]));
         assert!(!purge_affects_configured_model(
-            Some("other/model"),
-            "configured/model"
+            "configured/model",
+            &["other/model".to_string()]
         ));
     }
 
     #[test]
-    fn test_purge_status_model_ids_uses_targeted_model_id() {
+    fn test_purge_status_model_ids_uses_reported_ids_for_targeted_purge() {
+        let ids = purge_status_model_ids(
+            Some("openai/whisper-large"),
+            "nvidia/parakeet-tdt-0.6b-v3",
+            &[
+                " openai/whisper-large ".to_string(),
+                "".to_string(),
+                "openai/whisper-large".to_string(),
+            ],
+        );
+        assert_eq!(ids, vec!["openai/whisper-large".to_string()]);
+    }
+
+    #[test]
+    fn test_purge_status_model_ids_targeted_returns_empty_when_sidecar_reports_no_purges() {
         let ids = purge_status_model_ids(
             Some("openai/whisper-large"),
             "nvidia/parakeet-tdt-0.6b-v3",
             &[],
         );
-        assert_eq!(ids, vec!["openai/whisper-large".to_string()]);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn test_targeted_purge_with_no_reported_ids_does_not_affect_configured_model() {
+        let configured = "nvidia/parakeet-tdt-0.6b-v3";
+        let status_model_ids = purge_status_model_ids(Some("openai/whisper-large"), configured, &[]);
+        assert!(status_model_ids.is_empty());
+        assert!(!purge_affects_configured_model(
+            configured,
+            &status_model_ids
+        ));
     }
 
     #[test]
@@ -5600,26 +5634,18 @@ for raw in sys.stdin:
     /// configured model's internal status stays untouched.
     #[test]
     fn test_purge_unrelated_model_does_not_affect_configured_state() {
-        // purge_affects_configured_model gates global-state mutation only;
-        // event emission is unconditional since bug 10l6.
         let configured = "nvidia/parakeet-tdt-0.6b-v3";
 
-        // Purging a completely different model should not affect configured model status
+        // Purging a different model should not affect configured model status.
         assert!(!purge_affects_configured_model(
-            Some("openai/whisper-large"),
-            configured
+            configured,
+            &["openai/whisper-large".to_string()]
         ));
-        assert!(!purge_affects_configured_model(
-            Some("nvidia/parakeet-tdt-1.1b"),
-            configured
-        ));
-        // Exact match should affect status
+        // Exact match should affect status.
         assert!(purge_affects_configured_model(
-            Some("nvidia/parakeet-tdt-0.6b-v3"),
-            configured
+            configured,
+            &["nvidia/parakeet-tdt-0.6b-v3".to_string()]
         ));
-        // None (purge all) should affect status
-        assert!(purge_affects_configured_model(None, configured));
     }
 
     /// Regression (10l6): purging a non-configured model must still produce a
@@ -5631,7 +5657,10 @@ for raw in sys.stdin:
         let configured = "nvidia/parakeet-tdt-0.6b-v3";
 
         // The purge does not affect global state…
-        assert!(!purge_affects_configured_model(Some(purged), configured));
+        assert!(!purge_affects_configured_model(
+            configured,
+            &[purged.to_string()]
+        ));
 
         // …but the event payload must carry the purged model's ID.
         let payload = model_status_event_payload(
