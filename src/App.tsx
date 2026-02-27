@@ -47,6 +47,7 @@ function App() {
   const updateAudioConfig = useAppStore((state) => state.updateAudioConfig);
   const updateHotkeyConfig = useAppStore((state) => state.updateHotkeyConfig);
   const updateInjectionConfig = useAppStore((state) => state.updateInjectionConfig);
+  const updateUiConfig = useAppStore((state) => state.updateUiConfig);
   const setReplacementRules = useAppStore((state) => state.setReplacementRules);
   const loadPreset = useAppStore((state) => state.loadPreset);
   const startMicTest = useAppStore((state) => state.startMicTest);
@@ -99,8 +100,12 @@ function App() {
     }
     if (section === 'injection') {
       await updateInjectionConfig({ [key]: value });
+      return;
     }
-  }, [updateAudioConfig, updateHotkeyConfig, updateInjectionConfig]);
+    if (section === 'ui') {
+      await updateUiConfig({ [key]: value });
+    }
+  }, [updateAudioConfig, updateHotkeyConfig, updateInjectionConfig, updateUiConfig]);
 
   const handleTabChange = useCallback((tabId: string) => {
     if (

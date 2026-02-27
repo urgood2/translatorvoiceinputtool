@@ -447,6 +447,33 @@ describe('Config Actions', () => {
     expect(invoke).toHaveBeenCalledWith('update_config', expect.anything());
   });
 
+  test('updateUiConfig merges ui settings', async () => {
+    const config = {
+      ...createMockConfig(),
+      ui: {
+        show_on_startup: true,
+        window_width: 800,
+        window_height: 600,
+        theme: 'system' as const,
+        onboarding_completed: true,
+        overlay_enabled: false,
+        locale: null,
+        reduce_motion: false,
+      },
+    };
+    useAppStore.setState({ config });
+
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'update_config') return undefined;
+      return undefined;
+    });
+
+    await useAppStore.getState().updateUiConfig({ theme: 'dark' });
+
+    expect(useAppStore.getState().config?.ui.theme).toBe('dark');
+    expect(invoke).toHaveBeenCalledWith('update_config', expect.anything());
+  });
+
   test('setReplacementRules updates config replacements', async () => {
     const config = createMockConfig();
     useAppStore.setState({ config });

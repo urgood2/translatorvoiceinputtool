@@ -19,6 +19,7 @@ import type {
   HotkeyConfig,
   HotkeyStatus,
   InjectionConfig,
+  UiConfig,
   ModelStatus,
   ModelState,
   ModelStatusPayload,
@@ -105,6 +106,7 @@ export interface AppStoreActions {
   updateAudioConfig: (config: Partial<AudioConfig>) => Promise<void>;
   updateHotkeyConfig: (config: Partial<HotkeyConfig>) => Promise<void>;
   updateInjectionConfig: (config: Partial<InjectionConfig>) => Promise<void>;
+  updateUiConfig: (config: Partial<UiConfig>) => Promise<void>;
   setReplacementRules: (rules: ReplacementRule[]) => Promise<void>;
   resetConfig: () => Promise<void>;
 
@@ -579,6 +581,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ config: newConfig });
     } catch (error) {
       console.error('Failed to update injection config:', error);
+      throw error;
+    }
+  },
+
+  updateUiConfig: async (uiConfig) => {
+    const config = get().config;
+    if (!config) return;
+
+    const newConfig = {
+      ...config,
+      ui: { ...config.ui, ...uiConfig },
+    };
+
+    try {
+      await invoke('update_config', { config: newConfig });
+      set({ config: newConfig });
+    } catch (error) {
+      console.error('Failed to update UI config:', error);
       throw error;
     }
   },
