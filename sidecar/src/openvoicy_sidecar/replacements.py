@@ -570,6 +570,11 @@ def handle_replacements_set_rules(request: Request) -> dict[str, Any]:
         E_INVALID_PARAMS: Rules validation failed.
     """
     rules_data = request.params.get("rules", [])
+    if not isinstance(rules_data, list):
+        raise ReplacementError("rules must be an array", "E_INVALID_PARAMS")
+
+    if any(not isinstance(rule_data, dict) for rule_data in rules_data):
+        raise ReplacementError("rules entries must be objects", "E_INVALID_PARAMS")
 
     rules = [ReplacementRule.from_dict(r) for r in rules_data]
 
@@ -640,6 +645,10 @@ def handle_replacements_preview(request: Request) -> dict[str, Any]:
     skip_macros = request.params.get("skip_macros", False)
 
     if rules_data is not None:
+        if not isinstance(rules_data, list):
+            raise ReplacementError("rules must be an array", "E_INVALID_PARAMS")
+        if any(not isinstance(rule_data, dict) for rule_data in rules_data):
+            raise ReplacementError("rules entries must be objects", "E_INVALID_PARAMS")
         rules = [ReplacementRule.from_dict(r) for r in rules_data]
         try:
             validate_rules(rules)

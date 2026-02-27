@@ -665,6 +665,17 @@ class TestReplacementHandlers:
         with pytest.raises(ReplacementError):
             handle_replacements_set_rules(request)
 
+    def test_set_rules_rejects_non_list_rules_payload(self, reset_active_rules):
+        """Wrong-type rules payload should map to E_INVALID_PARAMS."""
+        request = Request(
+            method="replacements.set_rules",
+            id=1,
+            params={"rules": 42},
+        )
+        with pytest.raises(ReplacementError, match="rules must be an array") as exc_info:
+            handle_replacements_set_rules(request)
+        assert exc_info.value.code == "E_INVALID_PARAMS"
+
     def test_preview(self, reset_active_rules):
         """Should preview text processing."""
         request = Request(

@@ -31,7 +31,7 @@ from openvoicy_sidecar.audio_meter import (
     handle_audio_meter_status,
     handle_audio_meter_stop,
 )
-from openvoicy_sidecar.protocol import ERROR_INTERNAL, ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND, Request
+from openvoicy_sidecar.protocol import ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND, Request
 from openvoicy_sidecar.recording import (
     AlreadyRecordingError,
     NotRecordingError,
@@ -221,17 +221,36 @@ def test_required_ipc_methods_exist() -> None:
     _log("Assertion: all required methods registered -> PASS")
 
 
-def test_system_ping_shape_and_latency() -> None:
+def test_system_ping_handler_shape() -> None:
     request = _request("system.ping", 1)
     _log(f"Testing system.ping request={request.params}")
-    start = time.perf_counter()
     result = handle_system_ping(request)
-    elapsed = time.perf_counter() - start
     _log(f"Response={result}")
     assert isinstance(result["version"], str)
     assert result["protocol"] == "v1"
-    assert elapsed < 1.0
-    _log("Assertion: ping shape and latency -> PASS")
+    _log("Assertion: ping handler response shape -> PASS")
+
+
+def test_system_ping_ipc_roundtrip_latency(run_sidecar: Any) -> None:
+    """Regression (36ka): validate real JSON-RPC ping path latency budget."""
+    _log("Testing system.ping subprocess IPC round-trip latency")
+    request = '{"jsonrpc":"2.0","id":1,"method":"system.ping"}'
+    shutdown = '{"jsonrpc":"2.0","id":99,"method":"system.shutdown","params":{"reason":"compliance-test"}}'
+
+    start = time.perf_counter()
+    responses, _, exit_code = run_sidecar([request, shutdown], timeout=10.0)
+    elapsed = time.perf_counter() - start
+
+    ping_response = next((response for response in responses if response.get("id") == 1), None)
+    assert ping_response is not None, "Missing response for system.ping request"
+    assert "result" in ping_response, "system.ping must return result payload"
+    assert isinstance(ping_response["result"]["version"], str)
+    assert ping_response["result"]["protocol"] == "v1"
+    assert exit_code == 0, f"Sidecar should exit cleanly after shutdown, got {exit_code}"
+
+    # Budget covers JSON parse/dispatch/serialization and process startup/shutdown.
+    assert elapsed < 5.0, f"system.ping IPC round-trip exceeded budget: {elapsed:.3f}s"
+    _log("Assertion: system.ping subprocess IPC round-trip latency -> PASS")
 
 
 def test_system_info_required_runtime_fields() -> None:
@@ -611,12 +630,19 @@ def test_invalid_params_type_returns_jsonrpc_error(run_sidecar: Any) -> None:
     assert "error" in responses[0], "Expected error response for wrong-type params"
     error = responses[0]["error"]
     assert isinstance(error["code"], int), "Error code must be an integer"
-    assert error["code"] in (ERROR_INTERNAL, ERROR_INVALID_PARAMS), (
-        f"Expected error code {ERROR_INTERNAL} or {ERROR_INVALID_PARAMS}, got {error['code']}"
+    assert error["code"] == ERROR_INVALID_PARAMS, (
+        f"Expected error code {ERROR_INVALID_PARAMS}, got {error['code']}"
     )
+    assert error["code"] != -32603, "Invalid params must not degrade to E_INTERNAL/-32603"
     assert isinstance(error["message"], str), "Error message must be a string"
     assert "data" in error, "Error must include data field"
     assert isinstance(error["data"]["kind"], str), "Error data.kind must be a string"
+    assert error["data"]["kind"] == "E_INVALID_PARAMS", (
+        f"Expected error kind E_INVALID_PARAMS, got {error['data']['kind']}"
+    )
+    assert (
+        error["data"]["kind"] != "E_INTERNAL"
+    ), "Invalid params must not degrade to E_INTERNAL kind"
 
     # The ping must succeed — proving the server didn't crash
     assert "result" in responses[1], "Ping must succeed after error"
