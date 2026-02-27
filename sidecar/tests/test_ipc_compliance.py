@@ -457,33 +457,6 @@ def test_recording_start_accepts_caller_provided_session_id(
     assert start["session_id"] == provided_session_id
 
 
-def test_recording_cancel_does_not_trigger_transcription(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _log("Testing recording.cancel does not start transcription")
-    recorder = _RecorderStub()
-    monkeypatch.setattr("openvoicy_sidecar.recording.get_recorder", lambda: recorder)
-
-    transcription_calls: list[tuple[str, int]] = []
-
-    def _spy_transcribe_session_async(session_id: str, audio: np.ndarray, sample_rate: int) -> None:
-        transcription_calls.append((session_id, sample_rate))
-
-    monkeypatch.setattr(
-        "openvoicy_sidecar.notifications.transcribe_session_async",
-        _spy_transcribe_session_async,
-    )
-
-    started = handle_recording_start(_request("recording.start", 47))
-    cancelled = handle_recording_cancel(
-        _request("recording.cancel", 48, {"session_id": started["session_id"]})
-    )
-
-    assert cancelled["cancelled"] is True
-    assert cancelled["session_id"] == started["session_id"]
-    assert transcription_calls == []
-
-
 def test_recording_cancel_does_not_start_transcription(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression (3461): recording.cancel must not trigger transcription."""
     _log("Testing recording.cancel does not invoke transcription")
