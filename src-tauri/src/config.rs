@@ -2842,6 +2842,10 @@ mod tests {
             "audio": {
                 "device_uid": "mic-1",
                 "api_key": "steal-me-too"
+            },
+            "injection": {
+                "paste_delay_ms": 20,
+                "session_secret": "steal-me-three"
             }
         });
         fs::write(&config_path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
@@ -2849,7 +2853,44 @@ mod tests {
         let loaded = load_config_from_path(&config_path);
         // Config should load normally (sensitive fields stripped before serde)
         assert_eq!(loaded.audio.device_uid, Some("mic-1".to_string()));
-        // Re-read the in-memory config to confirm it doesn't carry the secrets
-        // (they were stripped from the Value before migrate_config ran)
+        assert_eq!(loaded.injection.paste_delay_ms, 20);
+
+        // The parsed, strongly-typed config must not carry unknown sensitive fields.
+        let loaded_value = serde_json::to_value(&loaded).unwrap();
+        assert!(
+            loaded_value.get("auth_token").is_none(),
+            "auth_token should not survive deserialization"
+        );
+        assert!(
+            loaded_value["audio"].get("api_key").is_none(),
+            "audio.api_key should not survive deserialization"
+        );
+        assert!(
+            loaded_value["injection"].get("session_secret").is_none(),
+            "injection.session_secret should not survive deserialization"
+        );
+
+        // Round-trip serialization must not reintroduce stripped sensitive keys.
+        save_config_to_path(&loaded, &config_path).unwrap();
+        let round_trip_text = fs::read_to_string(&config_path).unwrap();
+        let round_tripped: Value = serde_json::from_str(&round_trip_text).unwrap();
+        assert!(
+            round_tripped.get("auth_token").is_none(),
+            "auth_token should remain absent after save"
+        );
+        assert!(
+            round_tripped["audio"].get("api_key").is_none(),
+            "audio.api_key should remain absent after save"
+        );
+        assert!(
+            round_tripped["injection"].get("session_secret").is_none(),
+            "injection.session_secret should remain absent after save"
+        );
+        assert!(
+            !round_trip_text.contains("steal-me")
+                && !round_trip_text.contains("steal-me-too")
+                && !round_trip_text.contains("steal-me-three"),
+            "round-tripped config should not contain stripped sensitive values"
+        );
     }
 }
