@@ -97,6 +97,10 @@ jobs:
           python -m openvoicy_sidecar.self_test
 
       - name: Sidecar Self-Test (packaged resource simulation)
+        run: |
+          python -m unittest scripts.tests.test_e2e_packaged_resources_runtime
+
+      - name: Sidecar Self-Test (packaged resource simulation, bundled binary)
         if: runner.os == 'Linux'
         run: |
           set +e

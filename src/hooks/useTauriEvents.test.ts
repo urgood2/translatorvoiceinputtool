@@ -10,7 +10,44 @@ import { renderHook, act } from '@testing-library/react';
 import { listen } from '@tauri-apps/api/event';
 import { useTauriEvents, useTauriEvent } from './useTauriEvents';
 import { useAppStore } from '../store/appStore';
-import { emitMockEvent } from '../tests/setup';
+import { emitMockEvent, waitFor as waitForCondition } from '../tests/setup';
+
+const EXPECTED_CANONICAL_LISTENER_COUNT = 9;
+const CANONICAL_EVENT_NAMES = [
+  'state:changed',
+  'model:status',
+  'model:progress',
+  'audio:level',
+  'transcript:complete',
+  'transcript:error',
+  'app:error',
+  'sidecar:status',
+  'recording:status',
+] as const;
+
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+};
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
+async function waitForCanonicalListeners(): Promise<void> {
+  await waitForCondition(() => {
+    const registeredEvents = new Set(
+      vi.mocked(listen).mock.calls.map((call) => call[0])
+    );
+    return CANONICAL_EVENT_NAMES.every((eventName) =>
+      registeredEvents.has(eventName)
+    );
+  });
+}
 
 function fireMockEventWithLog(eventName: string, payload: unknown): void {
   const seq = (payload as { seq?: unknown })?.seq;
@@ -68,9 +105,7 @@ describe('useTauriEvents', () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
     // Wait for async setup
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     // Verify listen was called for expected canonical events only (legacy aliases retired)
     expect(listen).toHaveBeenCalledWith('state:changed', expect.any(Function));
@@ -94,18 +129,17 @@ describe('useTauriEvents', () => {
 
   test('cleans up when unmounted before async setup resolves', async () => {
     const unlisten = vi.fn();
+    const listenResolution = createDeferred<Awaited<ReturnType<typeof listen>>>();
     vi.mocked(listen).mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          setTimeout(() => resolve(unlisten), 20);
-        }) as ReturnType<typeof listen>
+      () => listenResolution.promise as ReturnType<typeof listen>
     );
 
     const { unmount } = renderHook(() => useTauriEvents());
     unmount();
 
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      listenResolution.resolve(unlisten);
+      await Promise.resolve();
     });
 
     expect(unlisten).toHaveBeenCalledTimes(1);
@@ -159,9 +193,7 @@ describe('useTauriEvents', () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
     // Wait for async setup
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     const timings = {
       ipc_ms: 11,
@@ -203,9 +235,7 @@ describe('useTauriEvents', () => {
   test('dedupes duplicate transcript deliveries with identical seq', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     const canonicalPayload = {
       seq: 42,
@@ -250,9 +280,7 @@ describe('useTauriEvents', () => {
   test('processes transcript:complete canonical payload with entry wrapper', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     act(() => {
       emitMockEvent('transcript:complete', {
@@ -281,9 +309,7 @@ describe('useTauriEvents', () => {
   test('dedupes duplicate state deliveries with identical seq', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     act(() => {
       emitMockEvent('state:changed', {
@@ -311,9 +337,7 @@ describe('useTauriEvents', () => {
   test('processes increasing seq values on the same stream', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     act(() => {
       fireMockEventWithLog('state:changed', {
@@ -340,9 +364,7 @@ describe('useTauriEvents', () => {
   test('tracks seq independently across state, transcript, model, and sidecar streams', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     act(() => {
       fireMockEventWithLog('state:changed', {
@@ -428,9 +450,7 @@ describe('useTauriEvents', () => {
   test('recording:status updates recording slice and app state', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     act(() => {
       emitMockEvent('recording:status', {
@@ -454,9 +474,7 @@ describe('useTauriEvents', () => {
   test('sidecar:status updates sidecar status slice', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     act(() => {
       emitMockEvent('sidecar:status', {
@@ -479,9 +497,7 @@ describe('useTauriEvents', () => {
   test('processes transcript:error payloads in canonical shape', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     act(() => {
       fireMockEventWithLog('transcript:error', {
@@ -512,9 +528,7 @@ describe('useTauriEvents', () => {
   test('ignores out-of-order seq for same stream', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     const newer = {
       seq: 20,
@@ -558,9 +572,7 @@ describe('useTauriEvents', () => {
   test('tracks seq independently across streams', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     act(() => {
       fireMockEventWithLog('state:changed', {
@@ -594,9 +606,7 @@ describe('useTauriEvents', () => {
 
   test('seq tracking resets after unmount and remount', async () => {
     const first = renderHook(() => useTauriEvents());
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     act(() => {
       fireMockEventWithLog('state:changed', {
@@ -610,9 +620,7 @@ describe('useTauriEvents', () => {
     first.unmount();
 
     const second = renderHook(() => useTauriEvents());
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     act(() => {
       fireMockEventWithLog('state:changed', {
@@ -638,13 +646,10 @@ describe('useTauriEvents', () => {
 
     try {
       const { unmount } = renderHook(() => useTauriEvents());
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      });
+      await waitForCanonicalListeners();
 
-      const expectedCanonicalListenerCount = 9;
-      expect(listen).toHaveBeenCalledTimes(expectedCanonicalListenerCount);
-      expect(unlistenFns).toHaveLength(expectedCanonicalListenerCount);
+      expect(listen).toHaveBeenCalledTimes(EXPECTED_CANONICAL_LISTENER_COUNT);
+      expect(unlistenFns).toHaveLength(EXPECTED_CANONICAL_LISTENER_COUNT);
 
       unmount();
 
@@ -661,9 +666,7 @@ describe('useTauriEvents', () => {
   test('processes app:error payloads in legacy and structured shapes', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     act(() => {
       // contract-validate-ignore: this case intentionally exercises legacy app:error payload shape
@@ -693,9 +696,7 @@ describe('useTauriEvents', () => {
   test('state payload prefers detail field over error_detail', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     const payload = {
       seq: 910,
@@ -724,9 +725,7 @@ describe('useTauriEvents', () => {
   test('events without seq are processed for backward compatibility', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     const first = {
       state: 'recording' as const,
@@ -765,9 +764,7 @@ describe('useTauriEvents', () => {
   test('rapid transcript events are stored newest-first', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     act(() => {
       fireMockEventWithLog('transcript:complete', {
@@ -824,9 +821,7 @@ describe('useTauriEvents', () => {
   test('model status canonical shape and progress updates are reflected in store', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     const statusPayload = {
       seq: 1201,
@@ -859,9 +854,7 @@ describe('useTauriEvents', () => {
   test('sidecar failed payload updates sidecar slice with restart metadata', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     const failedPayload = {
       seq: 1301,
@@ -885,9 +878,7 @@ describe('useTauriEvents', () => {
   test('recording status handles transitions with minimal optional fields', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     act(() => {
       fireMockEventWithLog('recording:status', {
@@ -916,9 +907,7 @@ describe('useTauriEvents', () => {
   test('legacy transcript payload missing optional fields is normalized safely', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
+    await waitForCanonicalListeners();
 
     const payload = {
       session_id: 'legacy-minimal',
@@ -962,9 +951,13 @@ describe('useTauriEvent', () => {
       useTauriEvent('custom:event', handler)
     );
 
-    // Wait for async setup
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await waitForCondition(
+        () =>
+          vi.mocked(listen).mock.calls.some(
+            (call) => call[0] === 'custom:event'
+          )
+      );
     });
 
     expect(listen).toHaveBeenCalledWith('custom:event', expect.any(Function));
@@ -993,11 +986,9 @@ describe('useTauriEvent', () => {
 
   test('cleans up listener when unmounted before async listen resolves', async () => {
     const unlisten = vi.fn();
+    const listenResolution = createDeferred<Awaited<ReturnType<typeof listen>>>();
     vi.mocked(listen).mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          setTimeout(() => resolve(unlisten), 20);
-        }) as ReturnType<typeof listen>
+      () => listenResolution.promise as ReturnType<typeof listen>
     );
 
     const handler = vi.fn();
@@ -1007,7 +998,8 @@ describe('useTauriEvent', () => {
     unmount();
 
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      listenResolution.resolve(unlisten);
+      await Promise.resolve();
     });
 
     expect(unlisten).toHaveBeenCalledTimes(1);

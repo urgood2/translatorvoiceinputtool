@@ -38,12 +38,12 @@ class TestContractValidationTests(unittest.TestCase):
 
     # Minimal contract items matching the real tauri.events.v1.json (aliases retired)
     _DEFAULT_EVENT_ITEMS: list[dict] = [
-        {"name": "state:changed", "deprecated_aliases": []},
-        {"name": "transcript:complete", "deprecated_aliases": []},
-        {"name": "transcript:error", "deprecated_aliases": []},
-        {"name": "sidecar:status", "deprecated_aliases": []},
-        {"name": "model:status"},
-        {"name": "recording:status"},
+        {"type": "event", "name": "state:changed", "deprecated_aliases": []},
+        {"type": "event", "name": "transcript:complete", "deprecated_aliases": []},
+        {"type": "event", "name": "transcript:error", "deprecated_aliases": []},
+        {"type": "event", "name": "sidecar:status", "deprecated_aliases": []},
+        {"type": "event", "name": "model:status"},
+        {"type": "event", "name": "recording:status"},
     ]
 
     def _validate_fixture_category(
@@ -110,12 +110,49 @@ class TestContractValidationTests(unittest.TestCase):
 
             self.assertEqual(errors, [])
 
+    def test_validate_fixture_category_rejects_undeclared_legacy_alias_when_aliases_retired(self) -> None:
+        """Mapped fixture events must be declared by contract canonical names or deprecated_aliases."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            _summaries, errors = self._validate_fixture_category(
+                root,
+                examples_rows=[
+                    {
+                        "type": "notification",
+                        "data": {
+                            "jsonrpc": "2.0",
+                            "method": "event.transcript_complete_legacy",
+                            "params": {
+                                "mapped_tauri_event": "transcription:complete",
+                                "mapped_tauri_payload_legacy": {"text": "legacy"},
+                            },
+                        },
+                    },
+                    {
+                        "type": "notification",
+                        "data": {
+                            "jsonrpc": "2.0",
+                            "method": "event.model_status",
+                            "params": {
+                                "mapped_tauri_event": "model:status",
+                                "mapped_tauri_payload_canonical": {"status": "ready"},
+                            },
+                        },
+                    },
+                ],
+            )
+
+            self.assertTrue(
+                any("uses undeclared event name 'transcription:complete'" in err for err in errors),
+                msg=str(errors),
+            )
+
 
     def test_fixture_alias_coverage_derived_from_contract_not_hardcoded(self) -> None:
         """Regression (kex5): required fixture set must be driven by contract deprecated_aliases."""
         # Synthetic contract with a custom event + alias not in the real contract
         custom_items = [
-            {"name": "custom:event", "deprecated_aliases": ["custom_legacy"]},
+            {"type": "event", "name": "custom:event", "deprecated_aliases": ["custom_legacy"]},
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -133,7 +170,7 @@ class TestContractValidationTests(unittest.TestCase):
 
     def test_events_without_aliases_do_not_require_alias_fixtures(self) -> None:
         """Events without deprecated_aliases should not generate alias fixture requirements."""
-        items = [{"name": "model:status"}]  # no deprecated_aliases
+        items = [{"type": "event", "name": "model:status"}]  # no deprecated_aliases
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             _summaries, errors = self._validate_fixture_category(
@@ -152,6 +189,14 @@ class TestContractValidationTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
         self.assertNotIn("FAIL: sidecar HANDLERS includes method", output.getvalue())
+
+    def test_drift_prevention_category_enforces_legacy_alias_scenarios(self) -> None:
+        summaries, errors = MODULE.validate_drift_prevention_category()
+        self.assertEqual(errors, [])
+        self.assertIn(
+            "legacy alias fixture coverage checks remain enforced via synthetic contract",
+            summaries,
+        )
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ LOG_BUFFER = REPO_ROOT / "src-tauri" / "src" / "log_buffer.rs"
 LIB_RS = REPO_ROOT / "src-tauri" / "src" / "lib.rs"
 CONFIG_RS = REPO_ROOT / "src-tauri" / "src" / "config.rs"
 HISTORY_PERSISTENCE_RS = REPO_ROOT / "src-tauri" / "src" / "history_persistence.rs"
+MODEL_CACHE_PY = REPO_ROOT / "sidecar" / "src" / "openvoicy_sidecar" / "model_cache.py"
 
 
 class StoragePersistenceReferenceTests(unittest.TestCase):
@@ -21,6 +22,7 @@ class StoragePersistenceReferenceTests(unittest.TestCase):
         cls.lib_text = LIB_RS.read_text(encoding="utf-8")
         cls.config_text = CONFIG_RS.read_text(encoding="utf-8")
         cls.history_persistence_text = HISTORY_PERSISTENCE_RS.read_text(encoding="utf-8")
+        cls.model_cache_text = MODEL_CACHE_PY.read_text(encoding="utf-8")
 
     def test_reference_states_no_persistent_log_sink_is_implemented(self) -> None:
         self.assertRegex(
@@ -98,6 +100,21 @@ class StoragePersistenceReferenceTests(unittest.TestCase):
         ]
         for marker in forbidden_markers:
             self.assertNotIn(marker, self.log_buffer_text)
+
+    def test_model_cache_module_uses_partial_staging_and_atomic_activation(self) -> None:
+        self.assertIn('partial_root = cache_dir / ".partial"', self.model_cache_text)
+        self.assertIn("temp_dir = partial_root / manifest.model_id", self.model_cache_text)
+        self.assertIn("_activate_staged_model_dir(temp_dir, model_dir)", self.model_cache_text)
+
+    def test_model_cache_module_verifies_sha_and_size_before_activation(self) -> None:
+        self.assertIn("hash_ok, actual_sha256 = verify_sha256", self.model_cache_text)
+        self.assertIn("if actual_size != file_info.size_bytes", self.model_cache_text)
+        self.assertIn('"expected_size_bytes": file_info.size_bytes', self.model_cache_text)
+
+    def test_model_cache_module_purge_semantics_remove_model_directories(self) -> None:
+        self.assertIn("def purge_cache(self, model_id: Optional[str] = None)", self.model_cache_text)
+        self.assertIn("shutil.rmtree(model_dir)", self.model_cache_text)
+        self.assertIn("shutil.rmtree(item)", self.model_cache_text)
 
 
 if __name__ == "__main__":

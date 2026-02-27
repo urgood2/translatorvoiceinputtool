@@ -146,9 +146,20 @@ def validate_fixture_category(
                 if isinstance(payload, dict):
                     model_payloads.append(payload)
 
+    events_contract = contracts["tauri.events"]
+    canonical_names, alias_to_canonical = vc.tauri_event_name_maps(events_contract)
+    allowed_fixture_names = set(canonical_names).union(alias_to_canonical.keys())
+    undeclared_mapped_names = sorted(
+        event_name for event_name in mapped_event_names if event_name not in allowed_fixture_names
+    )
+    for undeclared_name in undeclared_mapped_names:
+        errors.append(
+            "shared/ipc/examples/IPC_V1_EXAMPLES.jsonl: "
+            f"mapped_tauri_event fixture uses undeclared event name '{undeclared_name}'"
+        )
+
     # Derive required fixture coverage from contract: all canonical events with
     # deprecated aliases, plus the aliases themselves.
-    events_contract = contracts["tauri.events"]
     required_fixture_names: set[str] = set()
     for item in events_contract.get("items", []):
         if not isinstance(item, dict):
@@ -183,6 +194,7 @@ def validate_fixture_category(
         errors.append("tauri.events contract must include canonical 'detail' field")
 
     summaries.append(f"canonical mapped tauri fixtures: {len(mapped_event_names)} event names")
+    summaries.append(f"legacy mapped tauri aliases declared: {len(alias_to_canonical)}")
     return summaries, errors
 
 
@@ -221,6 +233,35 @@ def validate_cross_reference_category(
 def validate_drift_prevention_category() -> tuple[list[str], list[str]]:
     summaries: list[str] = []
     errors: list[str] = []
+
+    # Keep legacy-alias drift scenarios enforced even when the live contract has
+    # no deprecated_aliases declared at the moment.
+    synthetic_events_contract = {
+        "items": [
+            {
+                "type": "event",
+                "name": "transcript:complete",
+                "deprecated_aliases": ["transcription:complete"],
+            }
+        ]
+    }
+    missing_alias_errors = vc.validate_legacy_alias_fixture_coverage(
+        synthetic_events_contract,
+        {"transcript:complete"},
+    )
+    if not any("deprecated alias event 'transcription:complete'" in err for err in missing_alias_errors):
+        errors.append(
+            "legacy alias fixture coverage validation must fail when deprecated alias fixtures are missing"
+        )
+
+    complete_alias_errors = vc.validate_legacy_alias_fixture_coverage(
+        synthetic_events_contract,
+        {"transcript:complete", "transcription:complete"},
+    )
+    if complete_alias_errors:
+        errors.append(
+            "legacy alias fixture coverage validation should pass when canonical+alias fixtures are both present"
+        )
 
     # Ensure sidecar handler validation is contract-driven (no hard-coded allowlist).
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -305,6 +346,7 @@ def validate_drift_prevention_category() -> tuple[list[str], list[str]]:
 
     summaries.append("allowlists derived from contract schemas")
     summaries.append("undeclared sidecar handlers fail validation")
+    summaries.append("legacy alias fixture coverage checks remain enforced via synthetic contract")
     return summaries, errors
 
 

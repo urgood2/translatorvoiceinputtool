@@ -157,6 +157,29 @@ listen('sidecar:status', () => {});
         self.assertEqual(len(errors), 1)
         self.assertIn("state_changed", errors[0])
 
+    def test_validate_legacy_alias_fixture_coverage_allows_retired_alias_policy(self) -> None:
+        events_contract = {
+            "items": [
+                {"type": "event", "name": "state:changed", "deprecated_aliases": []},
+                {"type": "event", "name": "transcript:complete"},
+            ]
+        }
+        seen = {"state:changed", "transcript:complete"}
+        errors = MODULE.validate_legacy_alias_fixture_coverage(events_contract, seen)
+        self.assertEqual(errors, [])
+
+    def test_tauri_event_name_maps_returns_empty_alias_map_when_retired(self) -> None:
+        events_contract = {
+            "items": [
+                {"type": "event", "name": "state:changed", "deprecated_aliases": []},
+                {"type": "event", "name": "transcript:complete"},
+            ]
+        }
+        canonical_names, alias_to_canonical = MODULE.tauri_event_name_maps(events_contract)
+        self.assertIn("state:changed", canonical_names)
+        self.assertIn("transcript:complete", canonical_names)
+        self.assertEqual(alias_to_canonical, {})
+
     def test_extract_event_payload_examples_honors_ignore_marker(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             fixture = Path(tmpdir) / "fixture.test.ts"

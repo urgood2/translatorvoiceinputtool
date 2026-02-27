@@ -127,20 +127,41 @@ class TestWorkflowStructure(unittest.TestCase):
         self.assertIn("scripts/tests/test_security_privacy_reference.py", self.text)
 
     def test_packaged_resource_simulation_step_treats_exit_77_as_skip(self) -> None:
-        self.assertIn("Sidecar Self-Test (packaged resource simulation)", self.text)
+        self.assertIn(
+            "Sidecar Self-Test (packaged resource simulation, bundled binary)",
+            self.text,
+        )
         self.assertIn("bash scripts/e2e/test-packaged-resources.sh", self.text)
         self.assertIn('if [ "$rc" -eq 77 ]; then', self.text)
         self.assertIn("Packaged resource simulation skipped on this runner", self.text)
         self.assertIn('exit "$rc"', self.text)
 
-    def test_packaged_resource_simulation_is_linux_only(self) -> None:
+    def test_packaged_resource_simulation_runs_fixture_suite_on_all_os(self) -> None:
         steps = self.wf["jobs"]["python-tests"]["steps"]
         packaged_step = next(
             step
             for step in steps
             if step.get("name") == "Sidecar Self-Test (packaged resource simulation)"
         )
-        self.assertEqual(packaged_step.get("if"), "runner.os == 'Linux'")
+        self.assertNotIn(
+            "if",
+            packaged_step,
+            "packaged resource simulation should run on all matrix OS entries",
+        )
+        self.assertIn(
+            "python -m unittest scripts.tests.test_e2e_packaged_resources_runtime",
+            str(packaged_step.get("run", "")),
+        )
+
+    def test_packaged_resource_simulation_bundled_binary_step_is_linux_only(self) -> None:
+        steps = self.wf["jobs"]["python-tests"]["steps"]
+        bundled_binary_step = next(
+            step
+            for step in steps
+            if step.get("name")
+            == "Sidecar Self-Test (packaged resource simulation, bundled binary)"
+        )
+        self.assertEqual(bundled_binary_step.get("if"), "runner.os == 'Linux'")
 
     def test_typescript_workflow_has_typecheck_and_build_guard_steps(self) -> None:
         steps = self.wf["jobs"]["typescript-tests"]["steps"]

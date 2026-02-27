@@ -126,12 +126,24 @@ if [[ -z "$TARGET" ]]; then
     TARGET="$(detect_target_triple)"
 fi
 
-if [[ "$TARGET" == *"windows"* ]]; then
-    echo "[PACKAGED_RESOURCES][SKIP] Windows packaged-resource smoke test is not supported in this host shell"
-    exit 77
-fi
+resolve_sidecar_binary() {
+    local base="$REPO_ROOT/src-tauri/binaries/openvoicy-sidecar-$TARGET"
+    if [[ "$TARGET" == *"windows"* ]]; then
+        if [[ -f "${base}.exe" ]]; then
+            echo "${base}.exe"
+            return 0
+        fi
+        if [[ -f "$base" ]]; then
+            echo "$base"
+            return 0
+        fi
+        echo "${base}.exe"
+        return 0
+    fi
+    echo "$base"
+}
 
-SIDECAR_BIN="$REPO_ROOT/src-tauri/binaries/openvoicy-sidecar-$TARGET"
+SIDECAR_BIN="$(resolve_sidecar_binary)"
 if [[ ! -f "$SIDECAR_BIN" ]]; then
     echo "[PACKAGED_RESOURCES][ERROR] Missing packaged sidecar binary: $SIDECAR_BIN" >&2
     echo "[PACKAGED_RESOURCES][ERROR] Run ./scripts/build-sidecar.sh and ./scripts/bundle-sidecar.sh first" >&2

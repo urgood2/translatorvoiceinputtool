@@ -560,7 +560,7 @@ pub async fn purge_model_cache(
     manager
         .purge_model_cache(model_id)
         .await
-        .map_err(|message| CommandError::SidecarIpc { message })
+        .map_err(map_purge_model_cache_error)
 }
 
 /// Manually restart sidecar process.
@@ -936,6 +936,27 @@ fn map_start_recording_error(message: String) -> CommandError {
     CommandError::Internal { message }
 }
 
+fn map_purge_model_cache_error(message: String) -> CommandError {
+    let lower = message.to_ascii_lowercase();
+
+    if lower.contains("invalid model_id")
+        || lower.contains("cannot purge model while download or initialization is in progress")
+        || lower.contains("e_not_ready")
+        || lower.contains("e_not_initialized")
+        || lower.contains("e_model")
+        || lower.contains("e_cache_corrupt")
+        || lower.contains("e_network")
+        || lower.contains("e_disk_full")
+    {
+        return CommandError::Model { message };
+    }
+    if lower.contains("failed to purge cache") || lower.contains("sidecar not connected") {
+        return CommandError::SidecarIpc { message };
+    }
+
+    CommandError::Internal { message }
+}
+
 fn map_stop_recording_error(message: String) -> CommandError {
     let lower = message.to_ascii_lowercase();
 
@@ -1153,6 +1174,41 @@ mod tests {
     fn test_map_start_recording_error_model_path() {
         let mapped = map_start_recording_error("Model not ready".to_string());
         assert!(matches!(mapped, CommandError::Model { .. }));
+    }
+
+    #[test]
+    fn test_map_purge_model_cache_error_sidecar_ipc_path() {
+        let mapped = map_purge_model_cache_error(
+            "Failed to purge cache: Remote error: E_INTERNAL - RPC transport dropped".to_string(),
+        );
+        assert!(matches!(mapped, CommandError::SidecarIpc { .. }));
+
+        let mapped = map_purge_model_cache_error("Sidecar not connected".to_string());
+        assert!(matches!(mapped, CommandError::SidecarIpc { .. }));
+    }
+
+    #[test]
+    fn test_map_purge_model_cache_error_model_path() {
+        let mapped =
+            map_purge_model_cache_error("Invalid model_id: blank or whitespace-only value".to_string());
+        assert!(matches!(mapped, CommandError::Model { .. }));
+
+        let mapped = map_purge_model_cache_error(
+            "Cannot purge model while download or initialization is in progress".to_string(),
+        );
+        assert!(matches!(mapped, CommandError::Model { .. }));
+
+        let mapped = map_purge_model_cache_error(
+            "Failed to purge cache: Remote error: E_NOT_READY - Model is currently in use"
+                .to_string(),
+        );
+        assert!(matches!(mapped, CommandError::Model { .. }));
+    }
+
+    #[test]
+    fn test_map_purge_model_cache_error_falls_back_to_internal() {
+        let mapped = map_purge_model_cache_error("Unexpected purge failure".to_string());
+        assert!(matches!(mapped, CommandError::Internal { .. }));
     }
 
     #[test]

@@ -93,8 +93,10 @@ MOCK_SELF_TEST = textwrap.dedent(
 
 class PackagedResourcesRuntimeTests(unittest.TestCase):
     target = "x86_64-unknown-linux-gnu"
+    macos_target = "x86_64-apple-darwin"
+    windows_target = "x86_64-pc-windows-msvc"
 
-    def _build_fixture_project(self) -> Path:
+    def _build_fixture_project(self, target: str) -> Path:
         root = Path(tempfile.mkdtemp(prefix="packaged-resources-runtime-"))
         (root / "scripts" / "e2e").mkdir(parents=True, exist_ok=True)
         (root / "src-tauri" / "binaries").mkdir(parents=True, exist_ok=True)
@@ -105,7 +107,10 @@ class PackagedResourcesRuntimeTests(unittest.TestCase):
 
         shutil.copy2(SOURCE_SCRIPT, root / "scripts" / "e2e" / "test-packaged-resources.sh")
 
-        sidecar_bin = root / "src-tauri" / "binaries" / f"openvoicy-sidecar-{self.target}"
+        sidecar_name = f"openvoicy-sidecar-{target}"
+        if "windows" in target:
+            sidecar_name = f"{sidecar_name}.exe"
+        sidecar_bin = root / "src-tauri" / "binaries" / sidecar_name
         sidecar_bin.write_text(MOCK_SIDECAR, encoding="utf-8")
         sidecar_bin.chmod(sidecar_bin.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -151,7 +156,7 @@ class PackagedResourcesRuntimeTests(unittest.TestCase):
         )
 
     def test_runtime_pass_path_exits_zero_and_validates_resource_paths(self) -> None:
-        root = self._build_fixture_project()
+        root = self._build_fixture_project(self.target)
         try:
             completed = self._run_script(root, self.target)
             self.assertEqual(
@@ -171,7 +176,7 @@ class PackagedResourcesRuntimeTests(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
     def test_runtime_invalid_system_info_payload_exits_nonzero(self) -> None:
-        root = self._build_fixture_project()
+        root = self._build_fixture_project(self.target)
         try:
             completed = self._run_script(
                 root,
@@ -195,7 +200,7 @@ class PackagedResourcesRuntimeTests(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
     def test_runtime_legacy_system_info_schema_exits_nonzero(self) -> None:
-        root = self._build_fixture_project()
+        root = self._build_fixture_project(self.target)
         try:
             completed = self._run_script(
                 root,
@@ -215,7 +220,7 @@ class PackagedResourcesRuntimeTests(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
     def test_runtime_self_test_failure_exits_nonzero(self) -> None:
-        root = self._build_fixture_project()
+        root = self._build_fixture_project(self.target)
         try:
             completed = self._run_script(
                 root,
@@ -230,16 +235,29 @@ class PackagedResourcesRuntimeTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
-    def test_runtime_windows_target_returns_skip_77(self) -> None:
-        root = self._build_fixture_project()
+    def test_runtime_macos_target_passes(self) -> None:
+        root = self._build_fixture_project(self.macos_target)
         try:
-            completed = self._run_script(root, "x86_64-pc-windows-msvc")
+            completed = self._run_script(root, self.macos_target)
             self.assertEqual(
                 completed.returncode,
-                77,
+                0,
                 msg=f"stdout={completed.stdout}\\nstderr={completed.stderr}",
             )
-            self.assertIn("[PACKAGED_RESOURCES][SKIP]", completed.stdout + completed.stderr)
+            self.assertIn("packaged resource smoke test passed", completed.stdout + completed.stderr)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_runtime_windows_target_passes_with_exe_binary(self) -> None:
+        root = self._build_fixture_project(self.windows_target)
+        try:
+            completed = self._run_script(root, self.windows_target)
+            self.assertEqual(
+                completed.returncode,
+                0,
+                msg=f"stdout={completed.stdout}\\nstderr={completed.stderr}",
+            )
+            self.assertIn("packaged resource smoke test passed", completed.stdout + completed.stderr)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

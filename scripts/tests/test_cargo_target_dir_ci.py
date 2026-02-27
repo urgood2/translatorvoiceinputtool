@@ -48,16 +48,28 @@ class CargoTargetDirWorkflowTests(unittest.TestCase):
         self.assertIn(
             "Sidecar Self-Test (packaged resource simulation)", test_workflow
         )
+        self.assertIn(
+            "python -m unittest scripts.tests.test_e2e_packaged_resources_runtime",
+            test_workflow,
+        )
+        self.assertIn(
+            "Sidecar Self-Test (packaged resource simulation, bundled binary)",
+            test_workflow,
+        )
         self.assertIn("scripts/e2e/test-packaged-resources.sh", test_workflow)
         self.assertIn('if [ "$rc" -eq 77 ]; then', test_workflow)
         self.assertIn("Packaged resource simulation skipped on this runner", test_workflow)
         self.assertIn('exit "$rc"', test_workflow)
 
         dev_mode_index = test_workflow.index("Sidecar Self-Test (dev mode)")
-        packaged_index = test_workflow.index(
+        packaged_fixture_index = test_workflow.index(
             "Sidecar Self-Test (packaged resource simulation)"
         )
-        self.assertGreater(packaged_index, dev_mode_index)
+        packaged_bundled_index = test_workflow.index(
+            "Sidecar Self-Test (packaged resource simulation, bundled binary)"
+        )
+        self.assertGreater(packaged_fixture_index, dev_mode_index)
+        self.assertGreater(packaged_bundled_index, packaged_fixture_index)
 
 
 if __name__ == "__main__":
