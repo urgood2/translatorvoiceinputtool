@@ -47,6 +47,23 @@ listen('sidecar:status', () => {});
         self.assertTrue(parsed["enabled"])
         self.assertIsNone(parsed["detail"])
 
+    def test_coerce_js_object_literal_to_json_text_accepts_typescript_runtime_constructs(self) -> None:
+        payload = """
+{
+  seq: 42,
+  entry: {
+    id: 'entry-42',
+    timestamp: new Date().toISOString(),
+    injection_result: { status: 'injected' as const },
+  },
+}
+        """.strip()
+        parsed = json.loads(MODULE.coerce_js_object_literal_to_json_text(payload))
+        self.assertEqual(parsed["seq"], 42)
+        self.assertEqual(parsed["entry"]["id"], "entry-42")
+        self.assertEqual(parsed["entry"]["timestamp"], "1970-01-01T00:00:00.000Z")
+        self.assertEqual(parsed["entry"]["injection_result"]["status"], "injected")
+
     def test_validate_instance_against_schema_reports_required_field(self) -> None:
         root = {"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}
         schema = {

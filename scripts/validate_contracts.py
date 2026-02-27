@@ -1432,6 +1432,11 @@ def validate_sidecar_examples_against_contract(repo_root: Path, sidecar_contract
 def coerce_js_object_literal_to_json_text(expr: str) -> str:
     text = expr
     text = re.sub(r"\bas const\b", "", text)
+    text = re.sub(
+        r"new\s+Date\s*\([^)]*\)\s*\.toISOString\s*\(\s*\)",
+        '"1970-01-01T00:00:00.000Z"',
+        text,
+    )
     text = re.sub(r"\bundefined\b", "null", text)
     text = re.sub(r",\s*([}\]])", r"\1", text)
     text = re.sub(r"([{\[,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)", r'\1"\2"\3', text)
