@@ -87,11 +87,12 @@ export interface RecordingPillProps {
 }
 
 export function RecordingPill({ phase, sidecarState, timer, waveform }: RecordingPillProps) {
+  const reducedMotion = useReducedMotion();
+
   if (phase === 'idle') {
     return null;
   }
 
-  const reducedMotion = useReducedMotion();
   const palette = PHASE_PALETTE[phase];
   const sidecar = sidecarLabel(sidecarState);
   const sidecarWarning = sidecarState === 'failed' || sidecarState === 'stopped';

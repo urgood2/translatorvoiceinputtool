@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RecordingPill } from './RecordingPill';
 
 type MatchMediaConfig = {
@@ -94,5 +94,45 @@ describe('Overlay RecordingPill', () => {
     );
 
     expect(screen.getByTestId('recording-dot')).toHaveStyle({ animation: 'none' });
+  });
+
+  it('rerenders from idle to recording without hook-order errors', () => {
+    mockMatchMedia({ matches: false });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const baseProps = {
+      sidecarState: 'ready' as const,
+      timer: <span>00:00</span>,
+      waveform: <span>wf</span>,
+    };
+
+    try {
+      const { rerender } = render(
+        <RecordingPill
+          phase="idle"
+          {...baseProps}
+        />,
+      );
+
+      expect(screen.queryByText('Recording')).toBeNull();
+      expect(() =>
+        rerender(
+          <RecordingPill
+            phase="recording"
+            {...baseProps}
+          />,
+        ),
+      ).not.toThrow();
+      expect(screen.getByText('Recording')).toBeInTheDocument();
+      const hookOrderErrorLogged = consoleErrorSpy.mock.calls.some((call) =>
+        call.some(
+          (arg) =>
+            typeof arg === 'string'
+            && arg.includes('Rendered more hooks than during the previous render'),
+        ),
+      );
+      expect(hookOrderErrorLogged).toBe(false);
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });
