@@ -68,14 +68,14 @@ export function OverlayApp() {
   const waveformActiveRef = useRef(false);
   const lastWaveformTickRef = useRef(0);
 
-  useEffect(() => {
-    shouldProcessRef.current = shouldProcess;
-    waveformActiveRef.current = shouldProcess && (phase === 'recording' || phase === 'transcribing');
+  shouldProcessRef.current = shouldProcess;
+  waveformActiveRef.current = shouldProcess && (phase === 'recording' || phase === 'transcribing');
 
+  useEffect(() => {
     if (!shouldProcess) {
       setWaveLevel(0);
     }
-  }, [phase, shouldProcess]);
+  }, [shouldProcess]);
 
   useEffect(() => {
     const onVisibilityChange = () => {
@@ -89,6 +89,39 @@ export function OverlayApp() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    let unlistenOverlayToggle: UnlistenFn | null = null;
+
+    const setup = async () => {
+      const unlisten = await listen<OverlayTogglePayload>('overlay:toggle', (event) => {
+        if (typeof event.payload.enabled === 'boolean') {
+          setOverlayEnabled(event.payload.enabled);
+        }
+      });
+
+      if (cancelled) {
+        unlisten();
+        return;
+      }
+
+      unlistenOverlayToggle = unlisten;
+    };
+
+    void setup();
+
+    return () => {
+      cancelled = true;
+      if (unlistenOverlayToggle) {
+        unlistenOverlayToggle();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!shouldProcess) {
+      return;
+    }
+
     let cancelled = false;
     const unlisteners: UnlistenFn[] = [];
 
@@ -106,6 +139,9 @@ export function OverlayApp() {
 
     const setup = async () => {
       await refreshState();
+      if (cancelled || !shouldProcessRef.current) {
+        return;
+      }
 
       const subscribe = async <TPayload,>(
         eventName: string,
@@ -162,12 +198,6 @@ export function OverlayApp() {
         lastWaveformTickRef.current = now;
         setWaveLevel(normalizeAudioLevel(payload));
       });
-
-      await subscribe<OverlayTogglePayload>('overlay:toggle', (payload) => {
-        if (typeof payload.enabled === 'boolean') {
-          setOverlayEnabled(payload.enabled);
-        }
-      });
     };
 
     void setup();
@@ -178,7 +208,7 @@ export function OverlayApp() {
         unlisten();
       }
     };
-  }, []);
+  }, [shouldProcess]);
 
   const overlayVisible = useMemo(() => shouldProcess, [shouldProcess]);
 
