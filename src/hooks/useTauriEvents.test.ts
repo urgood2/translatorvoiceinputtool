@@ -525,6 +525,130 @@ describe('useTauriEvents', () => {
     unmount();
   });
 
+  test('transcript event logs include metadata only (no transcript text)', async () => {
+    const transcriptSecret = 'TOP-SECRET-TRANSCRIPT-CONTENT';
+    const errorSecret = 'TOP-SECRET-TRANSCRIPT-ERROR';
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await waitForCanonicalListeners();
+
+    act(() => {
+      emitMockEvent('transcript:complete', {
+        seq: 9001,
+        entry: {
+          id: 'entry-sensitive',
+          session_id: 'session-sensitive',
+          text: transcriptSecret,
+          raw_text: transcriptSecret,
+          final_text: transcriptSecret,
+          timestamp: new Date().toISOString(),
+          audio_duration_ms: 100,
+          transcription_duration_ms: 50,
+          injection_result: { status: 'injected' as const },
+        },
+      });
+      emitMockEvent('transcript:error', {
+        seq: 9002,
+        session_id: 'session-sensitive',
+        message: errorSecret,
+        error: errorSecret,
+        recoverable: true,
+      });
+    });
+
+    const callContains = (calls: unknown[][], needle: string): boolean =>
+      calls.some((args) =>
+        args.some((arg) => {
+          if (typeof arg === 'string') {
+            return arg.includes(needle);
+          }
+          try {
+            return JSON.stringify(arg).includes(needle);
+          } catch {
+            return false;
+          }
+        })
+      );
+
+    const transcriptDebugCalls = debugSpy.mock.calls.filter((args) =>
+      String(args[0]).includes('Event: transcript:complete')
+    );
+    const transcriptPayloadDebugCalls = debugSpy.mock.calls.filter((args) =>
+      String(args[0]).includes('Event: transcript:complete:payload')
+    );
+    const transcriptErrorPayloadDebugCalls = debugSpy.mock.calls.filter((args) =>
+      String(args[0]).includes('Event: transcript:error:payload')
+    );
+    const transcriptErrorCalls = errorSpy.mock.calls.filter((args) =>
+      String(args[0]).includes('Event: transcript:error')
+    );
+
+    expect(transcriptDebugCalls.length).toBeGreaterThan(0);
+    expect(transcriptErrorCalls.length).toBeGreaterThan(0);
+    expect(transcriptPayloadDebugCalls).toHaveLength(0);
+    expect(transcriptErrorPayloadDebugCalls).toHaveLength(0);
+    expect(callContains(transcriptDebugCalls, transcriptSecret)).toBe(false);
+    expect(callContains(transcriptErrorCalls, errorSecret)).toBe(false);
+
+    unmount();
+    debugSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  test('verbose transcript payload logs require explicit localStorage opt-in', async () => {
+    const transcriptSecret = 'TRANSCRIPT-SENSITIVE-OPT-IN';
+    const errorSecret = 'TRANSCRIPT-ERROR-SENSITIVE-OPT-IN';
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    localStorage.setItem('openvoicy.debug.transcript_payload_logs', 'true');
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await waitForCanonicalListeners();
+
+    act(() => {
+      emitMockEvent('transcript:complete', {
+        seq: 9101,
+        entry: {
+          id: 'entry-opt-in',
+          session_id: 'session-opt-in',
+          text: transcriptSecret,
+          raw_text: transcriptSecret,
+          final_text: transcriptSecret,
+          timestamp: new Date().toISOString(),
+          audio_duration_ms: 140,
+          transcription_duration_ms: 70,
+          injection_result: { status: 'injected' as const },
+        },
+      });
+      emitMockEvent('transcript:error', {
+        seq: 9102,
+        session_id: 'session-opt-in',
+        message: errorSecret,
+        error: errorSecret,
+        recoverable: false,
+      });
+    });
+
+    const transcriptPayloadDebugCalls = debugSpy.mock.calls.filter((args) =>
+      String(args[0]).includes('Event: transcript:complete:payload')
+    );
+    const transcriptErrorPayloadDebugCalls = debugSpy.mock.calls.filter((args) =>
+      String(args[0]).includes('Event: transcript:error:payload')
+    );
+
+    expect(transcriptPayloadDebugCalls).toHaveLength(1);
+    expect(transcriptErrorPayloadDebugCalls).toHaveLength(1);
+    expect(JSON.stringify(transcriptPayloadDebugCalls)).toContain(transcriptSecret);
+    expect(JSON.stringify(transcriptErrorPayloadDebugCalls)).toContain(errorSecret);
+
+    unmount();
+    localStorage.removeItem('openvoicy.debug.transcript_payload_logs');
+    debugSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
   test('ignores out-of-order seq for same stream', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
@@ -935,6 +1059,21 @@ describe('useTauriEvents', () => {
     });
     expect(typeof entry.timestamp).toBe('string');
 
+    unmount();
+  });
+
+  test('ignores malformed transcript payloads without throwing', async () => {
+    const { unmount } = renderHook(() => useTauriEvents());
+
+    await waitForCanonicalListeners();
+
+    act(() => {
+      emitMockEvent('transcript:complete', null);
+      emitMockEvent('transcript:complete', 'invalid');
+      emitMockEvent('transcript:complete', { entry: null });
+    });
+
+    expect(useAppStore.getState().history).toHaveLength(0);
     unmount();
   });
 });

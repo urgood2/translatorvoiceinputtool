@@ -59,6 +59,8 @@ const STREAM_KEYS: Record<string, DedupeStreamKey> = {
   ERROR: 'error',
 } as const;
 
+const TRANSCRIPT_PAYLOAD_DEBUG_LOG_KEY = 'openvoicy.debug.transcript_payload_logs';
+
 function defaultInjectionResult(): InjectionResult {
   return { status: 'injected' };
 }
@@ -104,42 +106,167 @@ function normalizeInjectionResult(result: unknown): InjectionResult {
   return defaultInjectionResult();
 }
 
-function normalizeTranscriptPayload(payload: TranscriptEventPayload): TranscriptEntry {
-  if ('entry' in payload) {
-    const rawText =
-      typeof payload.entry.raw_text === 'string' && payload.entry.raw_text.length > 0
-        ? payload.entry.raw_text
-        : payload.entry.text;
-    const finalText =
-      typeof payload.entry.final_text === 'string' && payload.entry.final_text.length > 0
-        ? payload.entry.final_text
-        : payload.entry.text;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isTranscriptPayloadDebugLoggingEnabled(): boolean {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return false;
+    }
+    const flag = window.localStorage.getItem(TRANSCRIPT_PAYLOAD_DEBUG_LOG_KEY);
+    return flag === '1' || flag === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function readNumericField(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === 'number' ? value : undefined;
+}
+
+function transcriptPayloadMetadata(payload: unknown): Record<string, unknown> {
+  if (!isRecord(payload)) {
+    return { payload_type: typeof payload };
+  }
+
+  if ('entry' in payload && isRecord(payload.entry)) {
+    const entry = payload.entry;
+    const text =
+      typeof entry.final_text === 'string'
+        ? entry.final_text
+        : typeof entry.text === 'string'
+          ? entry.text
+          : typeof entry.raw_text === 'string'
+            ? entry.raw_text
+            : '';
     return {
-      ...payload.entry,
-      text: finalText,
-      raw_text: rawText,
-      final_text: finalText,
+      session_id: typeof entry.session_id === 'string' ? entry.session_id : undefined,
+      entry_id: typeof entry.id === 'string' ? entry.id : undefined,
+      seq: readNumericField(payload, 'seq'),
+      text_length: text.length,
+      has_timings: isRecord(entry.timings),
+      has_injection_result: isRecord(entry.injection_result),
     };
   }
 
+  const text =
+    typeof payload.final_text === 'string'
+      ? payload.final_text
+      : typeof payload.text === 'string'
+        ? payload.text
+        : typeof payload.raw_text === 'string'
+          ? payload.raw_text
+          : '';
+  return {
+    session_id: typeof payload.session_id === 'string' ? payload.session_id : undefined,
+    seq: readNumericField(payload, 'seq'),
+    text_length: text.length,
+    has_timings: isRecord(payload.timings),
+    has_injection_result: isRecord(payload.injection_result),
+  };
+}
+
+function transcriptErrorMetadata(payload: unknown): Record<string, unknown> {
+  if (!isRecord(payload)) {
+    return { payload_type: typeof payload };
+  }
+
+  const appError = isRecord(payload.app_error)
+    ? payload.app_error
+    : isRecord(payload.error)
+      ? payload.error
+      : null;
+  return {
+    session_id: typeof payload.session_id === 'string' ? payload.session_id : undefined,
+    seq: readNumericField(payload, 'seq'),
+    recoverable: typeof payload.recoverable === 'boolean' ? payload.recoverable : undefined,
+    error_code: appError && typeof appError.code === 'string' ? appError.code : undefined,
+    has_message:
+      typeof payload.message === 'string'
+      || typeof payload.error === 'string'
+      || (appError !== null && typeof appError.message === 'string'),
+  };
+}
+
+function normalizeTranscriptPayload(payload: unknown): TranscriptEntry | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+
+  if ('entry' in payload && isRecord(payload.entry)) {
+    const entry = payload.entry;
+    const entryText = typeof entry.text === 'string' ? entry.text : null;
+    if (!entryText) {
+      return null;
+    }
+    const rawText =
+      typeof entry.raw_text === 'string' && entry.raw_text.length > 0
+        ? entry.raw_text
+        : entryText;
+    const finalText =
+      typeof entry.final_text === 'string' && entry.final_text.length > 0
+        ? entry.final_text
+        : entryText;
+    const entryId =
+      typeof entry.id === 'string' && entry.id.length > 0
+        ? entry.id
+        : typeof entry.session_id === 'string' && entry.session_id.length > 0
+          ? entry.session_id
+          : 'unknown-session';
+    const timestamp =
+      typeof entry.timestamp === 'string' && entry.timestamp.length > 0
+        ? entry.timestamp
+        : new Date().toISOString();
+    return {
+      ...entry,
+      id: entryId,
+      text: finalText,
+      raw_text: rawText,
+      final_text: finalText,
+      timestamp,
+      audio_duration_ms:
+        typeof entry.audio_duration_ms === 'number' ? entry.audio_duration_ms : 0,
+      transcription_duration_ms:
+        typeof entry.transcription_duration_ms === 'number'
+          ? entry.transcription_duration_ms
+          : 0,
+      injection_result: normalizeInjectionResult(entry.injection_result),
+    };
+  }
+
+  const payloadText = typeof payload.text === 'string' ? payload.text : null;
+  if (!payloadText) {
+    return null;
+  }
+  const sessionId =
+    typeof payload.session_id === 'string' && payload.session_id.length > 0
+      ? payload.session_id
+      : 'unknown-session';
   const rawText =
     typeof payload.raw_text === 'string' && payload.raw_text.length > 0
       ? payload.raw_text
-      : payload.text;
+      : payloadText;
   const finalText =
     typeof payload.final_text === 'string' && payload.final_text.length > 0
       ? payload.final_text
-      : payload.text;
+      : payloadText;
 
   return {
-    id: payload.session_id,
+    id: sessionId,
     text: finalText,
     raw_text: rawText,
     final_text: finalText,
     timestamp: new Date().toISOString(),
-    audio_duration_ms: payload.audio_duration_ms,
-    transcription_duration_ms: payload.processing_duration_ms,
-    session_id: payload.session_id,
+    audio_duration_ms:
+      typeof payload.audio_duration_ms === 'number' ? payload.audio_duration_ms : 0,
+    transcription_duration_ms:
+      typeof payload.processing_duration_ms === 'number'
+        ? payload.processing_duration_ms
+        : 0,
+    session_id: sessionId,
     language: typeof payload.language === 'string' ? payload.language : undefined,
     confidence: typeof payload.confidence === 'number' ? payload.confidence : undefined,
     injection_result: normalizeInjectionResult(payload.injection_result),
@@ -245,8 +372,16 @@ export function useTauriEvents(): void {
       const transcriptRegistered = await registerListener<TranscriptEventPayload>(
         EVENTS.TRANSCRIPT_COMPLETE,
         dedupeHandler(STREAM_KEYS.TRANSCRIPT, (payload) => {
-          console.debug('Event: transcript:complete', payload);
-          store._addHistoryEntry(normalizeTranscriptPayload(payload));
+          console.debug('Event: transcript:complete', transcriptPayloadMetadata(payload));
+          if (isTranscriptPayloadDebugLoggingEnabled()) {
+            console.debug('Event: transcript:complete:payload', payload);
+          }
+          const normalized = normalizeTranscriptPayload(payload);
+          if (!normalized) {
+            console.warn('Ignoring malformed transcript payload', transcriptPayloadMetadata(payload));
+            return;
+          }
+          store._addHistoryEntry(normalized);
         })
       );
       if (!transcriptRegistered) return;
@@ -264,7 +399,10 @@ export function useTauriEvents(): void {
       const transcriptErrorRegistered = await registerListener<ErrorEvent>(
         EVENTS.TRANSCRIPT_ERROR,
         dedupeHandler(STREAM_KEYS.TRANSCRIPT_ERROR, (payload) => {
-          console.error('Event: transcript:error', payload);
+          console.error('Event: transcript:error', transcriptErrorMetadata(payload));
+          if (isTranscriptPayloadDebugLoggingEnabled()) {
+            console.debug('Event: transcript:error:payload', payload);
+          }
           store._setTranscriptError(payload);
         })
       );
