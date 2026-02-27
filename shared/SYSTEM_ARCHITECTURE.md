@@ -40,7 +40,7 @@ Use it before changing integration, IPC, sidecar, and frontend event handling.
 │ sidecar/src/openvoicy_sidecar/       │     │ src/App.tsx + src/overlay   │
 │  - audio.*, recording.*              │     │ Zustand store + hooks        │
 │  - model.*, asr.*                    │     │ listens to canonical events  │
-│  - replacements.*, status.get        │     │ and legacy aliases           │
+│  - replacements.*, status.get        │     │ only (legacy aliases retired)│
 │  - (future) VAD + preprocess         │     └─────────────────────────────┘
 └──────────────────────────────────────┘
 ```
@@ -74,5 +74,5 @@ Use it before changing integration, IPC, sidecar, and frontend event handling.
 ## Guardrails
 
 1. Keep host/sidecar/frontend boundaries explicit; avoid cross-layer behavior duplication.
-2. Prefer additive IPC/event changes and preserve compatibility aliases during migration windows.
+2. Prefer additive IPC/event changes; use canonical event names unless a compatibility window is explicitly reactivated in `shared/contracts/MIGRATION.md`.
 3. When adding lifecycle behavior, extend supervisor/integration flow instead of rewriting core orchestration.

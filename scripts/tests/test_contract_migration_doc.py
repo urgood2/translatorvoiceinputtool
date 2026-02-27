@@ -5,6 +5,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION_DOC = REPO_ROOT / "shared" / "contracts" / "MIGRATION.md"
 EVENTS_CONTRACT = REPO_ROOT / "shared" / "contracts" / "tauri.events.v1.json"
+SYSTEM_ARCH_DOC = REPO_ROOT / "shared" / "SYSTEM_ARCHITECTURE.md"
 
 
 class ContractMigrationDocTests(unittest.TestCase):
@@ -25,6 +26,12 @@ class ContractMigrationDocTests(unittest.TestCase):
         self.assertNotIn('"deprecated_aliases": ["transcription:complete"]', content)
         self.assertNotIn('"deprecated_aliases": ["transcription:error"]', content)
         self.assertNotIn('"deprecated_aliases": ["status:changed"]', content)
+
+    def test_system_architecture_doc_declares_canonical_only_event_listening(self) -> None:
+        content = SYSTEM_ARCH_DOC.read_text(encoding="utf-8")
+        self.assertIn("listens to canonical events", content)
+        self.assertIn("legacy aliases retired", content)
+        self.assertNotIn("and legacy aliases", content)
 
 
 if __name__ == "__main__":
