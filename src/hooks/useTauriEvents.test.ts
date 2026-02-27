@@ -603,50 +603,53 @@ describe('useTauriEvents', () => {
     const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     localStorage.setItem('openvoicy.debug.transcript_payload_logs', 'true');
-    const { unmount } = renderHook(() => useTauriEvents());
+    try {
+      const { unmount } = renderHook(() => useTauriEvents());
 
-    await waitForCanonicalListeners();
+      await waitForCanonicalListeners();
 
-    act(() => {
-      emitMockEvent('transcript:complete', {
-        seq: 9101,
-        entry: {
-          id: 'entry-opt-in',
+      act(() => {
+        emitMockEvent('transcript:complete', {
+          seq: 9101,
+          entry: {
+            id: 'entry-opt-in',
+            session_id: 'session-opt-in',
+            text: transcriptSecret,
+            raw_text: transcriptSecret,
+            final_text: transcriptSecret,
+            timestamp: new Date().toISOString(),
+            audio_duration_ms: 140,
+            transcription_duration_ms: 70,
+            injection_result: { status: 'injected' as const },
+          },
+        });
+        emitMockEvent('transcript:error', {
+          seq: 9102,
           session_id: 'session-opt-in',
-          text: transcriptSecret,
-          raw_text: transcriptSecret,
-          final_text: transcriptSecret,
-          timestamp: new Date().toISOString(),
-          audio_duration_ms: 140,
-          transcription_duration_ms: 70,
-          injection_result: { status: 'injected' as const },
-        },
+          message: errorSecret,
+          error: errorSecret,
+          recoverable: false,
+        });
       });
-      emitMockEvent('transcript:error', {
-        seq: 9102,
-        session_id: 'session-opt-in',
-        message: errorSecret,
-        error: errorSecret,
-        recoverable: false,
-      });
-    });
 
-    const transcriptPayloadDebugCalls = debugSpy.mock.calls.filter((args) =>
-      String(args[0]).includes('Event: transcript:complete:payload')
-    );
-    const transcriptErrorPayloadDebugCalls = debugSpy.mock.calls.filter((args) =>
-      String(args[0]).includes('Event: transcript:error:payload')
-    );
+      const transcriptPayloadDebugCalls = debugSpy.mock.calls.filter((args) =>
+        String(args[0]).includes('Event: transcript:complete:payload')
+      );
+      const transcriptErrorPayloadDebugCalls = debugSpy.mock.calls.filter((args) =>
+        String(args[0]).includes('Event: transcript:error:payload')
+      );
 
-    expect(transcriptPayloadDebugCalls).toHaveLength(1);
-    expect(transcriptErrorPayloadDebugCalls).toHaveLength(1);
-    expect(JSON.stringify(transcriptPayloadDebugCalls)).toContain(transcriptSecret);
-    expect(JSON.stringify(transcriptErrorPayloadDebugCalls)).toContain(errorSecret);
+      expect(transcriptPayloadDebugCalls).toHaveLength(1);
+      expect(transcriptErrorPayloadDebugCalls).toHaveLength(1);
+      expect(JSON.stringify(transcriptPayloadDebugCalls)).toContain(transcriptSecret);
+      expect(JSON.stringify(transcriptErrorPayloadDebugCalls)).toContain(errorSecret);
 
-    unmount();
-    localStorage.removeItem('openvoicy.debug.transcript_payload_logs');
-    debugSpy.mockRestore();
-    errorSpy.mockRestore();
+      unmount();
+    } finally {
+      localStorage.removeItem('openvoicy.debug.transcript_payload_logs');
+      debugSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 
   test('ignores out-of-order seq for same stream', async () => {
