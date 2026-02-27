@@ -1332,7 +1332,7 @@ def _validate_purge_model_id(model_id: Any) -> str:
         raise ModelCacheError("model_id contains invalid path segments", "E_INVALID_PARAMS")
     if any(":" in segment for segment in segments):
         raise ModelCacheError("model_id contains invalid path segments", "E_INVALID_PARAMS")
-    if not all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", segment) for segment in segments):
+    if not all(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*", segment) for segment in segments):
         raise ModelCacheError("model_id contains invalid characters", "E_INVALID_PARAMS")
 
     return "/".join(segments)
