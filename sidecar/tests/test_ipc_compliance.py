@@ -90,6 +90,39 @@ def _required_contract_methods() -> set[str]:
     }
 
 
+def _cleanup_persistent_sidecar_process(
+    proc: Any,
+    shutdown_request: str,
+    stop_reader: threading.Event,
+    reader: threading.Thread,
+    *,
+    graceful_timeout: float = 1.0,
+    terminate_timeout: float = 2.0,
+) -> None:
+    """Best-effort cleanup for persistent sidecar subprocess + reader thread."""
+    if proc.poll() is None:
+        try:
+            proc.stdin.write(shutdown_request + "\n")
+            proc.stdin.flush()
+            proc.wait(timeout=graceful_timeout)
+        except (AttributeError, BrokenPipeError, OSError, subprocess.TimeoutExpired):
+            pass
+
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=terminate_timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=terminate_timeout)
+            except subprocess.TimeoutExpired:
+                pass
+
+    stop_reader.set()
+    reader.join(timeout=1.0)
+
+
 def _list_descendant_pids_linux(root_pid: int) -> set[int]:
     """Return recursive descendants for `root_pid` using Linux /proc process metadata."""
     proc_root = Path("/proc")
@@ -569,19 +602,19 @@ def test_system_ping_ipc_roundtrip_latency(run_sidecar: Any) -> None:
 
         raise AssertionError(f"Timed out waiting for system.ping response id={request_id}")
 
-    cold_elapsed = _measure_cold_start_roundtrip()
-    warm_first_elapsed = _send_and_wait(request_cold, 1, timeout=PING_SUBPROCESS_TIMEOUT_SECONDS)
-    warmed_elapsed = _send_and_wait(request_warm, 2, timeout=PING_SUBPROCESS_TIMEOUT_SECONDS)
-    _send_and_wait(
-        shutdown,
-        99,
-        timeout=PING_SUBPROCESS_TIMEOUT_SECONDS,
-        expected_status="shutting_down",
-    )
-    assert proc.wait(timeout=PING_SUBPROCESS_TIMEOUT_SECONDS) == 0
-
-    stop_reader.set()
-    reader.join(timeout=1.0)
+    try:
+        cold_elapsed = _measure_cold_start_roundtrip()
+        warm_first_elapsed = _send_and_wait(request_cold, 1, timeout=PING_SUBPROCESS_TIMEOUT_SECONDS)
+        warmed_elapsed = _send_and_wait(request_warm, 2, timeout=PING_SUBPROCESS_TIMEOUT_SECONDS)
+        _send_and_wait(
+            shutdown,
+            99,
+            timeout=PING_SUBPROCESS_TIMEOUT_SECONDS,
+            expected_status="shutting_down",
+        )
+        assert proc.wait(timeout=PING_SUBPROCESS_TIMEOUT_SECONDS) == 0
+    finally:
+        _cleanup_persistent_sidecar_process(proc, shutdown, stop_reader, reader)
 
     # Cold starts can be noisy under CI load; warmed in-process ping must meet protocol SLA.
     assert cold_elapsed < PING_COLD_BUDGET_SECONDS, (
@@ -602,6 +635,76 @@ def test_system_ping_latency_timeout_budget_invariant() -> None:
     """Regression: timeout headroom must remain above cold/warmed latency budgets."""
     assert PING_SUBPROCESS_TIMEOUT_SECONDS > PING_COLD_BUDGET_SECONDS
     assert PING_COLD_BUDGET_SECONDS > PING_WARM_BUDGET_SECONDS
+
+
+def test_cleanup_persistent_sidecar_process_forces_terminate_and_kill() -> None:
+    class _FakeStdin:
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+            self.flushed = False
+
+        def write(self, text: str) -> None:
+            self.lines.append(text)
+
+        def flush(self) -> None:
+            self.flushed = True
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdin = _FakeStdin()
+            self._terminated = False
+            self._killed = False
+            self.wait_calls = 0
+            self.terminate_calls = 0
+            self.kill_calls = 0
+
+        def poll(self) -> int | None:
+            if self._killed:
+                return 0
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_calls += 1
+            if self.wait_calls <= 2:
+                raise subprocess.TimeoutExpired(cmd="fake-sidecar", timeout=timeout or 0)
+            return 0
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+            self._terminated = True
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+            self._killed = True
+
+    class _FakeReader:
+        def __init__(self) -> None:
+            self.join_calls = 0
+            self.timeout_values: list[float | None] = []
+
+        def join(self, timeout: float | None = None) -> None:
+            self.join_calls += 1
+            self.timeout_values.append(timeout)
+
+    fake_proc = _FakeProc()
+    stop_reader = threading.Event()
+    reader = _FakeReader()
+
+    _cleanup_persistent_sidecar_process(
+        fake_proc,
+        '{"jsonrpc":"2.0","id":99,"method":"system.shutdown"}',
+        stop_reader,
+        reader,  # type: ignore[arg-type]
+    )
+
+    assert fake_proc.stdin.lines == ['{"jsonrpc":"2.0","id":99,"method":"system.shutdown"}\n']
+    assert fake_proc.stdin.flushed is True
+    assert fake_proc.terminate_calls == 1
+    assert fake_proc.kill_calls == 1
+    assert fake_proc.wait_calls >= 3
+    assert stop_reader.is_set()
+    assert reader.join_calls == 1
+    assert reader.timeout_values == [1.0]
 
 
 def test_system_info_required_runtime_fields() -> None:
