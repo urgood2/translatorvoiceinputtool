@@ -49,6 +49,9 @@ class CargoTargetDirWorkflowTests(unittest.TestCase):
             "Sidecar Self-Test (packaged resource simulation)", test_workflow
         )
         self.assertIn("scripts/e2e/test-packaged-resources.sh", test_workflow)
+        self.assertIn('if [ "$rc" -eq 77 ]; then', test_workflow)
+        self.assertIn("Packaged resource simulation skipped on this runner", test_workflow)
+        self.assertIn('exit "$rc"', test_workflow)
 
         dev_mode_index = test_workflow.index("Sidecar Self-Test (dev mode)")
         packaged_index = test_workflow.index(

@@ -98,7 +98,15 @@ jobs:
 
       - name: Sidecar Self-Test (packaged resource simulation)
         run: |
+          set +e
           bash scripts/e2e/test-packaged-resources.sh
+          rc=$?
+          set -e
+          if [ "$rc" -eq 77 ]; then
+            echo "Packaged resource simulation skipped on this runner (exit 77)"
+            exit 0
+          fi
+          exit "$rc"
 
       - name: Upload test results
         uses: actions/upload-artifact@v4

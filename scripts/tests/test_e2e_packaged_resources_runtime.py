@@ -1,0 +1,153 @@
+import os
+import shutil
+import stat
+import subprocess
+import tempfile
+import textwrap
+import unittest
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SOURCE_SCRIPT = REPO_ROOT / "scripts" / "e2e" / "test-packaged-resources.sh"
+
+
+MOCK_SIDECAR = textwrap.dedent(
+    """\
+    #!/usr/bin/env python3
+    import json
+    import os
+    import sys
+
+
+    def response_payload() -> dict:
+        if os.environ.get("MOCK_BAD_SYSTEM_INFO") == "1":
+            return {"version": "mock"}
+
+        shared_root = os.environ["OPENVOICY_SHARED_ROOT"]
+        return {
+            "resource_paths": {
+                "shared_root": shared_root,
+                "presets": os.path.join(shared_root, "replacements", "PRESETS.json"),
+                "model_manifest": os.path.join(shared_root, "model", "MODEL_MANIFEST.json"),
+                "model_catalog": os.path.join(shared_root, "model", "MODEL_CATALOG.json"),
+                "contracts_dir": os.path.join(shared_root, "contracts"),
+            }
+        }
+
+
+    raw = sys.stdin.read().strip()
+    req = {"id": 1}
+    if raw:
+        req = json.loads(raw.splitlines()[0])
+
+    out = {
+        "jsonrpc": "2.0",
+        "id": req.get("id", 1),
+        "result": response_payload(),
+    }
+    sys.stdout.write(json.dumps(out) + "\\n")
+    sys.stdout.flush()
+    """
+)
+
+
+class PackagedResourcesRuntimeTests(unittest.TestCase):
+    target = "x86_64-unknown-linux-gnu"
+
+    def _build_fixture_project(self) -> Path:
+        root = Path(tempfile.mkdtemp(prefix="packaged-resources-runtime-"))
+        (root / "scripts" / "e2e").mkdir(parents=True, exist_ok=True)
+        (root / "src-tauri" / "binaries").mkdir(parents=True, exist_ok=True)
+        (root / "shared" / "replacements").mkdir(parents=True, exist_ok=True)
+        (root / "shared" / "model" / "manifests").mkdir(parents=True, exist_ok=True)
+        (root / "shared" / "contracts").mkdir(parents=True, exist_ok=True)
+
+        shutil.copy2(SOURCE_SCRIPT, root / "scripts" / "e2e" / "test-packaged-resources.sh")
+
+        sidecar_bin = root / "src-tauri" / "binaries" / f"openvoicy-sidecar-{self.target}"
+        sidecar_bin.write_text(MOCK_SIDECAR, encoding="utf-8")
+        sidecar_bin.chmod(sidecar_bin.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+        (root / "shared" / "replacements" / "PRESETS.json").write_text("{}", encoding="utf-8")
+        (root / "shared" / "model" / "MODEL_MANIFEST.json").write_text("{}", encoding="utf-8")
+        (root / "shared" / "model" / "MODEL_CATALOG.json").write_text("{}", encoding="utf-8")
+        (root / "shared" / "model" / "manifests" / "fixture.json").write_text("{}", encoding="utf-8")
+        (root / "shared" / "contracts" / "tauri.events.v1.json").write_text("{}", encoding="utf-8")
+
+        return root
+
+    def _run_script(
+        self,
+        root: Path,
+        target: str,
+        extra_env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        if extra_env:
+            env.update(extra_env)
+
+        script = root / "scripts" / "e2e" / "test-packaged-resources.sh"
+        return subprocess.run(
+            ["bash", str(script), "--target", target],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+    def test_runtime_pass_path_exits_zero_and_validates_resource_paths(self) -> None:
+        root = self._build_fixture_project()
+        try:
+            completed = self._run_script(root, self.target)
+            self.assertEqual(
+                completed.returncode,
+                0,
+                msg=f"stdout={completed.stdout}\\nstderr={completed.stderr}",
+            )
+            self.assertIn(
+                "system.info resource path validation: OK",
+                completed.stdout + completed.stderr,
+            )
+            self.assertIn("packaged resource smoke test passed", completed.stdout + completed.stderr)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_runtime_invalid_system_info_payload_exits_nonzero(self) -> None:
+        root = self._build_fixture_project()
+        try:
+            completed = self._run_script(
+                root,
+                self.target,
+                extra_env={"MOCK_BAD_SYSTEM_INFO": "1"},
+            )
+            self.assertEqual(
+                completed.returncode,
+                1,
+                msg=f"stdout={completed.stdout}\\nstderr={completed.stderr}",
+            )
+            self.assertIn(
+                "system.info.resource_paths missing",
+                completed.stdout + completed.stderr,
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_runtime_windows_target_returns_skip_77(self) -> None:
+        root = self._build_fixture_project()
+        try:
+            completed = self._run_script(root, "x86_64-pc-windows-msvc")
+            self.assertEqual(
+                completed.returncode,
+                77,
+                msg=f"stdout={completed.stdout}\\nstderr={completed.stderr}",
+            )
+            self.assertIn("[PACKAGED_RESOURCES][SKIP]", completed.stdout + completed.stderr)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

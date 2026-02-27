@@ -84,6 +84,13 @@ class TestWorkflowStructure(unittest.TestCase):
     def test_schema_validation_runs_security_privacy_reference_regression(self) -> None:
         self.assertIn("scripts/tests/test_security_privacy_reference.py", self.text)
 
+    def test_packaged_resource_simulation_step_treats_exit_77_as_skip(self) -> None:
+        self.assertIn("Sidecar Self-Test (packaged resource simulation)", self.text)
+        self.assertIn("bash scripts/e2e/test-packaged-resources.sh", self.text)
+        self.assertIn('if [ "$rc" -eq 77 ]; then', self.text)
+        self.assertIn("Packaged resource simulation skipped on this runner", self.text)
+        self.assertIn('exit "$rc"', self.text)
+
 
 if __name__ == "__main__":
     unittest.main()
