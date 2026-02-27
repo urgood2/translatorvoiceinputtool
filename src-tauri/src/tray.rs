@@ -131,31 +131,6 @@ pub enum TrayMenuEntry {
 
 type SystemTrayMenu = Menu<tauri::Wry>;
 
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TrayRefreshTrigger {
-    StateChange,
-    ExplicitUpdateEvent,
-    PollFallback,
-}
-
-#[cfg(test)]
-fn estimated_reflection_latency_ms(trigger: TrayRefreshTrigger) -> u64 {
-    match trigger {
-        // State broadcasts and explicit tray:update events are handled immediately
-        // in the select loop (subject only to scheduler jitter).
-        TrayRefreshTrigger::StateChange => 0,
-        TrayRefreshTrigger::ExplicitUpdateEvent => 0,
-        // Poll is the fallback path for external changes not carried by events.
-        TrayRefreshTrigger::PollFallback => TRAY_REBUILD_POLL_INTERVAL_MS,
-    }
-}
-
-#[cfg(test)]
-fn satisfies_reflection_target(trigger: TrayRefreshTrigger) -> bool {
-    estimated_reflection_latency_ms(trigger) <= TRAY_REFLECTION_TARGET_MS
-}
-
 fn should_rebuild_menu(last: Option<&TrayMenuState>, current: &TrayMenuState) -> bool {
     match last {
         None => true,
@@ -1486,38 +1461,93 @@ mod tests {
         assert!(should_rebuild_menu(Some(&previous), &current));
     }
 
+    fn assert_menu_rebuild_within_reflection_budget(
+        previous: Option<&TrayMenuState>,
+        current: &TrayMenuState,
+        scenario: &str,
+    ) {
+        assert!(
+            should_rebuild_menu(previous, current),
+            "expected menu rebuild for scenario: {}",
+            scenario
+        );
+
+        let started = std::time::Instant::now();
+        let _menu = build_tray_menu(current);
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        assert!(
+            elapsed_ms <= TRAY_REFLECTION_TARGET_MS,
+            "menu rebuild exceeded {}ms target for {} (actual={}ms)",
+            TRAY_REFLECTION_TARGET_MS,
+            scenario,
+            elapsed_ms
+        );
+    }
+
     #[test]
     fn test_tray_reflection_budget_state_change_within_250ms() {
-        assert!(satisfies_reflection_target(TrayRefreshTrigger::StateChange));
+        let previous = sample_state();
+        let mut current = previous.clone();
+        current.recording = true;
+        assert_menu_rebuild_within_reflection_budget(
+            Some(&previous),
+            &current,
+            "state change",
+        );
     }
 
     #[test]
     fn test_tray_reflection_budget_recording_stop_within_250ms() {
-        // Stop transitions Recording -> Transcribing/Idle via state broadcasts.
-        assert!(satisfies_reflection_target(TrayRefreshTrigger::StateChange));
+        let mut previous = sample_state();
+        previous.recording = true;
+        previous.transcribing = false;
+
+        let mut current = previous.clone();
+        current.recording = false;
+        current.transcribing = true;
+
+        assert_menu_rebuild_within_reflection_budget(
+            Some(&previous),
+            &current,
+            "recording stop transition",
+        );
     }
 
     #[test]
     fn test_tray_reflection_budget_model_status_change_within_250ms() {
-        // Model transitions emit AppState changes (e.g. LoadingModel/Idle/Error).
-        assert!(satisfies_reflection_target(TrayRefreshTrigger::StateChange));
+        let previous = sample_state();
+        let mut current = previous.clone();
+        current.model_status = "loading_model".to_string();
+        assert_menu_rebuild_within_reflection_budget(
+            Some(&previous),
+            &current,
+            "model status change",
+        );
     }
 
     #[test]
     fn test_tray_reflection_budget_enable_toggle_within_250ms() {
-        // Enable toggle updates AppStateManager and emits tray:update explicitly.
-        assert!(satisfies_reflection_target(
-            TrayRefreshTrigger::ExplicitUpdateEvent
-        ));
+        let previous = sample_state();
+        let mut current = previous.clone();
+        current.enabled = !previous.enabled;
+        assert_menu_rebuild_within_reflection_budget(
+            Some(&previous),
+            &current,
+            "explicit update event (enable toggle)",
+        );
     }
 
     #[test]
     fn test_tray_reflection_budget_config_change_within_250ms() {
-        // Config/device changes can rely on explicit tray:update or poll fallback.
-        assert!(satisfies_reflection_target(
-            TrayRefreshTrigger::ExplicitUpdateEvent
-        ));
-        assert!(satisfies_reflection_target(TrayRefreshTrigger::PollFallback));
+        let previous = sample_state();
+        let mut current = previous.clone();
+        current.overlay_enabled = !previous.overlay_enabled;
+        current.current_device = Some("USB Mic".to_string());
+        assert_menu_rebuild_within_reflection_budget(
+            Some(&previous),
+            &current,
+            "config/device change",
+        );
     }
 
     #[test]
