@@ -7,25 +7,37 @@ BUNDLE_SCRIPT = REPO_ROOT / "scripts" / "bundle-sidecar.sh"
 
 
 class BundleSidecarResourceTests(unittest.TestCase):
-    def test_bundle_script_copies_model_catalog_and_manifests(self) -> None:
+    def test_bundle_script_copies_model_contract_and_replacement_resources(self) -> None:
         content = BUNDLE_SCRIPT.read_text()
 
-        self.assertIn("SIDECAR_SHARED_MODEL", content)
+        self.assertIn("PROJECT_SHARED_MODEL", content)
         self.assertIn("TAURI_SHARED_MODEL", content)
+        self.assertIn("PROJECT_SHARED_CONTRACTS", content)
+        self.assertIn("PROJECT_SHARED_REPLACEMENTS", content)
+        self.assertIn("TAURI_SHARED_CONTRACTS", content)
+        self.assertIn("TAURI_SHARED_REPLACEMENTS", content)
         self.assertIn("MODEL_CATALOG.json", content)
         self.assertIn("MODEL_MANIFEST.json", content)
-        self.assertIn("SIDECAR_SHARED_MANIFESTS", content)
+        self.assertIn("PROJECT_SHARED_MANIFESTS", content)
         self.assertIn("TAURI_SHARED_MANIFESTS", content)
         self.assertIn(
-            "cp \"$SIDECAR_SHARED_MODEL/MODEL_CATALOG.json\" \"$TAURI_SHARED_MODEL/MODEL_CATALOG.json\"",
+            "cp \"$PROJECT_SHARED_MODEL/MODEL_CATALOG.json\" \"$TAURI_SHARED_MODEL/MODEL_CATALOG.json\"",
             content,
         )
         self.assertIn(
-            "cp \"$SIDECAR_SHARED_MODEL/MODEL_MANIFEST.json\" \"$TAURI_SHARED_MODEL/MODEL_MANIFEST.json\"",
+            "cp \"$PROJECT_SHARED_MODEL/MODEL_MANIFEST.json\" \"$TAURI_SHARED_MODEL/MODEL_MANIFEST.json\"",
             content,
         )
         self.assertIn(
-            "cp \"$SIDECAR_SHARED_MANIFESTS\"/*.json \"$TAURI_SHARED_MANIFESTS/\"",
+            "cp \"$PROJECT_SHARED_MANIFESTS\"/*.json \"$TAURI_SHARED_MANIFESTS/\"",
+            content,
+        )
+        self.assertIn(
+            "cp -R \"$PROJECT_SHARED_CONTRACTS\" \"$TAURI_SHARED_CONTRACTS\"",
+            content,
+        )
+        self.assertIn(
+            "cp -R \"$PROJECT_SHARED_REPLACEMENTS\" \"$TAURI_SHARED_REPLACEMENTS\"",
             content,
         )
         self.assertIn("--smoke-test", content)

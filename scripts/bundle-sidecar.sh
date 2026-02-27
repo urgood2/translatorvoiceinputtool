@@ -25,10 +25,16 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Directories
 SIDECAR_DIST="$PROJECT_ROOT/sidecar/dist"
 TAURI_BINARIES="$PROJECT_ROOT/src-tauri/binaries"
-SIDECAR_SHARED_MODEL="$SIDECAR_DIST/shared/model"
-SIDECAR_SHARED_MANIFESTS="$SIDECAR_SHARED_MODEL/manifests"
-TAURI_SHARED_MODEL="$TAURI_BINARIES/shared/model"
+PROJECT_SHARED_ROOT="$PROJECT_ROOT/shared"
+PROJECT_SHARED_MODEL="$PROJECT_SHARED_ROOT/model"
+PROJECT_SHARED_MANIFESTS="$PROJECT_SHARED_MODEL/manifests"
+PROJECT_SHARED_CONTRACTS="$PROJECT_SHARED_ROOT/contracts"
+PROJECT_SHARED_REPLACEMENTS="$PROJECT_SHARED_ROOT/replacements"
+TAURI_SHARED_ROOT="$TAURI_BINARIES/shared"
+TAURI_SHARED_MODEL="$TAURI_SHARED_ROOT/model"
 TAURI_SHARED_MANIFESTS="$TAURI_SHARED_MODEL/manifests"
+TAURI_SHARED_CONTRACTS="$TAURI_SHARED_ROOT/contracts"
+TAURI_SHARED_REPLACEMENTS="$TAURI_SHARED_ROOT/replacements"
 
 # Binary names
 SIDECAR_NAME="openvoicy-sidecar"
@@ -171,24 +177,40 @@ main() {
         log_error "Run ./scripts/build-sidecar.sh first"
         exit 1
     fi
-    if [[ ! -f "$SIDECAR_SHARED_MODEL/MODEL_CATALOG.json" ]]; then
-        log_error "Model catalog not found: $SIDECAR_SHARED_MODEL/MODEL_CATALOG.json"
+    if [[ ! -f "$PROJECT_SHARED_MODEL/MODEL_CATALOG.json" ]]; then
+        log_error "Model catalog not found: $PROJECT_SHARED_MODEL/MODEL_CATALOG.json"
         log_error "Run ./scripts/build-sidecar.sh first"
         exit 1
     fi
-    if [[ ! -f "$SIDECAR_SHARED_MODEL/MODEL_MANIFEST.json" ]]; then
-        log_error "Model manifest not found: $SIDECAR_SHARED_MODEL/MODEL_MANIFEST.json"
+    if [[ ! -f "$PROJECT_SHARED_MODEL/MODEL_MANIFEST.json" ]]; then
+        log_error "Model manifest not found: $PROJECT_SHARED_MODEL/MODEL_MANIFEST.json"
         log_error "Run ./scripts/build-sidecar.sh first"
         exit 1
     fi
-    if [[ ! -d "$SIDECAR_SHARED_MANIFESTS" ]]; then
-        log_error "Model manifests directory not found: $SIDECAR_SHARED_MANIFESTS"
+    if [[ ! -d "$PROJECT_SHARED_MANIFESTS" ]]; then
+        log_error "Model manifests directory not found: $PROJECT_SHARED_MANIFESTS"
         log_error "Run ./scripts/build-sidecar.sh first"
         exit 1
     fi
-    if ! compgen -G "$SIDECAR_SHARED_MANIFESTS/*.json" >/dev/null; then
-        log_error "No model manifest JSON files found in: $SIDECAR_SHARED_MANIFESTS"
+    if ! compgen -G "$PROJECT_SHARED_MANIFESTS/*.json" >/dev/null; then
+        log_error "No model manifest JSON files found in: $PROJECT_SHARED_MANIFESTS"
         log_error "Run ./scripts/build-sidecar.sh first"
+        exit 1
+    fi
+    if [[ ! -d "$PROJECT_SHARED_CONTRACTS" ]]; then
+        log_error "Contracts directory not found: $PROJECT_SHARED_CONTRACTS"
+        exit 1
+    fi
+    if ! find "$PROJECT_SHARED_CONTRACTS" -type f | grep -q .; then
+        log_error "No contract files found in: $PROJECT_SHARED_CONTRACTS"
+        exit 1
+    fi
+    if [[ ! -d "$PROJECT_SHARED_REPLACEMENTS" ]]; then
+        log_error "Replacements directory not found: $PROJECT_SHARED_REPLACEMENTS"
+        exit 1
+    fi
+    if [[ ! -f "$PROJECT_SHARED_REPLACEMENTS/PRESETS.json" ]]; then
+        log_error "Preset file not found: $PROJECT_SHARED_REPLACEMENTS/PRESETS.json"
         exit 1
     fi
 
@@ -209,11 +231,14 @@ main() {
         chmod +x "$dest_bin"
     fi
 
-    # Copy model resources staged by build-sidecar.
-    log_step "Copying model resources..."
-    cp "$SIDECAR_SHARED_MODEL/MODEL_CATALOG.json" "$TAURI_SHARED_MODEL/MODEL_CATALOG.json"
-    cp "$SIDECAR_SHARED_MODEL/MODEL_MANIFEST.json" "$TAURI_SHARED_MODEL/MODEL_MANIFEST.json"
-    cp "$SIDECAR_SHARED_MANIFESTS"/*.json "$TAURI_SHARED_MANIFESTS/"
+    # Copy canonical shared resources for packaged runtime resolution.
+    log_step "Copying shared resources..."
+    rm -rf "$TAURI_SHARED_CONTRACTS" "$TAURI_SHARED_REPLACEMENTS"
+    cp "$PROJECT_SHARED_MODEL/MODEL_CATALOG.json" "$TAURI_SHARED_MODEL/MODEL_CATALOG.json"
+    cp "$PROJECT_SHARED_MODEL/MODEL_MANIFEST.json" "$TAURI_SHARED_MODEL/MODEL_MANIFEST.json"
+    cp "$PROJECT_SHARED_MANIFESTS"/*.json "$TAURI_SHARED_MANIFESTS/"
+    cp -R "$PROJECT_SHARED_CONTRACTS" "$TAURI_SHARED_CONTRACTS"
+    cp -R "$PROJECT_SHARED_REPLACEMENTS" "$TAURI_SHARED_REPLACEMENTS"
 
     # Verify copy
     log_step "Verifying..."
@@ -239,6 +264,18 @@ main() {
     fi
     if ! compgen -G "$TAURI_SHARED_MANIFESTS/*.json" >/dev/null; then
         log_error "No copied model manifests found in: $TAURI_SHARED_MANIFESTS"
+        exit 1
+    fi
+    if [[ ! -d "$TAURI_SHARED_CONTRACTS" ]]; then
+        log_error "contracts directory missing after copy"
+        exit 1
+    fi
+    if ! find "$TAURI_SHARED_CONTRACTS" -type f | grep -q .; then
+        log_error "No copied contract files found in: $TAURI_SHARED_CONTRACTS"
+        exit 1
+    fi
+    if [[ ! -f "$TAURI_SHARED_REPLACEMENTS/PRESETS.json" ]]; then
+        log_error "PRESETS.json missing after copy"
         exit 1
     fi
 
