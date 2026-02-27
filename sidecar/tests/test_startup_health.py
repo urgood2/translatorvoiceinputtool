@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -40,6 +41,13 @@ def run_sidecar() -> Any:
             env={**dict(os.environ), "PYTHONPATH": str(src_path)},
             timeout=timeout,
         )
+        if proc.returncode != 0:
+            raise AssertionError(
+                "sidecar subprocess exited non-zero "
+                f"(returncode={proc.returncode})\n"
+                f"stdout:\n{proc.stdout}\n"
+                f"stderr:\n{proc.stderr}"
+            )
         responses = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
         stderr_lines = [line for line in proc.stderr.splitlines() if line.strip()]
         return responses, stderr_lines
@@ -63,6 +71,26 @@ def _assert_startup_status_shape(result: dict[str, Any]) -> None:
     if "model" in result and result["model"] is not None:
         assert isinstance(result["model"]["model_id"], str)
         assert result["model"]["status"] in {"ready", "loading", "error"}
+
+
+def _assert_system_info_contract(result: dict[str, Any]) -> None:
+    capabilities = result.get("capabilities")
+    assert isinstance(capabilities, list)
+    assert capabilities, "system.info capabilities must be non-empty"
+    assert all(isinstance(capability, str) and capability for capability in capabilities)
+
+    runtime = result.get("runtime")
+    assert isinstance(runtime, dict)
+    python_version = runtime.get("python_version")
+    platform_value = runtime.get("platform")
+    assert isinstance(python_version, str)
+    assert re.match(r"^\d+\.\d+\.\d+$", python_version), (
+        "runtime.python_version must be strict X.Y.Z"
+    )
+    assert platform_value in {"win32", "darwin", "linux"}, (
+        "runtime.platform must be one of win32|darwin|linux"
+    )
+    assert isinstance(runtime.get("cuda_available"), bool)
 
 
 def _run_startup_sequence(
@@ -111,11 +139,8 @@ def test_startup_info_fields(run_sidecar: Any) -> None:
     elapsed_ms = _response_time_ms(start)
     assert len(responses) == 1
     result = responses[0]["result"]
-    assert isinstance(result["capabilities"], list)
+    _assert_system_info_contract(result)
     runtime = result["runtime"]
-    assert isinstance(runtime["python_version"], str)
-    assert isinstance(runtime["platform"], str)
-    assert isinstance(runtime["cuda_available"], bool)
     _log(
         "Response: "
         f"capabilities={result['capabilities']}, "
@@ -124,6 +149,61 @@ def test_startup_info_fields(run_sidecar: Any) -> None:
         f"cuda={runtime['cuda_available']} "
         f"({elapsed_ms:.2f}ms) ✓"
     )
+
+
+def test_system_info_contract_rejects_invalid_python_version() -> None:
+    result = {
+        "capabilities": ["asr"],
+        "runtime": {
+            "python_version": "3.11",
+            "platform": "linux",
+            "cuda_available": False,
+        },
+    }
+    with pytest.raises(AssertionError):
+        _assert_system_info_contract(result)
+
+
+def test_system_info_contract_rejects_invalid_platform_enum() -> None:
+    result = {
+        "capabilities": ["asr"],
+        "runtime": {
+            "python_version": "3.11.2",
+            "platform": "linux2",
+            "cuda_available": False,
+        },
+    }
+    with pytest.raises(AssertionError):
+        _assert_system_info_contract(result)
+
+
+def test_system_info_contract_rejects_empty_capabilities() -> None:
+    result = {
+        "capabilities": [],
+        "runtime": {
+            "python_version": "3.11.2",
+            "platform": "linux",
+            "cuda_available": False,
+        },
+    }
+    with pytest.raises(AssertionError):
+        _assert_system_info_contract(result)
+
+
+def test_run_sidecar_fixture_rejects_non_zero_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+    run_sidecar: Any,
+) -> None:
+    proc = SimpleNamespace(
+        returncode=3,
+        stdout='{"jsonrpc":"2.0","id":1,"result":{"protocol":"v1"}}\n',
+        stderr="fatal startup error",
+    )
+
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: proc)
+
+    with pytest.raises(AssertionError, match=r"exited non-zero \(returncode=3\)"):
+        run_sidecar(['{"jsonrpc":"2.0","id":1,"method":"system.ping"}'], timeout=1.0)
 
 
 def test_startup_status_get(run_sidecar: Any) -> None:
