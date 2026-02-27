@@ -1,7 +1,7 @@
 //! Transcript history ring buffer.
 //!
 //! Stores recent transcriptions in memory for quick access via tray menu
-//! or UI. Privacy by default: no disk persistence, cleared on app quit.
+//! or UI, with optional persistence backend injected at startup.
 
 #![allow(dead_code)] // Module under construction
 

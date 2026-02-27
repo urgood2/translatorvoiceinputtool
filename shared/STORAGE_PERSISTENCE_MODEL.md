@@ -14,8 +14,12 @@ Use this before changing config handling, model cache behavior, transcript histo
 - Install path is model-id scoped so cache operations are atomic per model.
 
 3. Transcript history
-- Default (current): in-memory ring buffer (`history.rs`) sized by `history.max_entries`. No disk persistence; cleared on app quit.
-- Planned: encrypted JSONL disk persistence when `history.persistence_mode="disk"` is explicitly enabled. Config fields (`persistence_mode`, `encrypt_at_rest`) are validated at load time but the disk write path is **not yet implemented**.
+- Runtime wiring (current): startup builds a history backend via `build_history_persistence(...)` and passes it to `TranscriptHistory::with_capacity_and_persistence(...)` using `config_dir()/history.jsonl`.
+- Default mode: memory-only persistence (`history.persistence_mode != "disk"`), so history stays in the in-memory ring buffer and is cleared on app quit.
+- Disk mode: `history.persistence_mode="disk"` enables JSONL persistence.
+- Encryption gate:
+  - `history.encrypt_at_rest=false` writes plaintext JSONL to disk (explicit opt-in, warning logged).
+  - `history.encrypt_at_rest=true` requires keychain availability; if unavailable, runtime falls back to memory-only persistence for privacy.
 
 4. Embedded packaged assets
 - Presets, manifests, and contracts ship inside app/sidecar package artifacts.
