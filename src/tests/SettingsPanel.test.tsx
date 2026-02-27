@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MicrophoneSelect } from '../components/Settings/MicrophoneSelect';
 import { HotkeyConfig } from '../components/Settings/HotkeyConfig';
 import { InjectionSettings } from '../components/Settings/InjectionSettings';
@@ -98,6 +98,7 @@ describe('MicrophoneSelect', () => {
 
   it('calls onDeviceChange when selection changes', async () => {
     const onDeviceChange = vi.fn().mockResolvedValue(undefined);
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     render(
       <MicrophoneSelect
         devices={mockDevices}
@@ -111,7 +112,19 @@ describe('MicrophoneSelect', () => {
     const select = screen.getByRole('combobox');
     fireEvent.change(select, { target: { value: 'device-2' } });
 
-    expect(onDeviceChange).toHaveBeenCalledWith('device-2');
+    await waitFor(() => {
+      expect(onDeviceChange).toHaveBeenCalledWith('device-2');
+    });
+    await waitFor(() => {
+      expect(select).not.toBeDisabled();
+    });
+    expect(screen.queryByText('Switching device...')).toBeNull();
+    expect(
+      consoleErrorSpy.mock.calls.some(([message]) =>
+        String(message).includes('not wrapped in act')
+      )
+    ).toBe(false);
+    consoleErrorSpy.mockRestore();
   });
 
   it('shows audio cues toggle', () => {
@@ -127,7 +140,7 @@ describe('MicrophoneSelect', () => {
     expect(screen.getByText('Audio Cues')).toBeDefined();
   });
 
-  it('toggles audio cues', () => {
+  it('toggles audio cues', async () => {
     const onAudioCuesChange = vi.fn().mockResolvedValue(undefined);
     render(
       <MicrophoneSelect
@@ -142,7 +155,9 @@ describe('MicrophoneSelect', () => {
     const toggle = screen.getByRole('switch');
     fireEvent.click(toggle);
 
-    expect(onAudioCuesChange).toHaveBeenCalledWith(false);
+    await waitFor(() => {
+      expect(onAudioCuesChange).toHaveBeenCalledWith(false);
+    });
   });
 
   it('shows empty state when no devices', () => {
