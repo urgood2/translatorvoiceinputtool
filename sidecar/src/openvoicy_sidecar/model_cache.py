@@ -1308,6 +1308,7 @@ def get_cache_manager() -> ModelCacheManager:
 _install_lock = threading.Lock()
 _install_thread: Optional[threading.Thread] = None
 _install_model_id: Optional[str] = None
+_install_revision: Optional[str] = None
 
 
 def _normalize_model_id(model_id: str) -> str:
@@ -1529,7 +1530,7 @@ def _completed_progress_for_manifest(
 
 
 def _run_model_install(manager: ModelCacheManager, manifest: ModelManifest) -> None:
-    global _install_thread, _install_model_id
+    global _install_thread, _install_model_id, _install_revision
     progress_emitter = _ModelProgressEmitter(manifest.model_id)
     try:
         progress_emitter.emit(
@@ -1560,6 +1561,7 @@ def _run_model_install(manager: ModelCacheManager, manifest: ModelManifest) -> N
         with _install_lock:
             _install_thread = None
             _install_model_id = None
+            _install_revision = None
 
 
 # === JSON-RPC Handlers ===
@@ -1628,7 +1630,7 @@ def handle_model_install(request: Request) -> dict[str, Any]:
 
     Starts model install in the background and returns immediately.
     """
-    global _install_thread, _install_model_id
+    global _install_thread, _install_model_id, _install_revision
 
     model_id = request.params.get("model_id")
     if not isinstance(model_id, str) or not model_id.strip():
@@ -1640,14 +1642,30 @@ def handle_model_install(request: Request) -> dict[str, Any]:
 
     with _install_lock:
         if _install_thread is not None and _install_thread.is_alive():
+            active_model_id = _install_model_id or manifest.model_id
+            active_revision = _install_revision
+            if active_revision is None:
+                same_model_request = _normalize_model_id(active_model_id) == _normalize_model_id(
+                    manifest.model_id
+                )
+                if same_model_request:
+                    active_revision = manifest.revision
+                else:
+                    try:
+                        active_manifest_path = _resolve_manifest_path_for_model(active_model_id)
+                        active_manifest = manager.load_manifest(active_manifest_path)
+                        active_revision = active_manifest.revision
+                    except Exception:
+                        active_revision = "unknown"
             return {
-                "model_id": _install_model_id or manifest.model_id,
-                "revision": manifest.revision,
+                "model_id": active_model_id,
+                "revision": active_revision,
                 "status": "installing",
                 "progress": manager.progress.to_dict(),
             }
 
         _install_model_id = manifest.model_id
+        _install_revision = manifest.revision
         _install_thread = threading.Thread(
             target=_run_model_install,
             args=(manager, manifest),

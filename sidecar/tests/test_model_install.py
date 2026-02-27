@@ -401,6 +401,7 @@ class TestConcurrentInstalls:
             ):
                 model_cache._install_thread = _AliveThread()
                 model_cache._install_model_id = manifest.model_id
+                model_cache._install_revision = manifest.revision
 
                 result = handle_model_install(
                     Request(
@@ -412,6 +413,7 @@ class TestConcurrentInstalls:
         finally:
             model_cache._install_thread = None
             model_cache._install_model_id = None
+            model_cache._install_revision = None
 
         assert result["status"] == "installing"
         assert result["model_id"] == manifest.model_id

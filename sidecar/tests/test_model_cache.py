@@ -1209,9 +1209,11 @@ class TestModelInstallHandler:
     def _reset_install_globals(self):
         model_cache._install_thread = None
         model_cache._install_model_id = None
+        model_cache._install_revision = None
         yield
         model_cache._install_thread = None
         model_cache._install_model_id = None
+        model_cache._install_revision = None
 
     def test_requires_model_id(self):
         request = Request(method="model.install", id=1, params={})
@@ -1275,6 +1277,7 @@ class TestModelInstallHandler:
             # Ensure deterministic global state for this test.
             model_cache._install_thread = None
             model_cache._install_model_id = None
+            model_cache._install_revision = None
 
             request = Request(
                 method="model.install",
@@ -1314,6 +1317,7 @@ class TestModelInstallHandler:
         ):
             model_cache._install_thread = _AliveThread()
             model_cache._install_model_id = "parakeet-tdt-0.6b-v3"
+            model_cache._install_revision = "rev-2"
 
             request = Request(
                 method="model.install",
@@ -1326,6 +1330,48 @@ class TestModelInstallHandler:
         assert result["model_id"] == "parakeet-tdt-0.6b-v3"
         assert "progress" in result
         assert result["progress"]["current"] == 42
+
+    def test_idempotent_when_different_model_requested_returns_active_install_metadata(self):
+        requested_manifest = ModelManifest(
+            model_id="other-model",
+            revision="rev-other",
+            display_name="Other Model",
+            total_size_bytes=321,
+            files=[],
+        )
+        manager = MagicMock()
+        manager.load_manifest.return_value = requested_manifest
+        manager.progress.to_dict.return_value = {
+            "current": 42,
+            "total": 321,
+            "unit": "bytes",
+            "current_file": "model.nemo",
+            "files_completed": 0,
+            "files_total": 1,
+        }
+
+        with (
+            patch(
+                "openvoicy_sidecar.model_cache._resolve_manifest_path_for_model",
+                return_value=Path("/tmp/manifest.json"),
+            ),
+            patch("openvoicy_sidecar.model_cache.get_cache_manager", return_value=manager),
+        ):
+            model_cache._install_thread = _AliveThread()
+            model_cache._install_model_id = "parakeet-tdt-0.6b-v3"
+            model_cache._install_revision = "rev-active"
+
+            request = Request(
+                method="model.install",
+                id=3,
+                params={"model_id": "nvidia/other-model"},
+            )
+            result = handle_model_install(request)
+
+        assert result["status"] == "installing"
+        assert result["model_id"] == "parakeet-tdt-0.6b-v3"
+        assert result["revision"] == "rev-active"
+        assert "progress" in result
 
 
 class TestModelProgressEmitter:
