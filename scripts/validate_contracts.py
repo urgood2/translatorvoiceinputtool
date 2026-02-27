@@ -1222,14 +1222,29 @@ def validate_instance_against_schema(
     return errors
 
 
-def parse_jsonl(path: Path) -> list[tuple[int, dict[str, Any]]]:
+def parse_jsonl(path: Path) -> tuple[list[tuple[int, dict[str, Any]]], list[str]]:
     rows: list[tuple[int, dict[str, Any]]] = []
+    errors: list[str] = []
     for idx, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         line = raw.strip()
         if not line:
             continue
-        rows.append((idx, json.loads(line)))
-    return rows
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            errors.append(
+                "shared/ipc/examples/IPC_V1_EXAMPLES.jsonl:"
+                f"{idx}: invalid JSON object line ({exc.msg})"
+            )
+            continue
+        if not isinstance(payload, dict):
+            errors.append(
+                "shared/ipc/examples/IPC_V1_EXAMPLES.jsonl:"
+                f"{idx}: expected JSON object per line"
+            )
+            continue
+        rows.append((idx, payload))
+    return rows, errors
 
 
 def infer_method_for_response(
@@ -1344,7 +1359,9 @@ def validate_sidecar_examples_against_contract(repo_root: Path, sidecar_contract
 
     methods, notifications, required_methods = sidecar_contract_maps(sidecar_contract)
     known_methods = set(methods.keys())
-    rows = parse_jsonl(examples_file)
+    rows, parse_errors = parse_jsonl(examples_file)
+    if parse_errors:
+        return parse_errors
 
     request_method_by_id: dict[Any, str] = {}
     seen_request_methods: set[str] = set()

@@ -679,6 +679,40 @@ listen('sidecar:status', () => {});
             self.assertTrue(any("unknown request method 'status.get_typo'" in err for err in errors))
             self.assertTrue(any("unknown notification method 'status.changed_typo'" in err for err in errors))
 
+    def test_validate_sidecar_examples_reports_structured_error_for_malformed_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            examples_path = root / "shared" / "ipc" / "examples" / "IPC_V1_EXAMPLES.jsonl"
+            examples_path.parent.mkdir(parents=True, exist_ok=True)
+            examples_path.write_text('{"type":"request","data": {"jsonrpc":"2.0"}\n', encoding="utf-8")
+
+            sidecar_contract = {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "items": [],
+            }
+
+            errors = MODULE.validate_sidecar_examples_against_contract(root, sidecar_contract)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("invalid JSON object line", errors[0])
+            self.assertIn("IPC_V1_EXAMPLES.jsonl:1:", errors[0])
+
+    def test_validate_sidecar_examples_reports_structured_error_for_non_object_jsonl_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            examples_path = root / "shared" / "ipc" / "examples" / "IPC_V1_EXAMPLES.jsonl"
+            examples_path.parent.mkdir(parents=True, exist_ok=True)
+            examples_path.write_text('"just-a-string"\n', encoding="utf-8")
+
+            sidecar_contract = {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "items": [],
+            }
+
+            errors = MODULE.validate_sidecar_examples_against_contract(root, sidecar_contract)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("expected JSON object per line", errors[0])
+            self.assertIn("IPC_V1_EXAMPLES.jsonl:1:", errors[0])
+
     def test_validate_sidecar_handler_dispatch_accepts_required_methods_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

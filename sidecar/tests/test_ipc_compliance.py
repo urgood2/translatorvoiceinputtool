@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -64,6 +65,12 @@ from openvoicy_sidecar.server import (
 CONTRACT_PATH = (
     Path(__file__).resolve().parents[2] / "shared" / "contracts" / "sidecar.rpc.v1.json"
 )
+
+# Keep subprocess timeout above cold-start budget to avoid masking SLA failures
+# as subprocess.TimeoutExpired exceptions.
+PING_COLD_BUDGET_SECONDS = 12.0
+PING_WARM_BUDGET_SECONDS = 1.0
+PING_SUBPROCESS_TIMEOUT_SECONDS = 15.0
 
 
 def _log(message: str) -> None:
@@ -478,13 +485,21 @@ def test_system_ping_handler_shape() -> None:
 
 def test_system_ping_ipc_roundtrip_latency(run_sidecar: Any) -> None:
     """Regression (36ka): validate real JSON-RPC ping path latency budget."""
-    _log("Testing system.ping subprocess IPC round-trip latency")
-    request = '{"jsonrpc":"2.0","id":1,"method":"system.ping"}'
+    _log("Testing system.ping latency budgets (cold startup envelope + warmed in-process SLA)")
+    request_cold = '{"jsonrpc":"2.0","id":1,"method":"system.ping"}'
+    request_warm = '{"jsonrpc":"2.0","id":2,"method":"system.ping"}'
     shutdown = '{"jsonrpc":"2.0","id":99,"method":"system.shutdown","params":{"reason":"compliance-test"}}'
+    assert PING_SUBPROCESS_TIMEOUT_SECONDS > PING_COLD_BUDGET_SECONDS, (
+        "system.ping subprocess timeout must exceed cold-start budget to avoid TimeoutExpired "
+        "masking explicit SLA assertions"
+    )
 
-    def _measure_roundtrip() -> float:
+    # Cold-start envelope: process startup + ping + shutdown.
+    def _measure_cold_start_roundtrip() -> float:
         start = time.perf_counter()
-        responses, _, exit_code = run_sidecar([request, shutdown], timeout=10.0)
+        responses, _, exit_code = run_sidecar(
+            [request_cold, shutdown], timeout=PING_SUBPROCESS_TIMEOUT_SECONDS
+        )
         elapsed = time.perf_counter() - start
 
         ping_response = next((response for response in responses if response.get("id") == 1), None)
@@ -495,19 +510,98 @@ def test_system_ping_ipc_roundtrip_latency(run_sidecar: Any) -> None:
         assert exit_code == 0, f"Sidecar should exit cleanly after shutdown, got {exit_code}"
         return elapsed
 
-    cold_elapsed = _measure_roundtrip()
-    warmed_elapsed = _measure_roundtrip()
+    # Warmed SLA: send multiple ping requests in one running sidecar process.
+    src_path = Path(__file__).parent.parent / "src"
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "openvoicy_sidecar"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(src_path.parent),
+        env={**dict(os.environ), "PYTHONPATH": str(src_path)},
+    )
+    assert proc.stdin is not None and proc.stdout is not None
 
-    # Cold starts can be noisy under CI load; steady-state should stay fast.
-    assert cold_elapsed < 12.0, (
+    response_lines: queue.Queue[str] = queue.Queue()
+    stop_reader = threading.Event()
+
+    def _stdout_reader() -> None:
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            line = raw.strip()
+            if line:
+                response_lines.put(line)
+            if stop_reader.is_set():
+                break
+
+    reader = threading.Thread(target=_stdout_reader, daemon=True)
+    reader.start()
+
+    def _send_and_wait(
+        request_line: str,
+        request_id: int,
+        timeout: float,
+        expected_status: str | None = None,
+    ) -> float:
+        start = time.perf_counter()
+        proc.stdin.write(request_line + "\n")
+        proc.stdin.flush()
+
+        deadline = start + timeout
+        while time.perf_counter() < deadline:
+            remaining = max(0.01, deadline - time.perf_counter())
+            try:
+                line = response_lines.get(timeout=min(0.1, remaining))
+            except queue.Empty:
+                continue
+
+            payload = json.loads(line)
+            if payload.get("id") != request_id:
+                continue
+            assert "result" in payload, f"Request id={request_id} must return result payload"
+            if expected_status is None:
+                assert isinstance(payload["result"]["version"], str)
+                assert payload["result"]["protocol"] == "v1"
+            else:
+                assert payload["result"]["status"] == expected_status
+            return time.perf_counter() - start
+
+        raise AssertionError(f"Timed out waiting for system.ping response id={request_id}")
+
+    cold_elapsed = _measure_cold_start_roundtrip()
+    warm_first_elapsed = _send_and_wait(request_cold, 1, timeout=PING_SUBPROCESS_TIMEOUT_SECONDS)
+    warmed_elapsed = _send_and_wait(request_warm, 2, timeout=PING_SUBPROCESS_TIMEOUT_SECONDS)
+    _send_and_wait(
+        shutdown,
+        99,
+        timeout=PING_SUBPROCESS_TIMEOUT_SECONDS,
+        expected_status="shutting_down",
+    )
+    assert proc.wait(timeout=PING_SUBPROCESS_TIMEOUT_SECONDS) == 0
+
+    stop_reader.set()
+    reader.join(timeout=1.0)
+
+    # Cold starts can be noisy under CI load; warmed in-process ping must meet protocol SLA.
+    assert cold_elapsed < PING_COLD_BUDGET_SECONDS, (
         "system.ping cold-start IPC round-trip exceeded budget: "
         f"{cold_elapsed:.3f}s"
     )
-    assert warmed_elapsed < 5.0, (
-        "system.ping warmed IPC round-trip exceeded budget: "
+    assert warmed_elapsed < PING_WARM_BUDGET_SECONDS, (
+        "system.ping warmed in-process latency exceeded protocol SLA: "
         f"{warmed_elapsed:.3f}s"
     )
-    _log("Assertion: system.ping subprocess IPC round-trip latency -> PASS")
+    _log(
+        "Assertion: system.ping latency budgets -> PASS "
+        f"(cold={cold_elapsed:.3f}s, warm1={warm_first_elapsed:.3f}s, warm2={warmed_elapsed:.3f}s)"
+    )
+
+
+def test_system_ping_latency_timeout_budget_invariant() -> None:
+    """Regression: timeout headroom must remain above cold/warmed latency budgets."""
+    assert PING_SUBPROCESS_TIMEOUT_SECONDS > PING_COLD_BUDGET_SECONDS
+    assert PING_COLD_BUDGET_SECONDS > PING_WARM_BUDGET_SECONDS
 
 
 def test_system_info_required_runtime_fields() -> None:

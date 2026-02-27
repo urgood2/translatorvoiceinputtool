@@ -112,7 +112,8 @@ def validate_fixture_category(
     if not expected_fixture.exists():
         errors.append("missing canonical fixture source: shared/ipc/examples/IPC_V1_EXAMPLES.jsonl")
     else:
-        rows = vc.parse_jsonl(expected_fixture)
+        rows, parse_errors = vc.parse_jsonl(expected_fixture)
+        errors.extend(parse_errors)
         line_count = len(rows)
         summaries.append(f"IPC_V1_EXAMPLES.jsonl: {line_count} entries scanned")
 
