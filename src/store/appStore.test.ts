@@ -549,6 +549,23 @@ describe('Model Actions', () => {
     expect(useAppStore.getState().modelStatus).toEqual(status);
   });
 
+  test('purgeModelCache forwards targeted modelId to backend', async () => {
+    const status = createMockModelStatus({ status: 'not_downloaded' });
+
+    setMockInvokeHandler((cmd) => {
+      if (cmd === 'purge_model_cache') return undefined;
+      if (cmd === 'get_model_status') return status;
+      return undefined;
+    });
+
+    await useAppStore.getState().purgeModelCache('openai/whisper-small');
+
+    expect(invoke).toHaveBeenCalledWith('purge_model_cache', {
+      modelId: 'openai/whisper-small',
+    });
+    expect(useAppStore.getState().modelStatus).toEqual(status);
+  });
+
   test('restartSidecar invokes restart command', async () => {
     setMockInvokeHandler((cmd) => {
       if (cmd === 'restart_sidecar') return undefined;

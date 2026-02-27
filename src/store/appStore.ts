@@ -113,7 +113,7 @@ export interface AppStoreActions {
   // Model actions
   refreshModelStatus: () => Promise<void>;
   downloadModel: () => Promise<void>;
-  purgeModelCache: () => Promise<void>;
+  purgeModelCache: (modelId?: string) => Promise<void>;
 
   // History actions
   refreshHistory: () => Promise<void>;
@@ -652,9 +652,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  purgeModelCache: async () => {
+  purgeModelCache: async (modelId?: string) => {
     try {
-      await invoke('purge_model_cache');
+      const trimmedModelId = typeof modelId === 'string' ? modelId.trim() : '';
+      if (trimmedModelId.length > 0) {
+        await invoke('purge_model_cache', { modelId: trimmedModelId });
+      } else {
+        await invoke('purge_model_cache');
+      }
       await get().refreshModelStatus();
     } catch (error) {
       console.error('Failed to purge model cache:', error);

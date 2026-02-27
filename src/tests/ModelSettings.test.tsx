@@ -212,7 +212,7 @@ describe('ModelSettings', () => {
       fireEvent.click(screen.getByText('Yes, Delete'));
     });
 
-    expect(onPurgeCache).toHaveBeenCalled();
+    expect(onPurgeCache).toHaveBeenCalledWith('parakeet-tdt-0.6b-v3');
   });
 
   it('cancels purge confirmation', () => {

@@ -15,7 +15,7 @@ import type { AppConfig, ModelCatalogEntry, ModelStatus, ModelState, Progress } 
 interface ModelSettingsProps {
   status: ModelStatus | null;
   onDownload: () => Promise<void>;
-  onPurgeCache: () => Promise<void>;
+  onPurgeCache: (modelId?: string) => Promise<void>;
   onSelectModel?: (modelId: string) => Promise<void>;
   isLoading?: boolean;
 }
@@ -303,8 +303,14 @@ export function ModelSettings({
     setError(null);
     setShowPurgeConfirm(false);
     setActionInProgress('purge');
+    const purgeModelId = activeModelId ?? status?.model_id ?? null;
+    if (!purgeModelId || purgeModelId.trim().length === 0) {
+      setError('Failed to purge cache: no model selected');
+      setActionInProgress(null);
+      return;
+    }
     try {
-      await onPurgeCache();
+      await onPurgeCache(purgeModelId);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to purge cache');
     } finally {
