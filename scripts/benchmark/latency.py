@@ -5,7 +5,17 @@ This benchmark targets the phase-0 success metric:
   median(stop->injection) < 1200ms after model warm-up.
 
 It runs recording.start/stop cycles against the sidecar using synthetic
-1-3 second tones, captures per-run timings (T0..T4), and prints a summary.
+1-3 second tones, captures per-run timings (T0..T3), and prints a summary.
+
+Timing phases (all measured from real sidecar round-trips):
+  T0  recording.stop request sent
+  T1  recording.stop response received          -> ipc_ms
+  T2  event.transcription_complete notification  -> transcribe_ms
+  T3  replacements.preview response              -> postprocess_ms
+
+Host injection (T3->clipboard paste) cannot be measured from the sidecar
+benchmark; an --inject-budget-ms constant is added to measured_ms for
+projected comparison against the target threshold.
 
 Exit codes:
   0   success (or informational-only failure in CI mode)
@@ -100,14 +110,14 @@ class RunTimings:
     ipc_ms: int
     transcribe_ms: int
     postprocess_ms: int
-    inject_ms: int
-    total_ms: int
+    measured_ms: int
+    inject_budget_ms: int
+    projected_total_ms: int
     text_preview: str
     t0_iso: str
     t1_iso: str
     t2_iso: str
     t3_iso: str
-    t4_iso: str
 
 
 class SidecarClient:
@@ -276,7 +286,12 @@ class SidecarClient:
 
 
 def generate_sine_wav(path: Path, duration_s: float, frequency_hz: float = 440.0) -> None:
-    import numpy as np
+    try:
+        import numpy as np
+    except ModuleNotFoundError as exc:
+        raise BenchmarkSkip(
+            "numpy unavailable; cannot synthesize benchmark waveform"
+        ) from exc
 
     sample_rate = 16000
     amplitude = 0.35
@@ -321,7 +336,7 @@ def run_iteration(
     temp_dir: Path,
     index: int,
     duration_s: float,
-    inject_delay_ms: int,
+    inject_budget_ms: int,
     playback_required: bool,
 ) -> RunTimings:
     session_id = f"latency-{int(time.time())}-{index}-{uuid.uuid4().hex[:8]}"
@@ -381,7 +396,7 @@ def run_iteration(
     if not text.strip():
         raise BenchmarkFailure(f"empty transcription text for session {session_id}")
 
-    # Post-process stage proxy: use replacements.preview if available.
+    # Post-process stage: use replacements.preview if available.
     postprocess_start = time.monotonic()
     preview_response = client.call_raw(
         "replacements.preview",
@@ -389,23 +404,17 @@ def run_iteration(
         timeout_s=5.0,
     )
     if "error" in preview_response:
-        # Older sidecar builds may not implement preview; keep timing budget with 0ms.
+        # Older sidecar builds may not implement preview; 0ms postprocess.
         t3_mono = postprocess_start
     else:
         t3_mono = time.monotonic()
     t3_iso = utc_now_iso()
 
-    # Injection stage proxy: emulate host injection delay budget.
-    if inject_delay_ms > 0:
-        time.sleep(inject_delay_ms / 1000.0)
-    t4_mono = time.monotonic()
-    t4_iso = utc_now_iso()
-
     ipc_ms = to_ms(t1_mono - t0_mono)
     transcribe_ms = to_ms(t2_mono - t1_mono)
     postprocess_ms = to_ms(t3_mono - t2_mono)
-    inject_ms = to_ms(t4_mono - t3_mono)
-    total_ms = to_ms(t4_mono - t0_mono)
+    measured_ms = to_ms(t3_mono - t0_mono)
+    projected_total_ms = measured_ms + inject_budget_ms
 
     return RunTimings(
         index=index,
@@ -414,31 +423,35 @@ def run_iteration(
         ipc_ms=ipc_ms,
         transcribe_ms=transcribe_ms,
         postprocess_ms=postprocess_ms,
-        inject_ms=inject_ms,
-        total_ms=total_ms,
+        measured_ms=measured_ms,
+        inject_budget_ms=inject_budget_ms,
+        projected_total_ms=projected_total_ms,
         text_preview=format_text_preview(text),
         t0_iso=t0_iso,
         t1_iso=t1_iso,
         t2_iso=t2_iso,
         t3_iso=t3_iso,
-        t4_iso=t4_iso,
     )
 
 
 def summarize(runs: list[RunTimings], target_ms: int) -> dict[str, Any]:
-    totals = [run.total_ms for run in runs]
+    measured = [run.measured_ms for run in runs]
+    projected = [run.projected_total_ms for run in runs]
+    inject_budget = runs[0].inject_budget_ms if runs else 0
     return {
         "count": len(runs),
-        "median_ms": int(statistics.median(totals)),
-        "p95_ms": percentile(totals, 0.95),
-        "min_ms": min(totals),
-        "max_ms": max(totals),
+        "measured_median_ms": int(statistics.median(measured)),
+        "measured_p95_ms": percentile(measured, 0.95),
+        "measured_min_ms": min(measured),
+        "measured_max_ms": max(measured),
+        "inject_budget_ms": inject_budget,
+        "projected_median_ms": int(statistics.median(projected)),
+        "projected_p95_ms": percentile(projected, 0.95),
         "target_ms": target_ms,
         "median_breakdown_ms": {
             "ipc": int(statistics.median([run.ipc_ms for run in runs])),
             "transcribe": int(statistics.median([run.transcribe_ms for run in runs])),
             "postprocess": int(statistics.median([run.postprocess_ms for run in runs])),
-            "inject": int(statistics.median([run.inject_ms for run in runs])),
         },
     }
 
@@ -446,29 +459,43 @@ def summarize(runs: list[RunTimings], target_ms: int) -> dict[str, Any]:
 def print_run(run: RunTimings) -> None:
     print(
         f"[run {run.index:02d}] session={run.session_id} duration={run.duration_s:.2f}s "
-        f"total={run.total_ms}ms ipc={run.ipc_ms}ms transcribe={run.transcribe_ms}ms "
-        f"post={run.postprocess_ms}ms inject={run.inject_ms}ms text='{run.text_preview}'"
+        f"measured={run.measured_ms}ms ipc={run.ipc_ms}ms transcribe={run.transcribe_ms}ms "
+        f"post={run.postprocess_ms}ms (+inject_budget={run.inject_budget_ms}ms) "
+        f"text='{run.text_preview}'"
     )
     print(
-        f"           T0={run.t0_iso} T1={run.t1_iso} T2={run.t2_iso} T3={run.t3_iso} T4={run.t4_iso}"
+        f"           T0={run.t0_iso} T1={run.t1_iso} T2={run.t2_iso} T3={run.t3_iso}"
     )
 
 
 def print_summary(summary: dict[str, Any]) -> None:
-    median_ok = summary["median_ms"] < summary["target_ms"]
-    marker = "✓" if median_ok else "✗"
+    projected_ok = summary["projected_median_ms"] < summary["target_ms"]
+    marker = "✓" if projected_ok else "✗"
     b = summary["median_breakdown_ms"]
     print()
     print(f"Latency benchmark ({summary['count']} runs, after model warm):")
     print(
-        f"  Median: {summary['median_ms']}ms (TARGET: <{summary['target_ms']}ms) {marker}"
+        f"  Measured median: {summary['measured_median_ms']}ms "
+        f"(IPC+Transcribe+PostProcess, real sidecar round-trips)"
     )
-    print(f"  P95: {summary['p95_ms']}ms")
-    print(f"  Min: {summary['min_ms']}ms, Max: {summary['max_ms']}ms")
     print(
-        "  Breakdown (median): "
-        f"IPC={b['ipc']}ms, Transcribe={b['transcribe']}ms, "
-        f"PostProcess={b['postprocess']}ms, Inject={b['inject']}ms"
+        f"  Inject budget:   +{summary['inject_budget_ms']}ms "
+        f"(declared constant, not measured)"
+    )
+    print(
+        f"  Projected total: {summary['projected_median_ms']}ms "
+        f"(TARGET: <{summary['target_ms']}ms) {marker}"
+    )
+    print(
+        f"  P95: measured={summary['measured_p95_ms']}ms "
+        f"projected={summary['projected_p95_ms']}ms"
+    )
+    print(
+        f"  Range: {summary['measured_min_ms']}ms .. {summary['measured_max_ms']}ms (measured)"
+    )
+    print(
+        f"  Breakdown (median): IPC={b['ipc']}ms, "
+        f"Transcribe={b['transcribe']}ms, PostProcess={b['postprocess']}ms"
     )
 
 
@@ -540,10 +567,10 @@ def parse_args() -> argparse.Namespace:
         help="device preference passed to asr.initialize",
     )
     parser.add_argument(
-        "--inject-delay-ms",
+        "--inject-budget-ms",
         type=int,
         default=50,
-        help="simulated host injection delay in milliseconds",
+        help="declared host injection budget in ms (added to measured time for projected total)",
     )
     parser.add_argument(
         "--strict",
@@ -596,7 +623,7 @@ def main() -> int:
                 Path(warm_dir),
                 index=0,
                 duration_s=1.25,
-                inject_delay_ms=args.inject_delay_ms,
+                inject_budget_ms=args.inject_budget_ms,
                 playback_required=not args.no_playback_required,
             )
             print("[warmup] completed")
@@ -612,7 +639,7 @@ def main() -> int:
                     temp_dir,
                     index=idx,
                     duration_s=duration_s,
-                    inject_delay_ms=args.inject_delay_ms,
+                    inject_budget_ms=args.inject_budget_ms,
                     playback_required=not args.no_playback_required,
                 )
                 runs.append(run)
@@ -632,10 +659,12 @@ def main() -> int:
         write_json_report(json_out, runs, summary)
         print(f"[artifact] wrote report: {json_out}")
 
-        if summary["median_ms"] >= args.target_ms:
+        if summary["projected_median_ms"] >= args.target_ms:
             message = (
-                f"median latency {summary['median_ms']}ms exceeds target "
-                f"{args.target_ms}ms"
+                f"projected median {summary['projected_median_ms']}ms "
+                f"(measured={summary['measured_median_ms']}ms "
+                f"+inject_budget={summary['inject_budget_ms']}ms) "
+                f"exceeds target {args.target_ms}ms"
             )
             if is_ci() and not args.strict:
                 print(f"[warn] {message} (informational in CI mode)")

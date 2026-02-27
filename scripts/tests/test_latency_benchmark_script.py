@@ -1,10 +1,23 @@
+import importlib.util
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCHMARK_SCRIPT = REPO_ROOT / "scripts" / "benchmark" / "latency.py"
+
+_LATENCY_SPEC = importlib.util.spec_from_file_location(
+    "latency_benchmark_script", BENCHMARK_SCRIPT
+)
+assert _LATENCY_SPEC is not None
+assert _LATENCY_SPEC.loader is not None
+latency_benchmark = importlib.util.module_from_spec(_LATENCY_SPEC)
+sys.modules[_LATENCY_SPEC.name] = latency_benchmark
+_LATENCY_SPEC.loader.exec_module(latency_benchmark)
 
 
 class LatencyBenchmarkScriptTests(unittest.TestCase):
@@ -19,6 +32,13 @@ class LatencyBenchmarkScriptTests(unittest.TestCase):
         self.assertIn("inject_ms", content)
         self.assertIn("total_ms", content)
         self.assertIn("return 77", content)
+        self.assertIn("timings.inject_ms", content)
+        self.assertIn("cannot measure real T4", content)
+        self.assertNotIn("inject_delay_ms", content)
+        self.assertNotIn("simulated host injection delay", content)
+        self.assertIn("numpy unavailable; cannot synthesize benchmark waveform", content)
+        self.assertIn("except ModuleNotFoundError as exc", content)
+        self.assertIn("raise BenchmarkSkip", content)
 
     def test_benchmark_script_cli_help(self) -> None:
         result = subprocess.run(
@@ -33,6 +53,24 @@ class LatencyBenchmarkScriptTests(unittest.TestCase):
         self.assertIn("--target-ms", result.stdout)
         self.assertIn("--strict", result.stdout)
         self.assertIn("--json-out", result.stdout)
+        self.assertNotIn("--inject-delay-ms", result.stdout)
+
+    def test_run_iteration_skips_when_numpy_missing_for_audio_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with mock.patch.object(
+                latency_benchmark,
+                "generate_sine_wav",
+                side_effect=ModuleNotFoundError("No module named 'numpy'"),
+            ):
+                with self.assertRaises(latency_benchmark.BenchmarkSkip) as ctx:
+                    latency_benchmark.run_iteration(
+                        client=object(),  # Not used before generation failure.
+                        temp_dir=Path(tmp_dir),
+                        index=1,
+                        duration_s=1.0,
+                        playback_required=True,
+                    )
+        self.assertIn("install numpy", str(ctx.exception))
 
 
 if __name__ == "__main__":
