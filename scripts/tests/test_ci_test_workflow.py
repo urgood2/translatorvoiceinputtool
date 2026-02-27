@@ -81,6 +81,9 @@ class TestWorkflowStructure(unittest.TestCase):
         self.assertIn("python scripts/validate_ipc_examples.py", self.text)
         self.assertIn("python scripts/validate_model_manifest.py", self.text)
 
+    def test_schema_validation_runs_security_privacy_reference_regression(self) -> None:
+        self.assertIn("scripts/tests/test_security_privacy_reference.py", self.text)
+
 
 if __name__ == "__main__":
     unittest.main()
