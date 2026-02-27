@@ -26,7 +26,6 @@ import type {
 const EVENTS = {
   // App state changes
   STATE_CHANGED: 'state:changed',
-  STATE_CHANGED_LEGACY: 'state_changed',
 
   // Model events
   MODEL_STATUS: 'model:status',
@@ -37,16 +36,13 @@ const EVENTS = {
 
   // Transcript events
   TRANSCRIPT_COMPLETE: 'transcript:complete',
-  TRANSCRIPT_COMPLETE_LEGACY: 'transcription:complete',
   TRANSCRIPT_ERROR: 'transcript:error',
-  TRANSCRIPT_ERROR_LEGACY: 'transcription:error',
 
   // Error events
   APP_ERROR: 'app:error',
 
   // Sidecar events
   SIDECAR_STATUS: 'sidecar:status',
-  SIDECAR_STATUS_LEGACY: 'status:changed',
 
   // Recording events
   RECORDING_STATUS: 'recording:status',
@@ -214,14 +210,6 @@ export function useTauriEvents(): void {
         })
       );
       if (!stateRegistered) return;
-      const stateLegacyRegistered = await registerListener<StateEventPayload>(
-        EVENTS.STATE_CHANGED_LEGACY,
-        dedupeHandler(STREAM_KEYS.STATE, (payload) => {
-          console.debug('Event: state_changed', payload);
-          store._setAppState(payload);
-        })
-      );
-      if (!stateLegacyRegistered) return;
 
       // Subscribe to model status changes
       const modelStatusRegistered = await registerListener<ModelStatusPayload>(
@@ -262,14 +250,6 @@ export function useTauriEvents(): void {
         })
       );
       if (!transcriptRegistered) return;
-      const transcriptLegacyRegistered = await registerListener<TranscriptEventPayload>(
-        EVENTS.TRANSCRIPT_COMPLETE_LEGACY,
-        dedupeHandler(STREAM_KEYS.TRANSCRIPT, (payload) => {
-          console.debug('Event: transcription:complete', payload);
-          store._addHistoryEntry(normalizeTranscriptPayload(payload));
-        })
-      );
-      if (!transcriptLegacyRegistered) return;
 
       // Subscribe to error events
       const appErrorRegistered = await registerListener<ErrorEvent>(
@@ -289,14 +269,6 @@ export function useTauriEvents(): void {
         })
       );
       if (!transcriptErrorRegistered) return;
-      const transcriptErrorLegacyRegistered = await registerListener<ErrorEvent>(
-        EVENTS.TRANSCRIPT_ERROR_LEGACY,
-        dedupeHandler(STREAM_KEYS.TRANSCRIPT_ERROR, (payload) => {
-          console.error('Event: transcription:error', payload);
-          store._setTranscriptError(payload);
-        })
-      );
-      if (!transcriptErrorLegacyRegistered) return;
 
       // Subscribe to sidecar status changes
       const sidecarRegistered = await registerListener<SidecarStatusEvent>(
@@ -307,14 +279,6 @@ export function useTauriEvents(): void {
         })
       );
       if (!sidecarRegistered) return;
-      const sidecarLegacyRegistered = await registerListener<SidecarStatusEvent>(
-        EVENTS.SIDECAR_STATUS_LEGACY,
-        dedupeHandler(STREAM_KEYS.SIDECAR, (payload) => {
-          console.debug('Event: status:changed', payload);
-          store._setSidecarStatus(payload);
-        })
-      );
-      if (!sidecarLegacyRegistered) return;
 
       // Subscribe to recording status updates (new stream; optional producer).
       const recordingStatusRegistered = await registerListener<Record<string, unknown>>(

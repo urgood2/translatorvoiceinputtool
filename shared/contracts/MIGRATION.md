@@ -3,9 +3,10 @@
 This document defines legacy alias compatibility requirements and removal gates.
 
 <!-- COMPATIBILITY_WINDOW_MARKER_START -->
-compat_window_active: true
+compat_window_active: false
 minimum_release_cycles: 1
 enforced_by: scripts/check_contract_aliases.py
+retired_at: 2026-02-26
 <!-- COMPATIBILITY_WINDOW_MARKER_END -->
 
 ## Alias Matrix

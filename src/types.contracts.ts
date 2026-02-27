@@ -927,13 +927,9 @@ export const EVENT_MODEL_PROGRESS = "model:progress" as const;
 export const EVENT_MODEL_STATUS = "model:status" as const;
 export const EVENT_RECORDING_STATUS = "recording:status" as const;
 export const EVENT_SIDECAR_STATUS = "sidecar:status" as const;
-export const EVENT_STATUS_CHANGED = "status:changed" as const;
 export const EVENT_STATE_CHANGED = "state:changed" as const;
-export const EVENT_STATE_CHANGED_LEGACY = "state_changed" as const;
 export const EVENT_TRANSCRIPT_COMPLETE = "transcript:complete" as const;
-export const EVENT_TRANSCRIPTION_COMPLETE = "transcription:complete" as const;
 export const EVENT_TRANSCRIPT_ERROR = "transcript:error" as const;
-export const EVENT_TRANSCRIPTION_ERROR = "transcription:error" as const;
 
 // Sidecar RPC method name constants
 export const RPC_METHOD_ASR_INITIALIZE = "asr.initialize" as const;
@@ -961,11 +957,3 @@ export const RPC_METHOD_STATUS_GET = "status.get" as const;
 export const RPC_METHOD_SYSTEM_INFO = "system.info" as const;
 export const RPC_METHOD_SYSTEM_PING = "system.ping" as const;
 export const RPC_METHOD_SYSTEM_SHUTDOWN = "system.shutdown" as const;
-
-// Deprecated event alias mapping (canonical -> legacy names)
-export const EVENT_ALIASES: Record<string, readonly string[]> = {
-  "sidecar:status": ["status:changed"],
-  "state:changed": ["state_changed"],
-  "transcript:complete": ["transcription:complete"],
-  "transcript:error": ["transcription:error"],
-};

@@ -72,20 +72,22 @@ describe('useTauriEvents', () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     });
 
-    // Verify listen was called for expected events
+    // Verify listen was called for expected canonical events only (legacy aliases retired)
     expect(listen).toHaveBeenCalledWith('state:changed', expect.any(Function));
-    expect(listen).toHaveBeenCalledWith('state_changed', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('model:status', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('model:progress', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('audio:level', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('transcript:complete', expect.any(Function));
-    expect(listen).toHaveBeenCalledWith('transcription:complete', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('transcript:error', expect.any(Function));
-    expect(listen).toHaveBeenCalledWith('transcription:error', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('app:error', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('sidecar:status', expect.any(Function));
-    expect(listen).toHaveBeenCalledWith('status:changed', expect.any(Function));
     expect(listen).toHaveBeenCalledWith('recording:status', expect.any(Function));
+
+    // Verify legacy aliases are no longer registered
+    expect(listen).not.toHaveBeenCalledWith('state_changed', expect.any(Function));
+    expect(listen).not.toHaveBeenCalledWith('transcription:complete', expect.any(Function));
+    expect(listen).not.toHaveBeenCalledWith('transcription:error', expect.any(Function));
+    expect(listen).not.toHaveBeenCalledWith('status:changed', expect.any(Function));
 
     unmount();
   });
@@ -222,7 +224,6 @@ describe('useTauriEvents', () => {
 
     act(() => {
       emitMockEvent('transcript:complete', canonicalPayload);
-      emitMockEvent('transcription:complete', canonicalPayload);
     });
 
     const history = useAppStore.getState().history;
@@ -232,7 +233,7 @@ describe('useTauriEvents', () => {
     unmount();
   });
 
-  test('processes transcription:complete alias payload fixture', async () => {
+  test('processes transcript:complete canonical payload with entry wrapper', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
     await act(async () => {
@@ -240,17 +241,17 @@ describe('useTauriEvents', () => {
     });
 
     act(() => {
-      emitMockEvent('transcription:complete', {
+      emitMockEvent('transcript:complete', {
         seq: 900,
         entry: {
-          id: 'entry-legacy-alias',
-          text: 'Alias payload',
-          raw_text: 'Alias payload',
-          final_text: 'Alias payload',
+          id: 'entry-canonical-900',
+          text: 'Canonical payload',
+          raw_text: 'Canonical payload',
+          final_text: 'Canonical payload',
           timestamp: '2026-01-01T00:00:06.000Z',
           audio_duration_ms: 1000,
           transcription_duration_ms: 210,
-          session_id: 'session-alias-900',
+          session_id: 'session-canonical-900',
           injection_result: { status: 'injected' },
         },
       });
@@ -258,7 +259,7 @@ describe('useTauriEvents', () => {
 
     const history = useAppStore.getState().history;
     expect(history).toHaveLength(1);
-    expect(history[0]?.id).toBe('entry-legacy-alias');
+    expect(history[0]?.id).toBe('entry-canonical-900');
 
     unmount();
   });
@@ -276,12 +277,6 @@ describe('useTauriEvents', () => {
         state: 'recording',
         enabled: true,
         timestamp: '2026-01-01T00:00:00.000Z',
-      });
-      emitMockEvent('state_changed', {
-        seq: 77,
-        state: 'idle',
-        enabled: false,
-        timestamp: '2026-01-01T00:00:01.000Z',
       });
     });
 
@@ -461,71 +456,7 @@ describe('useTauriEvents', () => {
     unmount();
   });
 
-  test('status:changed legacy alias is deduped when sharing same seq as canonical', async () => {
-    const { unmount } = renderHook(() => useTauriEvents());
-
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
-
-    // Canonical fires first (backend always emits canonical before legacy with same seq)
-    act(() => {
-      emitMockEvent('sidecar:status', {
-        seq: 7,
-        state: 'ready',
-        restart_count: 0,
-      });
-    });
-
-    expect(useAppStore.getState().sidecarStatus).toMatchObject({
-      state: 'ready',
-      restart_count: 0,
-    });
-
-    // Legacy fires with same seq — dedup tracker drops it (seq 7 <= 7)
-    act(() => {
-      emitMockEvent('status:changed', {
-        seq: 7,
-        state: 'ready',
-        restart_count: 0,
-      });
-    });
-
-    // State unchanged (deduped)
-    expect(useAppStore.getState().sidecarStatus).toMatchObject({
-      state: 'ready',
-      restart_count: 0,
-    });
-
-    unmount();
-  });
-
-  test('status:changed legacy alias updates store if it arrives with higher seq', async () => {
-    const { unmount } = renderHook(() => useTauriEvents());
-
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
-
-    // Only legacy event fires (e.g., canonical was lost or not yet received)
-    act(() => {
-      emitMockEvent('status:changed', {
-        seq: 10,
-        state: 'restarting',
-        restart_count: 1,
-      });
-    });
-
-    // Legacy handler now has parity: it updates the store
-    expect(useAppStore.getState().sidecarStatus).toMatchObject({
-      state: 'restarting',
-      restart_count: 1,
-    });
-
-    unmount();
-  });
-
-  test('processes transcript:error payloads in canonical and legacy shapes', async () => {
+  test('processes transcript:error payloads in canonical shape', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
     await act(async () => {
@@ -545,20 +476,15 @@ describe('useTauriEvents', () => {
           recoverable: true,
         },
       });
-      fireMockEventWithLog('transcription:error', {
-        seq: 602,
-        session_id: 'session-err-2',
-        error: 'Legacy transcript error',
-      });
     });
 
     const state = useAppStore.getState();
     expect(state.lastTranscriptError).toMatchObject({
-      seq: 602,
-      session_id: 'session-err-2',
-      error: 'Legacy transcript error',
+      seq: 601,
+      session_id: 'session-err-1',
+      error: 'Canonical transcript error',
     });
-    expect(state.errorDetail).toBe('Legacy transcript error');
+    expect(state.errorDetail).toBe('Canonical transcript error');
 
     unmount();
   });
@@ -792,18 +718,16 @@ describe('useTauriEvents', () => {
       timestamp: '2026-01-01T00:12:01.000Z',
     };
     logStoreTest('state:changed(no-seq)', first);
-    logStoreTest('state_changed(no-seq)', second);
 
     act(() => {
       emitMockEvent('state:changed', first);
-      emitMockEvent('state_changed', second);
     });
 
     const state = useAppStore.getState();
     logStoreStateAfter('no-seq compatibility');
-    expect(state.appState).toBe('idle');
-    expect(state.enabled).toBe(false);
-    expect(state.stateTimestamp).toBe('2026-01-01T00:12:01.000Z');
+    expect(state.appState).toBe('recording');
+    expect(state.enabled).toBe(true);
+    expect(state.stateTimestamp).toBe('2026-01-01T00:12:00.000Z');
 
     unmount();
   });
@@ -972,11 +896,11 @@ describe('useTauriEvents', () => {
       audio_duration_ms: 321,
       processing_duration_ms: 123,
     };
-    logStoreTest('transcription:complete', payload);
+    logStoreTest('transcript:complete(legacy-shape)', payload);
 
     act(() => {
-      // contract-validate-ignore: intentionally exercising minimal legacy payload shape
-      emitMockEvent('transcription:complete', payload);
+      // Exercising minimal legacy payload shape via canonical event name
+      emitMockEvent('transcript:complete', payload);
     });
 
     const [entry] = useAppStore.getState().history;

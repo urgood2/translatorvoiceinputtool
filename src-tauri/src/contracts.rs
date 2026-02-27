@@ -603,13 +603,9 @@ pub const EVENT_MODEL_PROGRESS: &str = "model:progress";
 pub const EVENT_MODEL_STATUS: &str = "model:status";
 pub const EVENT_RECORDING_STATUS: &str = "recording:status";
 pub const EVENT_SIDECAR_STATUS: &str = "sidecar:status";
-pub const EVENT_SIDECAR_STATUS_LEGACY: &str = "status:changed";
 pub const EVENT_STATE_CHANGED: &str = "state:changed";
-pub const EVENT_STATE_CHANGED_LEGACY: &str = "state_changed";
 pub const EVENT_TRANSCRIPT_COMPLETE: &str = "transcript:complete";
-pub const EVENT_TRANSCRIPT_COMPLETE_LEGACY: &str = "transcription:complete";
 pub const EVENT_TRANSCRIPT_ERROR: &str = "transcript:error";
-pub const EVENT_TRANSCRIPT_ERROR_LEGACY: &str = "transcription:error";
 
 pub const TAURI_EVENT_NAMES: &[&str] = &[
     "app:error",

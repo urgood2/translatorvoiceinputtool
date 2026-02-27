@@ -36,12 +36,12 @@ class TestContractValidationTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('{"detail":"present"}\n', encoding="utf-8")
 
-    # Minimal contract items matching the real tauri.events.v1.json aliases
+    # Minimal contract items matching the real tauri.events.v1.json (aliases retired)
     _DEFAULT_EVENT_ITEMS: list[dict] = [
-        {"name": "state:changed", "deprecated_aliases": ["state_changed"]},
-        {"name": "transcript:complete", "deprecated_aliases": ["transcription:complete"]},
-        {"name": "transcript:error", "deprecated_aliases": ["transcription:error"]},
-        {"name": "sidecar:status", "deprecated_aliases": ["status:changed"]},
+        {"name": "state:changed", "deprecated_aliases": []},
+        {"name": "transcript:complete", "deprecated_aliases": []},
+        {"name": "transcript:error", "deprecated_aliases": []},
+        {"name": "sidecar:status", "deprecated_aliases": []},
         {"name": "model:status"},
         {"name": "recording:status"},
     ]
@@ -66,22 +66,10 @@ class TestContractValidationTests(unittest.TestCase):
         ):
             return MODULE.validate_fixture_category(root, contracts)
 
-    def test_validate_fixture_category_enforces_drift_fixtures_from_canonical_corpus(self) -> None:
+    def test_validate_fixture_category_enforces_model_status_mapped_payload(self) -> None:
+        """With no deprecated aliases, only model:status mapped payload fixture is enforced."""
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            fixture = root / "src" / "hooks" / "useTauriEvents.test.ts"
-            fixture.parent.mkdir(parents=True, exist_ok=True)
-            fixture.write_text(
-                "\n".join(
-                    [
-                        "emitMockEvent('state:changed', { status: 'ready' });",
-                        "emitMockEvent('model:status', { status: 'ready' });",
-                        "emitMockEvent('transcript:complete', { status: 'ready' });",
-                        "emitMockEvent('transcription:complete', { status: 'ready' });",
-                    ]
-                ),
-                encoding="utf-8",
-            )
             _summaries, errors = self._validate_fixture_category(
                 root,
                 examples_rows=[
@@ -96,39 +84,16 @@ class TestContractValidationTests(unittest.TestCase):
                 ],
             )
 
-            self.assertTrue(
-                any(
-                    "missing drift-guard mapped_tauri_event fixture for 'transcript:complete'" in err
-                    for err in errors
-                )
-            )
             self.assertTrue(any("missing mapped payload fixture for 'model:status'" in err for err in errors))
-            self.assertFalse(any("useTauriEvents.test.ts: missing drift-guard payload fixture" in err for err in errors))
 
     def test_validate_fixture_category_accepts_required_canonical_mapped_fixtures(self) -> None:
-        """All canonical events with aliases, plus the aliases themselves, must have fixtures."""
-
-        def _notif(event_name: str, **extra: object) -> dict:
-            params: dict = {"mapped_tauri_event": event_name, "mapped_tauri_payload": {"status": "ok"}}
-            params.update(extra)
-            return {
-                "type": "notification",
-                "data": {"jsonrpc": "2.0", "method": "event.x", "params": params},
-            }
+        """With no deprecated aliases, only model:status mapped payload is required."""
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             _summaries, errors = self._validate_fixture_category(
                 root,
                 examples_rows=[
-                    _notif("state:changed"),
-                    _notif("state_changed"),
-                    _notif("transcript:complete"),
-                    _notif("transcription:complete"),
-                    _notif("transcript:error"),
-                    _notif("transcription:error"),
-                    _notif("sidecar:status"),
-                    _notif("status:changed"),
                     {
                         "type": "notification",
                         "data": {

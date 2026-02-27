@@ -7,7 +7,7 @@
     {
       "type": "event",
       "name": "state:changed",
-      "deprecated_aliases": ["state_changed"],
+      "deprecated_aliases": [],
       "payload_schema": { "$ref": "#/$defs/state_changed_payload" }
     },
     {
@@ -37,13 +37,13 @@
     {
       "type": "event",
       "name": "transcript:complete",
-      "deprecated_aliases": ["transcription:complete"],
+      "deprecated_aliases": [],
       "payload_schema": { "$ref": "#/$defs/transcript_complete_payload" }
     },
     {
       "type": "event",
       "name": "transcript:error",
-      "deprecated_aliases": ["transcription:error"],
+      "deprecated_aliases": [],
       "payload_schema": { "$ref": "#/$defs/transcript_error_payload" }
     },
     {
@@ -55,7 +55,7 @@
     {
       "type": "event",
       "name": "sidecar:status",
-      "deprecated_aliases": ["status:changed"],
+      "deprecated_aliases": [],
       "payload_schema": { "$ref": "#/$defs/sidecar_status_payload" }
     }
   ],

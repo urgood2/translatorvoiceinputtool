@@ -19,12 +19,6 @@ import validate_contracts as vc
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_EVENT_ALIASES = {
-    "state:changed": "state_changed",
-    "transcript:complete": "transcription:complete",
-    "transcript:error": "transcription:error",
-    "sidecar:status": "status:changed",
-}
 
 
 def log(message: str) -> None:
@@ -95,13 +89,6 @@ def validate_schema_category(contracts: dict[str, dict[str, Any]]) -> tuple[list
         if isinstance(item, dict) and isinstance(item.get("name"), str):
             aliases = item.get("deprecated_aliases")
             alias_map[item["name"]] = aliases if isinstance(aliases, list) else []
-
-    for canonical, alias in EXPECTED_EVENT_ALIASES.items():
-        aliases = alias_map.get(canonical, [])
-        if alias not in aliases:
-            errors.append(
-                f"tauri.events: '{canonical}' must declare deprecated_aliases including '{alias}'"
-            )
 
     alias_count = sum(len(aliases) for aliases in alias_map.values())
     summaries.append(f"tauri.events aliases: {alias_count} declared")
