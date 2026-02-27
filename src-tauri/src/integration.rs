@@ -258,6 +258,20 @@ fn purge_status_model_ids(
     configured_model_id: &str,
     purged_model_ids: &[String],
 ) -> Vec<String> {
+    let resolved_ids: Vec<String> = normalized_purged_model_ids(purged_model_ids);
+
+    if resolved_ids.is_empty() {
+        if purge_model_id.is_some() {
+            Vec::new()
+        } else {
+            vec![configured_model_id.to_string()]
+        }
+    } else {
+        resolved_ids
+    }
+}
+
+fn normalized_purged_model_ids(purged_model_ids: &[String]) -> Vec<String> {
     let mut resolved_ids: Vec<String> = Vec::new();
     for raw_id in purged_model_ids {
         let trimmed = raw_id.trim();
@@ -269,16 +283,7 @@ fn purge_status_model_ids(
         }
         resolved_ids.push(trimmed.to_string());
     }
-
-    if resolved_ids.is_empty() {
-        if purge_model_id.is_some() {
-            Vec::new()
-        } else {
-            vec![configured_model_id.to_string()]
-        }
-    } else {
-        resolved_ids
-    }
+    resolved_ids
 }
 
 fn model_download_params(model_id: Option<String>, force: Option<bool>) -> Option<Value> {
@@ -2320,12 +2325,13 @@ impl IntegrationManager {
             .map_err(|e| format!("Failed to purge cache: {}", e))?;
 
         let configured_model_id = configured_model_id();
+        let reported_purged_model_ids = normalized_purged_model_ids(&result.purged_model_ids);
         let status_model_ids = purge_status_model_ids(
             purge_model_id.as_deref(),
             configured_model_id.as_str(),
-            &result.purged_model_ids,
+            &reported_purged_model_ids,
         );
-        let emitted_model_count = status_model_ids.len();
+        let removed_model_count = reported_purged_model_ids.len();
         let affects_configured_model =
             purge_affects_configured_model(configured_model_id.as_str(), &status_model_ids);
 
@@ -2350,7 +2356,7 @@ impl IntegrationManager {
                 .as_ref()
                 .map(|id| format!(" for model {}", id))
                 .unwrap_or_default(),
-            emitted_model_count,
+            removed_model_count,
         );
         Ok(())
     }
@@ -5596,6 +5602,32 @@ for raw in sys.stdin:
             ],
         );
         assert_eq!(ids, vec!["openai/whisper-large".to_string()]);
+    }
+
+    #[test]
+    fn test_normalized_purged_model_ids_trims_dedupes_and_drops_empty_ids() {
+        let ids = normalized_purged_model_ids(&[
+            " openai/whisper-large ".to_string(),
+            "".to_string(),
+            "openai/whisper-large".to_string(),
+            "nvidia/parakeet-tdt-0.6b-v3".to_string(),
+        ]);
+        assert_eq!(
+            ids,
+            vec![
+                "openai/whisper-large".to_string(),
+                "nvidia/parakeet-tdt-0.6b-v3".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_purge_all_removed_count_uses_reported_ids_not_fallback_status_ids() {
+        let configured = "nvidia/parakeet-tdt-0.6b-v3";
+        let reported = normalized_purged_model_ids(&[]);
+        let status_model_ids = purge_status_model_ids(None, configured, &reported);
+        assert_eq!(reported.len(), 0);
+        assert_eq!(status_model_ids, vec![configured.to_string()]);
     }
 
     #[test]
