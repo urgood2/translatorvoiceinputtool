@@ -66,6 +66,25 @@ class StoragePersistenceReferenceTests(unittest.TestCase):
         self.assertNotIn("log_file", self.config_text)
         self.assertNotIn("log_path", self.config_text)
 
+    def test_reference_documents_config_lifecycle_atomic_and_recovery_claims(self) -> None:
+        self.assertIn("config.json.tmp", self.reference_text)
+        self.assertIn("config.json.corrupt", self.reference_text)
+        self.assertIn("Rename `.tmp` to `config.json`", self.reference_text)
+        self.assertIn("rename bad file to `.corrupt`", self.reference_text)
+        self.assertIn("Migration must be additive", self.reference_text)
+
+    def test_runtime_config_implements_tmp_staging_and_atomic_replace(self) -> None:
+        self.assertIn('path.with_extension("json.tmp")', self.config_text)
+        self.assertIn("replace_config_file(&temp, path)", self.config_text)
+        self.assertIn("fn replace_config_file(temp: &PathBuf, path: &PathBuf)", self.config_text)
+        self.assertIn("fs::rename(temp, path)", self.config_text)
+
+    def test_runtime_config_implements_corrupt_backup_and_migration_entrypoint(self) -> None:
+        self.assertIn('path.with_extension("json.corrupt")', self.config_text)
+        self.assertIn("Failed to backup corrupt config", self.config_text)
+        self.assertIn("fn migrate_config(mut config: Value) -> AppConfig", self.config_text)
+        self.assertIn("Future migrations go here", self.config_text)
+
     def test_reference_mentions_history_persistence_config_fields(self) -> None:
         self.assertIn("history.persistence_mode", self.reference_text)
         self.assertIn("history.encrypt_at_rest", self.reference_text)
