@@ -211,11 +211,19 @@ pub fn update_config(
     config: AppConfig,
     history: tauri::State<TranscriptHistory>,
     app: tauri::AppHandle,
+    integration_state: tauri::State<'_, IntegrationState>,
 ) -> Result<(), CommandError> {
     let mut config = config;
     config.validate_and_clamp();
     config::save_config(&config)?;
     history.resize(config.history.max_entries as usize);
+    {
+        let manager_state = Arc::clone(&integration_state.0);
+        tauri::async_runtime::spawn(async move {
+            let manager = manager_state.read().await;
+            manager.notify_overlay_config_changed();
+        });
+    }
     emit_tray_update(&app, "config_changed");
     Ok(())
 }
@@ -225,10 +233,18 @@ pub fn update_config(
 pub fn reset_config_to_defaults(
     history: tauri::State<TranscriptHistory>,
     app: tauri::AppHandle,
+    integration_state: tauri::State<'_, IntegrationState>,
 ) -> Result<AppConfig, CommandError> {
     let config = AppConfig::default();
     config::save_config(&config)?;
     history.resize(config.history.max_entries as usize);
+    {
+        let manager_state = Arc::clone(&integration_state.0);
+        tauri::async_runtime::spawn(async move {
+            let manager = manager_state.read().await;
+            manager.notify_overlay_config_changed();
+        });
+    }
     emit_tray_update(&app, "config_changed");
     Ok(config)
 }

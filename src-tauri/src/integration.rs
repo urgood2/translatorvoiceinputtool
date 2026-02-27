@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
 use uuid::Uuid;
 
 use crate::audio_cue::{AudioCueManager, CueType};
@@ -737,6 +737,20 @@ fn is_overlay_recording_active(event: &RecordingEvent) -> bool {
     )
 }
 
+fn should_apply_overlay_config_change(last_enabled: Option<bool>, enabled: bool) -> bool {
+    last_enabled != Some(enabled)
+}
+
+fn overlay_recording_state_for_event(
+    overlay_enabled: bool,
+    event: &RecordingEvent,
+) -> Option<bool> {
+    if !overlay_enabled {
+        return None;
+    }
+    Some(is_overlay_recording_active(event))
+}
+
 fn recording_event_audio_cue(event: &RecordingEvent) -> Option<CueType> {
     match event {
         // StartRecording cue is played pre-roll in start_recording_flow
@@ -1258,6 +1272,10 @@ pub struct IntegrationManager {
     event_seq: Arc<AtomicU64>,
     /// Overlay window lifecycle manager.
     overlay_manager: Arc<Mutex<OverlayManager>>,
+    /// Notification channel for overlay config changes (event-driven, no polling).
+    overlay_config_notify: Arc<Notify>,
+    /// Cached overlay-enabled flag so disabled mode avoids per-event config reads.
+    overlay_enabled: Arc<AtomicBool>,
 }
 
 impl IntegrationManager {
@@ -1293,6 +1311,8 @@ impl IntegrationManager {
             watchdog,
             event_seq: Arc::new(AtomicU64::new(1)),
             overlay_manager: Arc::new(Mutex::new(OverlayManager::new())),
+            overlay_config_notify: Arc::new(Notify::new()),
+            overlay_enabled: Arc::new(AtomicBool::new(app_config.ui.overlay_enabled)),
         }
     }
 
@@ -1363,6 +1383,8 @@ impl IntegrationManager {
     fn start_overlay_window_loop(&self) {
         let app_handle = self.app_handle.clone();
         let overlay_manager = Arc::clone(&self.overlay_manager);
+        let overlay_config_notify = Arc::clone(&self.overlay_config_notify);
+        let overlay_enabled = Arc::clone(&self.overlay_enabled);
 
         tokio::spawn(async move {
             let Some(handle) = app_handle else {
@@ -1371,17 +1393,15 @@ impl IntegrationManager {
             };
 
             let config_store = FileOverlayConfigStore;
-            let mut tick = tokio::time::interval(Duration::from_millis(500));
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut last_enabled: Option<bool> = None;
 
             log::info!("Overlay config-gate loop started");
 
             loop {
-                tick.tick().await;
-
                 let enabled = config::load_config().ui.overlay_enabled;
-                if last_enabled == Some(enabled) {
+                overlay_enabled.store(enabled, Ordering::Release);
+                if !should_apply_overlay_config_change(last_enabled, enabled) {
+                    overlay_config_notify.notified().await;
                     continue;
                 }
 
@@ -1404,8 +1424,13 @@ impl IntegrationManager {
                 }
 
                 last_enabled = Some(enabled);
+                overlay_config_notify.notified().await;
             }
         });
+    }
+
+    pub fn notify_overlay_config_changed(&self) {
+        self.overlay_config_notify.notify_waiters();
     }
 
     fn emit_app_error_event(
@@ -3279,6 +3304,7 @@ impl IntegrationManager {
         let app_handle = self.app_handle.clone();
         let event_seq = Arc::clone(&self.event_seq);
         let overlay_manager = Arc::clone(&self.overlay_manager);
+        let overlay_enabled = Arc::clone(&self.overlay_enabled);
 
         tokio::spawn(async move {
             let mut receiver = recording_controller.subscribe();
@@ -3291,8 +3317,11 @@ impl IntegrationManager {
                 }
 
                 // Drive overlay show/hide based on recording lifecycle.
-                let recording_active = is_overlay_recording_active(&event);
-                if let Some(ref handle) = app_handle {
+                let overlay_enabled = overlay_enabled.load(Ordering::Acquire);
+                let recording_active =
+                    overlay_recording_state_for_event(overlay_enabled, &event);
+                if let (Some(recording_active), Some(ref handle)) = (recording_active, &app_handle)
+                {
                     let config_store = FileOverlayConfigStore;
                     let backend = TauriOverlayWindowBackend::new(handle);
                     let mut manager = overlay_manager.lock().await;
@@ -5777,6 +5806,71 @@ for raw in sys.stdin:
             duration_ms: 50,
             timestamp: now,
         }));
+    }
+
+    #[test]
+    fn test_overlay_config_gate_skips_work_when_disabled_state_unchanged() {
+        assert!(should_apply_overlay_config_change(None, false));
+        assert!(!should_apply_overlay_config_change(Some(false), false));
+        assert!(should_apply_overlay_config_change(Some(false), true));
+    }
+
+    #[test]
+    fn test_overlay_recording_events_not_routed_when_overlay_disabled() {
+        let now = chrono::Utc::now();
+        let session_id = "session-1".to_string();
+
+        assert_eq!(
+            overlay_recording_state_for_event(
+                false,
+                &RecordingEvent::Started {
+                    session_id: session_id.clone(),
+                    timestamp: now,
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            overlay_recording_state_for_event(
+                false,
+                &RecordingEvent::TranscriptionComplete {
+                    session_id,
+                    text: "hello".to_string(),
+                    audio_duration_ms: 500,
+                    processing_duration_ms: 100,
+                    timestamp: now,
+                }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_overlay_recording_events_route_when_overlay_enabled() {
+        let now = chrono::Utc::now();
+        let session_id = "session-1".to_string();
+
+        assert_eq!(
+            overlay_recording_state_for_event(
+                true,
+                &RecordingEvent::Started {
+                    session_id: session_id.clone(),
+                    timestamp: now,
+                }
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            overlay_recording_state_for_event(
+                true,
+                &RecordingEvent::TranscriptionFailed {
+                    session_id,
+                    error: "decoder failed".to_string(),
+                    timestamp: now,
+                }
+            ),
+            Some(false)
+        );
     }
 
     #[test]

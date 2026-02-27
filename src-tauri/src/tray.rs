@@ -280,12 +280,12 @@ pub fn build_tray_menu(state: &TrayMenuState) -> Vec<TrayMenuEntry> {
         entries.push(TrayMenuEntry::Action {
             id: menu_ids::TOGGLE_RECORDING.to_string(),
             text: "Stop Recording".to_string(),
-            enabled: true,
+            enabled: state.enabled,
         });
         entries.push(TrayMenuEntry::Action {
             id: menu_ids::CANCEL_RECORDING.to_string(),
             text: "Cancel Recording".to_string(),
-            enabled: true,
+            enabled: state.enabled,
         });
     } else {
         entries.push(TrayMenuEntry::Action {
@@ -707,6 +707,13 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
         menu_ids::TOGGLE_OVERLAY => match toggle_overlay_setting() {
             Ok(now_enabled) => {
                 log::info!("Overlay toggled to {}", now_enabled);
+                {
+                    let manager_state = Arc::clone(&app.state::<crate::IntegrationState>().0);
+                    tauri::async_runtime::spawn(async move {
+                        let manager = manager_state.read().await;
+                        manager.notify_overlay_config_changed();
+                    });
+                }
                 let _ = app.emit(
                     "overlay:toggle",
                     crate::event_seq::payload_with_next_seq(serde_json::json!({
@@ -1150,6 +1157,47 @@ mod tests {
                 entry,
                 TrayMenuEntry::Action { id, text, enabled }
                     if id == menu_ids::CANCEL_RECORDING && text == "Cancel Recording" && *enabled
+            )
+        }));
+    }
+
+    #[test]
+    fn test_build_tray_menu_disables_recording_controls_when_app_disabled() {
+        let mut recording_state = sample_state();
+        recording_state.enabled = false;
+        recording_state.recording = true;
+
+        let recording_menu = build_tray_menu(&recording_state);
+        assert!(recording_menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Action { id, text, enabled }
+                    if id == menu_ids::TOGGLE_RECORDING && text == "Stop Recording" && !enabled
+            )
+        }));
+        assert!(recording_menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Action { id, text, enabled }
+                    if id == menu_ids::CANCEL_RECORDING && text == "Cancel Recording" && !enabled
+            )
+        }));
+
+        let mut transcribing_state = sample_state();
+        transcribing_state.enabled = false;
+        transcribing_state.transcribing = true;
+        let transcribing_menu = build_tray_menu(&transcribing_state);
+        assert!(transcribing_menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Action { id, text, enabled }
+                    if id == menu_ids::TOGGLE_RECORDING && text == "Processing..." && !enabled
+            )
+        }));
+        assert!(!transcribing_menu.iter().any(|entry| {
+            matches!(
+                entry,
+                TrayMenuEntry::Action { id, .. } if id == menu_ids::CANCEL_RECORDING
             )
         }));
     }
