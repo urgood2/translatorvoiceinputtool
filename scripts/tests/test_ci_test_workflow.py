@@ -91,6 +91,15 @@ class TestWorkflowStructure(unittest.TestCase):
         self.assertIn("Packaged resource simulation skipped on this runner", self.text)
         self.assertIn('exit "$rc"', self.text)
 
+    def test_packaged_resource_simulation_is_linux_only(self) -> None:
+        steps = self.wf["jobs"]["python-tests"]["steps"]
+        packaged_step = next(
+            step
+            for step in steps
+            if step.get("name") == "Sidecar Self-Test (packaged resource simulation)"
+        )
+        self.assertEqual(packaged_step.get("if"), "runner.os == 'Linux'")
+
 
 if __name__ == "__main__":
     unittest.main()

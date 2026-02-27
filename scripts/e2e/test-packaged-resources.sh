@@ -151,9 +151,13 @@ cp -R "$REPO_ROOT/shared/model" "$STAGED_SHARED/"
 cp -R "$REPO_ROOT/shared/replacements" "$STAGED_SHARED/"
 
 export OPENVOICY_SHARED_ROOT="$STAGED_SHARED"
+export OPENVOICY_SIDECAR_COMMAND="$SIDECAR_BIN"
 
 echo "[PACKAGED_RESOURCES] target=$TARGET"
 echo "[PACKAGED_RESOURCES] sidecar=$SIDECAR_BIN"
+echo "[PACKAGED_RESOURCES] running packaged sidecar self-test via openvoicy_sidecar.self_test"
+python3 -m openvoicy_sidecar.self_test
+echo "[PACKAGED_RESOURCES] packaged sidecar self-test passed"
 
 SYSTEM_INFO_RAW="$(
     echo '{"jsonrpc":"2.0","id":1,"method":"system.info","params":{}}' \

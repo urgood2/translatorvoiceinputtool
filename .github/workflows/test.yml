@@ -97,6 +97,7 @@ jobs:
           python -m openvoicy_sidecar.self_test
 
       - name: Sidecar Self-Test (packaged resource simulation)
+        if: runner.os == 'Linux'
         run: |
           set +e
           bash scripts/e2e/test-packaged-resources.sh
