@@ -251,6 +251,34 @@ fn purge_affects_configured_model(purge_model_id: Option<&str>, configured_model
     purge_model_id.is_none_or(|requested| requested == configured_model_id)
 }
 
+fn purge_status_model_ids(
+    purge_model_id: Option<&str>,
+    configured_model_id: &str,
+    purged_model_ids: &[String],
+) -> Vec<String> {
+    if let Some(requested_model_id) = purge_model_id {
+        return vec![requested_model_id.to_string()];
+    }
+
+    let mut resolved_ids: Vec<String> = Vec::new();
+    for raw_id in purged_model_ids {
+        let trimmed = raw_id.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if resolved_ids.iter().any(|existing| existing == trimmed) {
+            continue;
+        }
+        resolved_ids.push(trimmed.to_string());
+    }
+
+    if resolved_ids.is_empty() {
+        vec![configured_model_id.to_string()]
+    } else {
+        resolved_ids
+    }
+}
+
 fn model_download_params(model_id: Option<String>, force: Option<bool>) -> Option<Value> {
     let mut params = serde_json::Map::new();
     if let Some(model_id) = model_id {
@@ -582,6 +610,38 @@ fn device_removed_app_error(
         })),
         true,
     )
+}
+
+async fn cleanup_active_session_for_no_audio_devices(
+    manager: &IntegrationManager,
+    state_manager: &Arc<AppStateManager>,
+    recording_context: &Arc<RwLock<Option<RecordingContext>>>,
+    current_session_id: &Arc<RwLock<Option<String>>>,
+) {
+    if current_session_id.read().await.is_none() {
+        return;
+    }
+
+    if state_manager.get() == AppState::Transcribing {
+        let mut context = recording_context.write().await;
+        if let Some(context) = context.as_mut() {
+            context.force_clipboard_only = true;
+            context.force_clipboard_reason = Some(DEVICE_REMOVED_CLIPBOARD_REASON.to_string());
+        }
+    }
+
+    if let Err(stop_error) = manager.stop_recording().await {
+        log::warn!(
+            "Failed to stop active session during no-audio-device transition: {}",
+            stop_error
+        );
+        if let Err(cancel_error) = manager.cancel_recording().await {
+            log::warn!(
+                "Failed to cancel active session during no-audio-device transition: {}",
+                cancel_error
+            );
+        }
+    }
 }
 
 fn no_audio_device_app_error() -> AppError {
@@ -1450,6 +1510,13 @@ impl IntegrationManager {
                 }
 
                 if devices.is_empty() {
+                    cleanup_active_session_for_no_audio_devices(
+                        &manager,
+                        &state_manager,
+                        &recording_context,
+                        &current_session_id,
+                    )
+                    .await;
                     state_manager.transition_to_error(
                         "No audio input device available. Connect a microphone and try again."
                             .to_string(),
@@ -2190,18 +2257,26 @@ impl IntegrationManager {
         struct PurgeResult {
             #[allow(dead_code)]
             purged: bool,
+            #[serde(default)]
+            purged_model_ids: Vec<String>,
         }
 
         let params = purge_model_id
             .as_ref()
             .map(|requested_model_id| json!({ "model_id": requested_model_id }));
 
-        client
+        let result = client
             .call::<PurgeResult>("model.purge_cache", params)
             .await
             .map_err(|e| format!("Failed to purge cache: {}", e))?;
 
         let configured_model_id = configured_model_id();
+        let status_model_ids = purge_status_model_ids(
+            purge_model_id.as_deref(),
+            configured_model_id.as_str(),
+            &result.purged_model_ids,
+        );
+        let emitted_model_count = status_model_ids.len();
         let affects_configured_model =
             purge_affects_configured_model(purge_model_id.as_deref(), configured_model_id.as_str());
 
@@ -2210,29 +2285,27 @@ impl IntegrationManager {
             self.recording_controller.set_model_ready(false).await;
         }
 
-        // Always emit model:status for the purged model so UI consumers can
-        // track cache state for any model, not just the configured one.
-        Self::emit_model_status_with_details(
-            &self.app_handle,
-            ModelStatus::Missing,
-            &self.event_seq,
-            Some(
-                purge_model_id
-                    .as_ref()
-                    .cloned()
-                    .unwrap_or(configured_model_id),
-            ),
-            None,
-            None,
-            None,
-        );
+        // Emit model:status Missing for each purged model so UI consumers
+        // can track cache state for all models, not just the configured one.
+        for status_model_id in status_model_ids {
+            Self::emit_model_status_with_details(
+                &self.app_handle,
+                ModelStatus::Missing,
+                &self.event_seq,
+                Some(status_model_id),
+                None,
+                None,
+                None,
+            );
+        }
 
         log::info!(
-            "Model cache purged{}",
+            "Model cache purged{} ({} models removed)",
             purge_model_id
                 .as_ref()
                 .map(|id| format!(" for model {}", id))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            emitted_model_count,
         );
         Ok(())
     }
@@ -4123,6 +4196,46 @@ mod tests {
         }
     }
 
+    struct ChildProcessGuard {
+        child: Option<Child>,
+    }
+
+    impl ChildProcessGuard {
+        fn new(child: Child) -> Self {
+            Self { child: Some(child) }
+        }
+
+        fn child_mut(&mut self) -> &mut Child {
+            self.child
+                .as_mut()
+                .expect("child process should be present")
+        }
+
+        fn reap_now(&mut self) {
+            if let Some(mut child) = self.child.take() {
+                if child
+                    .try_wait()
+                    .expect("try_wait on mock sidecar should not fail")
+                    .is_none()
+                {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+    }
+
+    impl Drop for ChildProcessGuard {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.child.take() {
+                if child.try_wait().ok().flatten().is_none() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+    }
+
     fn spawn_mock_sidecar_recording_process(call_log_path: &Path) -> Child {
         let script = r#"
 import json
@@ -5415,6 +5528,43 @@ for raw in sys.stdin:
         ));
     }
 
+    #[test]
+    fn test_purge_status_model_ids_uses_targeted_model_id() {
+        let ids = purge_status_model_ids(
+            Some("openai/whisper-large"),
+            "nvidia/parakeet-tdt-0.6b-v3",
+            &[],
+        );
+        assert_eq!(ids, vec!["openai/whisper-large".to_string()]);
+    }
+
+    #[test]
+    fn test_purge_status_model_ids_uses_reported_ids_for_purge_all() {
+        let ids = purge_status_model_ids(
+            None,
+            "nvidia/parakeet-tdt-0.6b-v3",
+            &[
+                " openai/whisper-large ".to_string(),
+                "".to_string(),
+                "openai/whisper-large".to_string(),
+                "nvidia/parakeet-tdt-0.6b-v3".to_string(),
+            ],
+        );
+        assert_eq!(
+            ids,
+            vec![
+                "openai/whisper-large".to_string(),
+                "nvidia/parakeet-tdt-0.6b-v3".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_purge_status_model_ids_falls_back_to_configured_model_when_missing() {
+        let ids = purge_status_model_ids(None, "nvidia/parakeet-tdt-0.6b-v3", &[]);
+        assert_eq!(ids, vec!["nvidia/parakeet-tdt-0.6b-v3".to_string()]);
+    }
+
     /// Purging an unrelated model must NOT update global model state or
     /// recording readiness. The model:status event IS still emitted (for the
     /// purged model) so UI consumers can observe cache transitions, but the
@@ -6604,17 +6754,100 @@ for raw in sys.stdin:
     }
 
     #[tokio::test]
+    async fn test_no_audio_device_cleanup_clears_active_recording_session() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(Arc::clone(&state_manager));
+        manager.recording_controller.set_model_ready(true).await;
+
+        let session_id = "session-no-device-recording".to_string();
+        manager
+            .recording_controller
+            .start_with_session_id(session_id.clone())
+            .await
+            .expect("recording controller should accept test session");
+        *manager.current_session_id.write().await = Some(session_id.clone());
+        *manager.recording_context.write().await = Some(RecordingContext {
+            focus_before: capture_focus(),
+            session_id,
+            audio_duration_ms: None,
+            raw_text: None,
+            final_text: None,
+            language: None,
+            confidence: None,
+            force_clipboard_only: false,
+            force_clipboard_reason: None,
+            timing_marks: PipelineTimingMarks::default(),
+        });
+        let _ = state_manager.transition(AppState::Recording);
+
+        cleanup_active_session_for_no_audio_devices(
+            &manager,
+            &state_manager,
+            &manager.recording_context,
+            &manager.current_session_id,
+        )
+        .await;
+
+        assert!(manager.current_session_id.read().await.is_none());
+        assert!(manager.recording_context.read().await.is_none());
+        assert_eq!(state_manager.get(), AppState::Idle);
+    }
+
+    #[tokio::test]
+    async fn test_no_audio_device_cleanup_clears_active_transcribing_session() {
+        let state_manager = Arc::new(AppStateManager::new());
+        let manager = IntegrationManager::new(Arc::clone(&state_manager));
+        manager.recording_controller.set_model_ready(true).await;
+
+        let session_id = "session-no-device-transcribing".to_string();
+        manager
+            .recording_controller
+            .start_with_session_id(session_id.clone())
+            .await
+            .expect("recording controller should accept test session");
+        *manager.current_session_id.write().await = Some(session_id.clone());
+        *manager.recording_context.write().await = Some(RecordingContext {
+            focus_before: capture_focus(),
+            session_id,
+            audio_duration_ms: Some(1200),
+            raw_text: Some("partial".to_string()),
+            final_text: Some("partial".to_string()),
+            language: None,
+            confidence: None,
+            force_clipboard_only: false,
+            force_clipboard_reason: None,
+            timing_marks: PipelineTimingMarks::default(),
+        });
+        let _ = state_manager.transition(AppState::Transcribing);
+
+        cleanup_active_session_for_no_audio_devices(
+            &manager,
+            &state_manager,
+            &manager.recording_context,
+            &manager.current_session_id,
+        )
+        .await;
+
+        assert!(manager.current_session_id.read().await.is_none());
+        assert!(manager.recording_context.read().await.is_none());
+        assert_eq!(state_manager.get(), AppState::Idle);
+    }
+
+    #[tokio::test]
     async fn test_full_recording_flow_with_mock_sidecar_and_cancel_branch() {
         let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
         let call_log_path = temp_dir.path().join("mock_sidecar_calls.jsonl");
         fs::write(&call_log_path, "").expect("call log file should be initialized");
 
-        let mut mock_sidecar = spawn_mock_sidecar_recording_process(&call_log_path);
+        let mut mock_sidecar =
+            ChildProcessGuard::new(spawn_mock_sidecar_recording_process(&call_log_path));
         let stdin = mock_sidecar
+            .child_mut()
             .stdin
             .take()
             .expect("mock sidecar stdin should be piped");
         let stdout = mock_sidecar
+            .child_mut()
             .stdout
             .take()
             .expect("mock sidecar stdout should be piped");
@@ -6706,6 +6939,17 @@ for raw in sys.stdin:
             "[RECORDING_FLOW][RPC] {} calls={}",
             chrono::Utc::now().to_rfc3339(),
             serde_json::to_string(&first_calls).unwrap_or_else(|_| "[]".to_string())
+        );
+        assert!(
+            !first_calls.iter().any(|call| {
+                matches!(
+                    call.get("method").and_then(Value::as_str),
+                    Some("replacements.preview")
+                        | Some("replacements.get_rules")
+                        | Some("replacements.set_rules")
+                )
+            }),
+            "host flow must not re-run replacements for already-final sidecar transcript text"
         );
 
         println!(
@@ -6861,6 +7105,22 @@ for raw in sys.stdin:
             chrono::Utc::now().to_rfc3339(),
             serde_json::to_string(&final_calls).unwrap_or_else(|_| "[]".to_string())
         );
+        let stop_calls: Vec<&Value> = final_calls
+            .iter()
+            .filter(|call| call.get("method").and_then(Value::as_str) == Some("recording.stop"))
+            .collect();
+        assert_eq!(
+            stop_calls.len(),
+            1,
+            "exactly one recording.stop call is expected for the completed branch"
+        );
+        assert_eq!(
+            stop_calls[0]
+                .get("params")
+                .and_then(|params| params.get("session_id"))
+                .and_then(Value::as_str),
+            Some(first_session_id.as_str())
+        );
         assert!(
             !final_calls.iter().any(|call| {
                 call.get("method").and_then(Value::as_str) == Some("recording.stop")
@@ -6903,8 +7163,7 @@ for raw in sys.stdin:
         if let Some(client) = manager.rpc_client.write().await.take() {
             client.shutdown().await;
         }
-        let _ = mock_sidecar.kill();
-        let _ = mock_sidecar.wait();
+        mock_sidecar.reap_now();
     }
 
     #[tokio::test]
