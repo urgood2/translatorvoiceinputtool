@@ -12,9 +12,8 @@
  * 8. Rule with id, kind, word_boundary, case_sensitive fields renders correctly
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
-import { invoke } from '@tauri-apps/api/core';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ReplacementList } from './ReplacementList';
 import { ReplacementPreview, processPreviewText } from './ReplacementPreview';
 import { PresetsPanel } from './PresetsPanel';
@@ -32,6 +31,10 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 beforeEach(() => {
   mockInvoke.mockReset();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 type PreviewResponse = {
@@ -237,7 +240,7 @@ describe('Tab badge: selectReplacementBadgeCount', () => {
 // ---------------------------------------------------------------------------
 
 describe('Preview sidecar parity', () => {
-  it('calls preview_replacement and matches local preview result', async () => {
+  it('uses ReplacementPreview UI to call preview_replacement and render RPC output', async () => {
     const sidecarResult: PreviewResponse = {
       result: 'I will be right back',
       truncated: false,
@@ -246,25 +249,18 @@ describe('Preview sidecar parity', () => {
     };
 
     mockInvoke.mockResolvedValueOnce(sidecarResult);
-    const rpcResult = await invoke<PreviewResponse>('preview_replacement', {
-      input: 'I will brb',
-      rules: [literalRule],
-    });
+    render(<ReplacementPreview rules={[literalRule]} />);
 
-    expect(mockInvoke).toHaveBeenCalledWith('preview_replacement', {
-      input: 'I will brb',
-      rules: [literalRule],
-    });
-    console.info('[replacements.test] preview_invoke_call cmd=preview_replacement input=%s', 'I will brb');
-    console.info(
-      '[replacements.test] preview_invoke_response result=%s truncated=%s',
-      rpcResult.result,
-      String(rpcResult.truncated)
-    );
+    const input = screen.getByPlaceholderText(/Type or paste text/);
+    fireEvent.change(input, { target: { value: 'I will brb' } });
 
-    const localResult = processPreviewText('I will brb', [literalRule]);
-    expect(rpcResult.result).toBe(localResult);
-    expect(localResult).toBe(sidecarResult.result);
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('preview_replacement', {
+        input: 'I will brb',
+        rules: [literalRule],
+      });
+    });
+    expect(screen.getByText(sidecarResult.result)).toBeDefined();
   });
 
   it('local processPreviewText matches sidecar for regex rules', () => {
@@ -277,6 +273,45 @@ describe('Preview sidecar parity', () => {
     const localResult = processPreviewText('brb lol', [literalRule, disabledRule]);
     // Only literalRule applies; disabledRule is skipped
     expect(localResult).toBe('be right back lol');
+  });
+
+  it('debounces sidecar preview calls and sends latest input only', async () => {
+    mockInvoke.mockResolvedValue({
+      result: 'I will be right back',
+      truncated: false,
+      applied_rules_count: 1,
+      applied_presets: [],
+    });
+    render(<ReplacementPreview rules={[literalRule]} />);
+
+    const input = screen.getByPlaceholderText(/Type or paste text/);
+    fireEvent.change(input, { target: { value: 'I will b' } });
+    fireEvent.change(input, { target: { value: 'I will brb' } });
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('preview_replacement', {
+        input: 'I will brb',
+        rules: [literalRule],
+      });
+    });
+  });
+
+  it('shows fallback indicator when sidecar preview fails and keeps local output', async () => {
+    mockInvoke.mockRejectedValueOnce(new Error('sidecar down'));
+    render(<ReplacementPreview rules={[literalRule]} />);
+
+    const input = screen.getByPlaceholderText(/Type or paste text/);
+    fireEvent.change(input, { target: { value: 'I said brb' } });
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith('preview_replacement', {
+        input: 'I said brb',
+        rules: [literalRule],
+      });
+      expect(screen.getByTestId('preview-fallback')).toBeDefined();
+    });
+    expect(screen.getByText(processPreviewText('I said brb', [literalRule]))).toBeDefined();
   });
 });
 

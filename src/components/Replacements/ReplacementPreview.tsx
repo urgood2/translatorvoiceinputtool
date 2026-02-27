@@ -8,12 +8,19 @@
  * - Support for testing individual rules or entire ruleset
  */
 
-import { useState, useMemo, useId } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { useEffect, useMemo, useRef, useState, useId } from 'react';
 import type { ReplacementRule } from '../../types';
 
 interface ReplacementPreviewProps {
   rules: ReplacementRule[];
 }
+
+type PreviewReplacementResponse = {
+  result?: string;
+};
+
+const PREVIEW_RPC_DEBOUNCE_MS = 120;
 
 /** Apply replacement rules to text (local mirror of sidecar logic). */
 export function applyReplacements(text: string, rules: ReplacementRule[]): string {
@@ -171,16 +178,71 @@ function HighlightDiff({ original, result }: { original: string; result: string 
 export function ReplacementPreview({ rules }: ReplacementPreviewProps) {
   const [input, setInput] = useState('');
   const [expandMacrosEnabled, setExpandMacrosEnabled] = useState(true);
+  const [result, setResult] = useState('');
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const inputId = useId();
   const outputLabelId = useId();
   const changesLabelId = useId();
+  const previewRequestSeqRef = useRef(0);
 
   const enabledRules = useMemo(() => rules.filter((r) => r.enabled), [rules]);
+  useEffect(() => {
+    if (!input) {
+      setResult('');
+      setPreviewLoading(false);
+      setPreviewError(null);
+      return;
+    }
 
-  const result = useMemo(
-    () => processPreviewText(input, enabledRules, !expandMacrosEnabled),
-    [input, enabledRules, expandMacrosEnabled]
-  );
+    const localPreview = processPreviewText(input, enabledRules, !expandMacrosEnabled);
+    setResult(localPreview);
+    setPreviewError(null);
+
+    if (!expandMacrosEnabled) {
+      setPreviewLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const requestSeq = previewRequestSeqRef.current + 1;
+    previewRequestSeqRef.current = requestSeq;
+    setPreviewLoading(true);
+    const timeoutId = window.setTimeout(() => {
+      void Promise.resolve(
+        invoke<PreviewReplacementResponse>('preview_replacement', {
+          input,
+          rules,
+        })
+      )
+        .then((rpcResult) => {
+          if (cancelled || requestSeq !== previewRequestSeqRef.current) {
+            return;
+          }
+          if (rpcResult && typeof rpcResult.result === 'string') {
+            setResult(rpcResult.result);
+            setPreviewError(null);
+          }
+        })
+        .catch(() => {
+          if (cancelled || requestSeq !== previewRequestSeqRef.current) {
+            return;
+          }
+          setPreviewError('Sidecar preview unavailable; showing local fallback.');
+        })
+        .finally(() => {
+          if (cancelled || requestSeq !== previewRequestSeqRef.current) {
+            return;
+          }
+          setPreviewLoading(false);
+        });
+    }, PREVIEW_RPC_DEBOUNCE_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [enabledRules, expandMacrosEnabled, input, rules]);
 
   const hasChanges = input !== result;
 
@@ -268,6 +330,14 @@ export function ReplacementPreview({ rules }: ReplacementPreviewProps) {
       {/* Quick stats */}
       <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
         <span>{enabledRules.length} rules active</span>
+        {previewLoading && (
+          <span data-testid="preview-loading">Previewing…</span>
+        )}
+        {!previewLoading && previewError && (
+          <span data-testid="preview-fallback" className="text-amber-600 dark:text-amber-400">
+            {previewError}
+          </span>
+        )}
         {input && (
           <>
             <span>|</span>
