@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jsonschema import Draft7Validator, RefResolver
+from jsonschema import Draft7Validator
 from jsonschema.exceptions import SchemaError
 
 
@@ -1210,8 +1210,9 @@ def validate_instance_against_schema(
     root_schema: dict[str, Any],
     prefix: str,
 ) -> list[str]:
-    resolver = RefResolver.from_schema(root_schema)
-    validator = Draft7Validator(schema, resolver=resolver)
+    # Keep $ref resolution rooted at the full contract schema while validating
+    # an individual fragment, without using deprecated RefResolver APIs.
+    validator = Draft7Validator(root_schema).evolve(schema=schema)
     errors: list[str] = []
     for err in sorted(validator.iter_errors(instance), key=lambda e: list(e.path)):
         location = prefix

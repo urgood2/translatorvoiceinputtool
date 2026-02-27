@@ -19,10 +19,11 @@
 # - Cancel during sidecar model loading
 #
 # Exit codes:
-#   0 - All tests passed
-#   1 - Test failure
-#   2 - Environment setup error
-#   3 - Timeout
+#   0  - All tests passed (core cancel flow exercised)
+#   1  - Test failure
+#   2  - Environment setup error
+#   3  - Timeout
+#   77 - Skipped (recording unavailable; core cancel path not exercised)
 #
 
 set -euo pipefail
@@ -45,6 +46,8 @@ TEST_TIMEOUT=60  # seconds
 UNEXPECTED_EVENTS=()
 STEPS_PASSED=0
 STEPS_TOTAL=8
+# Track whether the core cancel-active-recording path was exercised
+CORE_CANCEL_EXERCISED=false
 
 # Send JSON-RPC request to an already running sidecar process and read response
 # for matching request id from the persistent stdout reader FD.
@@ -222,12 +225,12 @@ main() {
         ((E2E_ASSERTIONS_PASSED++)) || true
         log_info "cancel_e2e" "step_2" "Recording started" "{\"session_id\":\"$session_a\"}"
     elif echo "$start_result" | jq -e '.error' >/dev/null 2>&1; then
-        # Recording may fail on headless CI (no audio device) - this is acceptable
-        ((E2E_ASSERTIONS_PASSED++)) || true
         local error_kind
         error_kind=$(echo "$start_result" | jq -r '.error.data.kind // .error.message // "unknown"')
-        log_warn "cancel_e2e" "step_2" "Recording start returned structured error (expected on CI)" \
+        log_warn "cancel_e2e" "step_2" \
+            "Recording start unavailable on this host; skipping active-cancel assertions" \
             "{\"error_kind\":\"$error_kind\"}"
+        return 77
     else
         ((E2E_ASSERTIONS_FAILED++)) || true
         log_error "cancel_e2e" "step_2" "Recording start returned invalid payload" "$start_result"
@@ -268,6 +271,7 @@ main() {
         if echo "$cancel_result" | jq -e '.result.cancelled' >/dev/null 2>&1; then
             assert_json_eq "$cancel_result" ".result.cancelled" "true" "Cancel result is true"
             assert_json_eq "$cancel_result" ".result.session_id" "$session_a" "Cancel session_id matches"
+            CORE_CANCEL_EXERCISED=true
             log_info "cancel_e2e" "step_4" "Recording cancelled successfully" "$cancel_result"
         elif echo "$cancel_result" | jq -e '.error' >/dev/null 2>&1; then
             ((E2E_ASSERTIONS_FAILED++)) || true
@@ -277,19 +281,10 @@ main() {
             log_error "cancel_e2e" "step_4" "Cancel returned invalid payload" "$cancel_result"
         fi
     else
-        # No recording was started - test cancel when not recording
-        local cancel_result
-        cancel_result=$(sidecar_rpc_session "recording.cancel" '{"session_id":"no-session"}' 10) || true
-
-        if echo "$cancel_result" | jq -e '.error' >/dev/null 2>&1; then
-            ((E2E_ASSERTIONS_PASSED++)) || true
-            log_info "cancel_e2e" "step_4" "Cancel when not recording returned structured error (expected)" \
-                "$cancel_result"
-        else
-            ((E2E_ASSERTIONS_FAILED++)) || true
-            log_error "cancel_e2e" "step_4" "Cancel returned unexpected success when no recording active" \
-                "$cancel_result"
-        fi
+        ((E2E_ASSERTIONS_FAILED++)) || true
+        log_error "cancel_e2e" "step_4" \
+            "Invariant violation: Step 4 reached without an active recording session"
+        return 1
     fi
 
     log_with_duration "INFO" "cancel_e2e" "step_4" "[CANCEL_E2E] Step 4/8: complete" "{}" "$step4_start"
@@ -362,9 +357,9 @@ main() {
         log_info "cancel_e2e" "step_7" "New recording started after cancel (system recovered)" \
             "{\"session_id\":\"$session_b\"}"
     elif echo "$start_b_result" | jq -e '.error' >/dev/null 2>&1; then
-        # On CI without audio, both start calls will error - that's fine
-        ((E2E_ASSERTIONS_PASSED++)) || true
-        log_warn "cancel_e2e" "step_7" "Recording start B returned structured error (expected on CI)" \
+        ((E2E_ASSERTIONS_FAILED++)) || true
+        log_error "cancel_e2e" "step_7" \
+            "Recording start B failed after cancel; expected readiness for new recording" \
             "$start_b_result"
     else
         ((E2E_ASSERTIONS_FAILED++)) || true
@@ -496,10 +491,30 @@ main() {
         return 1
     fi
 
+    if [ "$CORE_CANCEL_EXERCISED" = false ]; then
+        log_warn "cancel_e2e" "complete" \
+            "Recording cancel flow SKIPPED: could not start recording (no audio device?); core cancel path not exercised"
+        return 77
+    fi
+
     log_info "cancel_e2e" "complete" "Recording cancel flow test PASSED"
     return 0
 }
 
-# Run main
-main
-exit $?
+if [[ "${1:-}" == "__run-main" ]]; then
+    shift
+    main "$@"
+    exit $?
+fi
+
+set +e
+e2e_timeout_run "$TEST_TIMEOUT" "$0" "__run-main" "$@"
+RUN_RC=$?
+set -e
+
+if [[ "$RUN_RC" -eq 124 ]]; then
+    echo "[CANCEL_E2E] ERROR: test timed out after ${TEST_TIMEOUT}s"
+    exit 3
+fi
+
+exit "$RUN_RC"

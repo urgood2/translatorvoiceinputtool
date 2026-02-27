@@ -33,6 +33,8 @@ source "$SCRIPT_DIR/lib/common.sh"
 TEST_NAME="test-offline-install"
 MOCK_PROXY_URL="http://127.0.0.1:9"
 RETRY_GUIDANCE="Check your internet connection and retry"
+STEPS_TOTAL=6
+NETWORK_STATE="online"
 
 LOG_FILE=""
 FAIL_REASON=""
@@ -90,6 +92,12 @@ log_line() {
     if [[ -n "$LOG_FILE" ]]; then
         echo "$line" >> "$LOG_FILE"
     fi
+}
+
+step_log() {
+    local step="$1"
+    local msg="$2"
+    log_line "INFO" "step_${step}" "[network=${NETWORK_STATE}] Step ${step}/${STEPS_TOTAL}: ${msg}"
 }
 
 set_or_unset_var() {
@@ -158,6 +166,18 @@ restore_network() {
     export no_proxy="127.0.0.1,localhost"
 }
 
+set_offline_network() {
+    NETWORK_STATE="offline-mocked"
+    apply_mock_network
+    log_network_state "network_mocked"
+}
+
+set_online_network() {
+    NETWORK_STATE="online"
+    restore_network
+    log_network_state "network_restored"
+}
+
 snapshot_dir() {
     local step="$1"
     local path="$2"
@@ -202,7 +222,7 @@ run_rpc_once() {
         --argjson id "$request_id" \
         '{jsonrpc:"2.0",id:$id,method:$method,params:$params}')
 
-    log_line "INFO" "$step" "rpc_request=$request"
+    log_line "INFO" "$step" "[RPC][REQ] $request"
 
     local raw_output
     raw_output=$(printf '%s\n' "$request" | e2e_timeout_run "$timeout" "$E2E_SIDECAR_BIN" 2>&1 || true)
@@ -211,7 +231,7 @@ run_rpc_once() {
     local line=""
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
-        log_line "INFO" "$step" "rpc_stream=$line"
+        log_line "INFO" "$step" "[RPC][STREAM] $line"
         local line_id
         line_id=$(echo "$line" | jq -r '.id // empty' 2>/dev/null || true)
         if [[ "$line_id" == "$request_id" ]]; then
@@ -229,8 +249,57 @@ run_rpc_once() {
     fi
 
     RPC_RESPONSES+=("$response")
-    log_line "INFO" "$step" "rpc_response=$response"
+    log_line "INFO" "$step" "[RPC][RES] $response"
     echo "$response"
+}
+
+assert_network_error_actionable() {
+    local response="$1"
+    local step="${2:-step3_model_download_offline}"
+
+    expect_jq_true "$step" "$response" '.error.data.kind == "E_NETWORK"' \
+        "model.download returns E_NETWORK when offline" || return 1
+    expect_jq_true "$step" "$response" \
+        '(.error.message | type == "string") and ((.error.message | length) > 0)' \
+        "offline error message is populated" || return 1
+
+    if ! echo "$response" | jq -e \
+        '.error.message | ascii_downcase | (contains("retry") or contains("check") or contains("connection"))' \
+        >/dev/null 2>&1; then
+        append_error "$step: missing retry/check guidance"
+        log_line "ERROR" "$step" "missing retry/check guidance"
+        return 1
+    fi
+
+    log_line "INFO" "$step" "retry_guidance=$RETRY_GUIDANCE"
+    return 0
+}
+
+assert_atomic_install_state() {
+    local isolated_cache_dir="$1"
+    local step="${2:-step4_atomicity}"
+    local final_dir="$isolated_cache_dir/$OFFLINE_MODEL_ID"
+    local partial_dir="$isolated_cache_dir/.partial/$OFFLINE_MODEL_ID"
+
+    if [[ -d "$final_dir" && ! -f "$final_dir/manifest.json" ]]; then
+        append_error "$step: corrupt final model directory detected without manifest: $final_dir"
+        log_line "ERROR" "$step" "corrupt final model directory detected without manifest"
+        return 1
+    fi
+
+    if [[ -d "$partial_dir" ]]; then
+        local non_manifest_files
+        non_manifest_files=$(find "$partial_dir" -type f ! -name "manifest.json" 2>/dev/null || true)
+        if [[ -n "$non_manifest_files" ]]; then
+            append_error "$step: partial staging directory still exists with payload files: $partial_dir"
+            append_error "$step: files=$(echo "$non_manifest_files" | tr '\n' ';')"
+            log_line "ERROR" "$step" "partial staging directory still exists"
+            return 1
+        fi
+    fi
+
+    log_line "INFO" "$step" "atomic cache state verified"
+    return 0
 }
 
 prepare_fixture_assets() {
@@ -358,7 +427,7 @@ cached_model_is_available() {
     [[ "$missing" -eq 0 ]]
 }
 
-print_failure_context() {
+dump_failure_context() {
     log_line "ERROR" "failure" "FAIL reason=${FAIL_REASON:-unknown}"
     log_line "ERROR" "failure" "error_chain_count=${#ERROR_CHAIN[@]}"
     local entry=""
@@ -388,7 +457,7 @@ cleanup() {
     fi
 
     if [[ "$exit_code" -ne 0 && "$exit_code" -ne 77 ]]; then
-        print_failure_context
+        dump_failure_context
     fi
 
     if [[ "$exit_code" -eq 0 ]]; then
@@ -422,8 +491,8 @@ main() {
     start_fixture_server
     snapshot_dir "cache_before_offline" "$OFFLINE_CACHE_ROOT"
 
-    apply_mock_network
-    log_network_state "network_mocked"
+    step_log 1 "Start sidecar with network disabled/mocked and verify system.ping"
+    set_offline_network
 
     # Step 1: Sidecar responsive with network mocked.
     use_default_runtime_env
@@ -432,53 +501,45 @@ main() {
     expect_jq_true "step1_system_ping" "$ping_response" '.result.protocol == "v1"' \
         "system.ping succeeds with mocked network" || return 1
 
+    step_log 2 "Verify existing installed model is usable via asr.initialize"
     # Step 2: Existing cached model still usable.
     local init_response
     init_response=$(run_rpc_once "step2_asr_initialize" "asr.initialize" "{}" 60) || true
     expect_jq_true "step2_asr_initialize" "$init_response" '.result.status == "ready"' \
         "asr.initialize succeeds from cache while offline" || return 1
 
+    step_log 3 "Attempt model.download offline and verify actionable E_NETWORK response"
     # Step 3: Download fails offline with E_NETWORK.
     use_offline_fixture_env
     local download_offline_response
     download_offline_response=$(run_rpc_once "step3_model_download_offline" "model.download" "{}" 20) || true
-    expect_jq_true "step3_model_download_offline" "$download_offline_response" \
-        '.error.data.kind == "E_NETWORK"' "model.download returns E_NETWORK when offline" || return 1
-    expect_jq_true "step3_model_download_offline" "$download_offline_response" \
-        '(.error.message | type == "string") and ((.error.message | length) > 0)' \
-        "offline error message is populated" || return 1
-    log_line "INFO" "step3_model_download_offline" "retry_guidance=$RETRY_GUIDANCE"
+    assert_network_error_actionable "$download_offline_response" "step3_model_download_offline" || return 1
 
+    step_log 4 "Verify no partial/corrupt model files remain after failed install"
     # Step 4: Atomic install property (no committed/corrupt artifacts).
     snapshot_dir "cache_after_offline_failure" "$OFFLINE_CACHE_ROOT"
-    if [[ -d "$OFFLINE_MODEL_DIR" ]]; then
-        fail "step4_atomicity: final model dir exists unexpectedly: $OFFLINE_MODEL_DIR"
-        return 1
-    fi
-    local unexpected_partial_files
-    unexpected_partial_files=$(find "$OFFLINE_PARTIAL_DIR" -type f ! -name 'manifest.json' 2>/dev/null || true)
-    if [[ -n "$unexpected_partial_files" ]]; then
-        append_error "step4_atomicity: unexpected partial files remain"
-        append_error "step4_atomicity: files=$(echo "$unexpected_partial_files" | tr '\n' ';')"
-        return 1
-    fi
-    log_line "INFO" "step4_atomicity" "no committed/corrupt files left after failed download"
+    assert_atomic_install_state "$OFFLINE_CACHE_ROOT" "step4_atomicity" || return 1
 
-    # Step 6(a): Sidecar still functional after failed download.
-    local ping_after_failure
-    ping_after_failure=$(run_rpc_once "step6a_ping_after_failure" "system.ping" "{}" 10) || return 1
-    expect_jq_true "step6a_ping_after_failure" "$ping_after_failure" '.result.protocol == "v1"' \
-        "sidecar remains functional after failed download" || return 1
-
+    step_log 5 "Re-enable network and verify retry succeeds"
     # Step 5: Re-enable network and verify retry succeeds.
-    restore_network
-    log_network_state "network_restored"
+    set_online_network
     local download_retry_response
     download_retry_response=$(run_rpc_once "step5_model_download_retry" "model.download" "{}" 20) || return 1
     expect_jq_true "step5_model_download_retry" "$download_retry_response" '.result.status == "ready"' \
         "retry succeeds with network restored" || return 1
 
-    # Step 6(b): Sidecar remains functional after successful retry.
+    step_log 6 "Verify sidecar remains functional after failure and retry"
+    # Step 6: Sidecar still functional after failure/retry.
+    local ping_after_failure
+    ping_after_failure=$(run_rpc_once "step6a_ping_after_failure" "system.ping" "{}" 10) || return 1
+    expect_jq_true "step6a_ping_after_failure" "$ping_after_failure" '.result.protocol == "v1"' \
+        "sidecar remains functional after failed download" || return 1
+
+    local status_after_retry
+    status_after_retry=$(run_rpc_once "step6_status_after_retry" "status.get" "{}" 10) || return 1
+    expect_jq_true "step6_status_after_retry" "$status_after_retry" '.result | type == "object"' \
+        "status.get returns structured payload after retry" || return 1
+
     local ping_after_retry
     ping_after_retry=$(run_rpc_once "step6b_ping_after_retry" "system.ping" "{}" 10) || return 1
     expect_jq_true "step6b_ping_after_retry" "$ping_after_retry" '.result.protocol == "v1"' \

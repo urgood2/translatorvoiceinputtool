@@ -41,23 +41,42 @@ class CancelFlowScriptTests(unittest.TestCase):
     def test_cancel_flow_loading_edge_case_avoids_non_hermetic_downloads(self) -> None:
         content = CANCEL_FLOW_SCRIPT.read_text()
 
-        self.assertIn("host_model_cache_dir()", content)
-        self.assertIn("model_cache_contains_model()", content)
-        self.assertIn('sidecar_rpc_session "asr.initialize" "$initialize_params" 10', content)
+        self.assertIn("state-based, no side effects", content)
+        self.assertIn('loading_probe_status=$(sidecar_rpc_session "status.get" "{}" 10)', content)
+        self.assertIn('if [[ "$loading_probe_state" == "loading_model" ]]; then', content)
         self.assertIn(
-            "model not cached; avoiding download side effects",
+            "no side effects triggered",
             content,
         )
-        self.assertNotIn('CANCEL_E2E_EDGE_MODEL_ID:-nvidia/parakeet-tdt-0.6b-v3', content)
+        self.assertNotIn('sidecar_rpc_session "asr.initialize"', content)
 
-    def test_cancel_flow_edge_loading_uses_cached_model_guard(self) -> None:
+    def test_cancel_flow_edge_loading_does_not_depend_on_specific_model_id(self) -> None:
         content = CANCEL_FLOW_SCRIPT.read_text()
 
-        self.assertIn("EDGE_LOADING_MODEL_ID", content)
-        self.assertIn("model_cache_contains_model", content)
-        self.assertIn("host_model_cache_dir", content)
-        self.assertIn("avoiding download side effects", content)
-        self.assertIn("CANCEL_E2E_EDGE_MODEL_ID", content)
+        self.assertNotIn("EDGE_LOADING_MODEL_ID", content)
+        self.assertNotIn("CANCEL_E2E_EDGE_MODEL_ID", content)
+
+    def test_cancel_flow_enforces_documented_timeout_exit_code(self) -> None:
+        content = CANCEL_FLOW_SCRIPT.read_text()
+
+        self.assertIn("TEST_TIMEOUT=60", content)
+        self.assertIn('e2e_timeout_run "$TEST_TIMEOUT" "$0" "__run-main" "$@"', content)
+        self.assertIn('if [[ "$RUN_RC" -eq 124 ]]; then', content)
+        self.assertIn("exit 3", content)
+
+    def test_cancel_flow_requires_real_recording_to_avoid_false_positive(self) -> None:
+        content = CANCEL_FLOW_SCRIPT.read_text()
+
+        self.assertIn("skipping active-cancel assertions", content)
+        self.assertIn(
+            "Invariant violation: Step 4 reached without an active recording session",
+            content,
+        )
+        self.assertIn(
+            "expected readiness for new recording",
+            content,
+        )
+        self.assertNotIn("Recording start returned structured error (expected on CI)", content)
 
 
 if __name__ == "__main__":

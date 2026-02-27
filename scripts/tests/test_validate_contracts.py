@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+import warnings
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -57,6 +58,54 @@ listen('sidecar:status', () => {});
         errors = MODULE.validate_instance_against_schema({}, schema, root, "event.payload")
         self.assertEqual(len(errors), 1)
         self.assertIn("state", errors[0])
+
+    def test_validate_instance_against_schema_resolves_root_defs_without_refresolver(self) -> None:
+        root = {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$defs": {
+                "payload": {
+                    "type": "object",
+                    "required": ["status"],
+                    "properties": {"status": {"type": "string"}},
+                    "additionalProperties": False,
+                }
+            },
+        }
+        schema = {"$ref": "#/$defs/payload"}
+        errors = MODULE.validate_instance_against_schema({}, schema, root, "event.payload")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("status", errors[0])
+
+    def test_validate_contracts_script_no_longer_uses_refresolver(self) -> None:
+        source = SCRIPT_PATH.read_text(encoding="utf-8")
+        self.assertNotRegex(source, r"from\s+jsonschema\s+import[^\n]*RefResolver")
+        self.assertNotIn("RefResolver.from_schema", source)
+
+    def test_validate_instance_against_schema_emits_no_deprecation_warning(self) -> None:
+        root = {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$defs": {
+                "payload": {
+                    "type": "object",
+                    "required": ["status"],
+                    "properties": {"status": {"type": "string"}},
+                    "additionalProperties": False,
+                }
+            },
+        }
+        schema = {"$ref": "#/$defs/payload"}
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            errors = MODULE.validate_instance_against_schema({}, schema, root, "event.payload")
+
+        self.assertEqual(len(errors), 1)
+        deprecations = [
+            str(w.message)
+            for w in caught
+            if issubclass(w.category, DeprecationWarning)
+        ]
+        self.assertEqual(deprecations, [])
 
     def test_validate_legacy_alias_fixture_coverage_accepts_complete_pairs(self) -> None:
         events_contract = {

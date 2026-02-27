@@ -622,8 +622,9 @@ describe('useTauriEvents', () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
       });
 
-      expect(listen).toHaveBeenCalledTimes(13);
-      expect(unlistenFns).toHaveLength(13);
+      const expectedCanonicalListenerCount = 9;
+      expect(listen).toHaveBeenCalledTimes(expectedCanonicalListenerCount);
+      expect(unlistenFns).toHaveLength(expectedCanonicalListenerCount);
 
       unmount();
 
@@ -723,11 +724,20 @@ describe('useTauriEvents', () => {
       emitMockEvent('state:changed', first);
     });
 
+    const stateAfterFirst = useAppStore.getState();
+    expect(stateAfterFirst.appState).toBe('recording');
+    expect(stateAfterFirst.enabled).toBe(true);
+    expect(stateAfterFirst.stateTimestamp).toBe('2026-01-01T00:12:00.000Z');
+
+    act(() => {
+      emitMockEvent('state:changed', second);
+    });
+
     const state = useAppStore.getState();
     logStoreStateAfter('no-seq compatibility');
-    expect(state.appState).toBe('recording');
-    expect(state.enabled).toBe(true);
-    expect(state.stateTimestamp).toBe('2026-01-01T00:12:00.000Z');
+    expect(state.appState).toBe('idle');
+    expect(state.enabled).toBe(false);
+    expect(state.stateTimestamp).toBe('2026-01-01T00:12:01.000Z');
 
     unmount();
   });
@@ -819,7 +829,7 @@ describe('useTauriEvents', () => {
       seq: 1201,
       model_id: 'parakeet-rnnt-1.1b',
       status: 'downloading',
-      progress: { current: 25, total: 100, unit: 'bytes' },
+      progress: { current: 30, total: 100, unit: 'bytes' },
     });
     expect(state.downloadProgress).toEqual(progressPayload);
 
