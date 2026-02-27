@@ -6,12 +6,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REFERENCE = REPO_ROOT / "shared" / "DEPENDENCIES_TECH_STACK.md"
+CARGO_MANIFEST = REPO_ROOT / "src-tauri" / "Cargo.toml"
 
 
 class DependenciesTechStackReferenceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.text = REFERENCE.read_text(encoding="utf-8")
+        cls.cargo_text = CARGO_MANIFEST.read_text(encoding="utf-8")
 
     def test_mentions_required_rust_dependency_rodio_as_current(self) -> None:
         self.assertIn("`rodio` (required in current manifest)", self.text)
@@ -30,6 +32,11 @@ class DependenciesTechStackReferenceTests(unittest.TestCase):
         self.assertIn("`package.json`", self.text)
         self.assertIn("`bun.lock`", self.text)
         self.assertIn("`package-lock.json`", self.text)
+
+    def test_global_hotkey_crate_name_matches_rust_manifest(self) -> None:
+        self.assertIn('global-hotkey = "0.6"', self.cargo_text)
+        self.assertIn("`global-hotkey`", self.text)
+        self.assertNotIn("`global_hotkey`", self.text)
 
 
 if __name__ == "__main__":

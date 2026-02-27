@@ -10,7 +10,7 @@ Use this before adding libraries, changing build pipelines, or extending runtime
 - `tauri-plugin-shell`: host shell integration.
 
 2. Input and integration
-- `global_hotkey`: system-wide hotkey registration.
+- `global-hotkey`: system-wide hotkey registration.
 - Platform-specific injection backends in `src-tauri/src/injection.rs` and related focus/input modules.
 
 3. Media/runtime features
