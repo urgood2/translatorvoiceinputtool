@@ -73,9 +73,51 @@ class TestWorkflowStructure(unittest.TestCase):
     def test_typescript_workflow_uses_bun(self) -> None:
         self.assertIn("oven-sh/setup-bun", self.text)
         self.assertIn("bun install --frozen-lockfile", self.text)
+        self.assertIn("bunx tsc --noEmit", self.text)
         self.assertIn("bun run test", self.text)
+        self.assertIn("bun run build", self.text)
+        self.assertIn("dist/index.html", self.text)
+        self.assertIn("dist/overlay.html", self.text)
         self.assertNotIn("npm ci", self.text)
         self.assertNotIn("npm test", self.text)
+
+    def test_typescript_workflow_includes_typecheck_step(self) -> None:
+        self.assertIn("TypeScript typecheck", self.text)
+        self.assertIn("bunx tsc --noEmit", self.text)
+
+        steps = self.wf["jobs"]["typescript-tests"]["steps"]
+        typecheck_step = next(
+            step for step in steps if step.get("name") == "TypeScript typecheck"
+        )
+        self.assertEqual(typecheck_step.get("run"), "bunx tsc --noEmit")
+
+    def test_typescript_workflow_verifies_frontend_build_outputs(self) -> None:
+        self.assertIn("Verify frontend build produces overlay assets", self.text)
+        self.assertIn("bun run build", self.text)
+        self.assertIn("dist/index.html", self.text)
+        self.assertIn("dist/overlay.html", self.text)
+
+        steps = self.wf["jobs"]["typescript-tests"]["steps"]
+        build_step = next(
+            step
+            for step in steps
+            if step.get("name") == "Verify frontend build produces overlay assets"
+        )
+        run_script = str(build_step.get("run", ""))
+        self.assertIn("bun run build", run_script)
+        self.assertIn("test -f dist/index.html", run_script)
+        self.assertIn("test -f dist/overlay.html", run_script)
+
+    def test_typescript_step_order_typecheck_then_tests_then_build_verify(self) -> None:
+        steps = self.wf["jobs"]["typescript-tests"]["steps"]
+        names = [str(step.get("name", "")) for step in steps]
+
+        typecheck_idx = names.index("TypeScript typecheck")
+        tests_idx = names.index("Run TypeScript tests")
+        build_verify_idx = names.index("Verify frontend build produces overlay assets")
+
+        self.assertLess(typecheck_idx, tests_idx)
+        self.assertLess(tests_idx, build_verify_idx)
 
     def test_schema_validation_runs_ipc_and_model_manifest_validators(self) -> None:
         self.assertIn("python scripts/validate_ipc_examples.py", self.text)
@@ -99,6 +141,26 @@ class TestWorkflowStructure(unittest.TestCase):
             if step.get("name") == "Sidecar Self-Test (packaged resource simulation)"
         )
         self.assertEqual(packaged_step.get("if"), "runner.os == 'Linux'")
+
+    def test_typescript_workflow_has_typecheck_and_build_guard_steps(self) -> None:
+        steps = self.wf["jobs"]["typescript-tests"]["steps"]
+        names = [step.get("name") for step in steps]
+
+        self.assertIn("TypeScript typecheck", names)
+        self.assertIn("Verify frontend build produces overlay assets", names)
+
+        typecheck_step = next(step for step in steps if step.get("name") == "TypeScript typecheck")
+        build_verify_step = next(
+            step
+            for step in steps
+            if step.get("name") == "Verify frontend build produces overlay assets"
+        )
+
+        self.assertEqual(typecheck_step.get("run"), "bunx tsc --noEmit")
+        build_script = build_verify_step.get("run", "")
+        self.assertIn("bun run build", build_script)
+        self.assertIn("test -f dist/index.html", build_script)
+        self.assertIn("test -f dist/overlay.html", build_script)
 
 
 if __name__ == "__main__":
