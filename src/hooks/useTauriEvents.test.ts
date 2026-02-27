@@ -200,7 +200,7 @@ describe('useTauriEvents', () => {
     unmount();
   });
 
-  test('dedupes canonical and legacy transcript events by shared seq', async () => {
+  test('dedupes duplicate transcript deliveries with identical seq', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
     await act(async () => {
@@ -224,6 +224,20 @@ describe('useTauriEvents', () => {
 
     act(() => {
       emitMockEvent('transcript:complete', canonicalPayload);
+      emitMockEvent('transcript:complete', {
+        seq: 42,
+        entry: {
+          id: 'entry-42-duplicate',
+          text: 'Duplicate payload should be ignored',
+          raw_text: 'Duplicate payload should be ignored',
+          final_text: 'Duplicate payload should be ignored',
+          timestamp: new Date().toISOString(),
+          audio_duration_ms: 1001,
+          transcription_duration_ms: 221,
+          session_id: 'session-42',
+          injection_result: { status: 'injected' as const },
+        },
+      });
     });
 
     const history = useAppStore.getState().history;
@@ -264,7 +278,7 @@ describe('useTauriEvents', () => {
     unmount();
   });
 
-  test('dedupes canonical and legacy state events by shared seq', async () => {
+  test('dedupes duplicate state deliveries with identical seq', async () => {
     const { unmount } = renderHook(() => useTauriEvents());
 
     await act(async () => {
@@ -277,6 +291,12 @@ describe('useTauriEvents', () => {
         state: 'recording',
         enabled: true,
         timestamp: '2026-01-01T00:00:00.000Z',
+      });
+      emitMockEvent('state:changed', {
+        seq: 77,
+        state: 'idle',
+        enabled: false,
+        timestamp: '2026-01-01T00:00:01.000Z',
       });
     });
 
