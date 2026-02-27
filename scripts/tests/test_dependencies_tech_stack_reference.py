@@ -2,6 +2,7 @@
 
 import unittest
 from pathlib import Path
+import tomllib
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -14,6 +15,8 @@ class DependenciesTechStackReferenceTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.text = REFERENCE.read_text(encoding="utf-8")
         cls.cargo_text = CARGO_MANIFEST.read_text(encoding="utf-8")
+        cls.cargo_manifest = tomllib.loads(cls.cargo_text)
+        cls.rust_dependencies = set(cls.cargo_manifest.get("dependencies", {}).keys())
 
     def test_mentions_required_rust_dependency_rodio_as_current(self) -> None:
         self.assertIn("`rodio` (required in current manifest)", self.text)
@@ -34,7 +37,10 @@ class DependenciesTechStackReferenceTests(unittest.TestCase):
         self.assertIn("`package-lock.json`", self.text)
 
     def test_global_hotkey_crate_name_matches_rust_manifest(self) -> None:
-        self.assertIn('global-hotkey = "0.6"', self.cargo_text)
+        hotkey_dependencies = {
+            name for name in self.rust_dependencies if "hotkey" in name.lower()
+        }
+        self.assertEqual(hotkey_dependencies, {"global-hotkey"})
         self.assertIn("`global-hotkey`", self.text)
         self.assertNotIn("`global_hotkey`", self.text)
 

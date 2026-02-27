@@ -10,25 +10,24 @@ class E2ERunAllScriptTests(unittest.TestCase):
     def test_run_all_declares_required_seven_stage_orchestrator(self) -> None:
         content = RUN_ALL_SCRIPT.read_text()
 
-        self.assertIn("TOTAL_STAGES=7", content)
-        self.assertIn("run_stage 1 \"Environment checks\"", content)
-        self.assertIn("run_stage 2 \"Sidecar startup health\"", content)
-        self.assertIn("run_stage 3 \"IPC compliance\"", content)
-        self.assertIn("run_stage 4 \"Crash loop recovery\"", content)
-        self.assertIn("run_stage 5 \"Full dictation flow\"", content)
-        self.assertIn("run_stage 6 \"Device removal\"", content)
-        self.assertIn("run_stage 7 \"Offline install\"", content)
+        self.assertIn('if matches_filter "environment" "Environment checks"; then', content)
+        self.assertIn('if matches_filter "startup-health" "Sidecar startup health"; then', content)
+        self.assertIn('if matches_filter "ipc-compliance" "IPC compliance self-test"; then', content)
+        self.assertIn('if matches_filter "crash-loop-recovery" "Sidecar crash loop recovery"; then', content)
+        self.assertIn('if matches_filter "full-dictation-flow" "Full dictation flow"; then', content)
+        self.assertIn('if matches_filter "device-removal" "Device removal mid-recording"; then', content)
+        self.assertIn('if matches_filter "offline-install" "Offline install behavior"; then', content)
+        self.assertIn('run_step "$ordinal" "$total" "${ids[$idx]}" "${labels[$idx]}" ${handlers[$idx]}', content)
 
     def test_run_all_invokes_expected_scripts_and_ipc_self_test(self) -> None:
         content = RUN_ALL_SCRIPT.read_text()
 
-        self.assertIn("test-startup-health.sh", content)
-        self.assertIn("test-error-recovery.sh", content)
-        self.assertIn("test-full-flow.sh", content)
-        self.assertIn("test-device-removal.sh", content)
-        self.assertIn("test-offline-install.sh", content)
-        self.assertIn("openvoicy_sidecar.self_test", content)
-        self.assertIn("sidecar/self-test", content)
+        self.assertIn("run_logged_command startup-health bash $SCRIPT_DIR/test-startup-health.sh", content)
+        self.assertIn("run_logged_command crash-loop-recovery bash $SCRIPT_DIR/test-error-recovery.sh", content)
+        self.assertIn("run_logged_command full-dictation-flow bash $SCRIPT_DIR/test-full-flow.sh", content)
+        self.assertIn("run_logged_command device-removal bash $SCRIPT_DIR/test-device-removal.sh", content)
+        self.assertIn("run_logged_command offline-install bash $SCRIPT_DIR/test-offline-install.sh", content)
+        self.assertIn("run_logged_command ipc-compliance python3 -m openvoicy_sidecar.self_test", content)
 
     def test_run_all_logs_summary_and_exit_contract(self) -> None:
         content = RUN_ALL_SCRIPT.read_text()
